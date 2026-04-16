@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: vyom-api
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    rootDir: backend
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: https://vyom.upskillize.com,https://lms.upskillize.com
+      - key: MAX_SESSIONS_PER_DAY
+        value: "10"
+      - key: MODEL_INTERVIEW
+        value: claude-haiku-4-5-20251001
+      - key: MODEL_DEBRIEF
+        value: claude-sonnet-4-6
