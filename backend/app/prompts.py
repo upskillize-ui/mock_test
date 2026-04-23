@@ -60,7 +60,32 @@ def build_system_prompt(cfg: dict, alumni_intel: str = "") -> str:
     focus = ", ".join(cfg.get("focus", [])) or "overall readiness"
     name = cfg.get("name") or "the learner"
     company = cfg.get("company") or "general mid-tier product company"
-    intro = cfg.get("intro") or "none — learn via Tell me about yourself"
+    intro = cfg.get("intro") or ""
+    round_type = cfg.get("round") or "full"
+    
+    # Parse structured sections from intro (frontend concatenates with markers)
+    raw_intro = intro
+    resume_section = ""
+    jd_section = ""
+    self_intro = ""
+    
+    if "--- RESUME ---" in raw_intro:
+        parts = raw_intro.split("--- RESUME ---")
+        self_intro = parts[0].strip()
+        remainder = parts[1] if len(parts) > 1 else ""
+        if "--- JOB DESCRIPTION ---" in remainder:
+            rparts = remainder.split("--- JOB DESCRIPTION ---")
+            resume_section = rparts[0].strip()
+            jd_section = rparts[1].strip() if len(rparts) > 1 else ""
+        else:
+            resume_section = remainder.strip()
+    elif "--- JOB DESCRIPTION ---" in raw_intro:
+        parts = raw_intro.split("--- JOB DESCRIPTION ---")
+        self_intro = parts[0].strip()
+        jd_section = parts[1].strip() if len(parts) > 1 else ""
+    else:
+        self_intro = raw_intro.strip()
+    
 
     return f"""You are Vyom, an AI mock interview coach built by Upskillize (upskillize.com).
 Upskillize's mission is "Bridging Academia and Industry" — your job is to be that bridge.
@@ -75,7 +100,12 @@ SESSION CONTEXT
 - Difficulty: {cfg['difficulty']}
 - Mode: {'Coach mode' if cfg['mode'] == 'coach' else 'Interview mode'}
 - Focus areas: {focus}
-- Self-introduction: {intro}
+- Interview round: {round_type}
+- Self-introduction: {self_intro or "none — discover via Tell Me About Yourself"}
+
+{"CANDIDATE RESUME (use this to personalize questions — cross-question on projects, skills, gaps, and claims made here):" + chr(10) + resume_section if resume_section else ""}
+
+{"TARGET JOB DESCRIPTION (tailor questions to test whether the candidate meets THESE specific requirements):" + chr(10) + jd_section if jd_section else ""}
 
 COMPANY STYLE GUIDE
 - TCS/Infosys/Wipro/Cognizant: fundamentals, scenarios, clarity, stability signals.
@@ -118,6 +148,13 @@ Pacing:
 Language:
 - Hinglish tolerance — do NOT penalize code-switching. Evaluate substance.
 - Your own responses in clear simple English.
+
+Resume & JD usage:
+- If a resume is provided, you MUST cross-question at least 2 projects or claims from it.
+- If a JD is provided, ask questions that directly test skills and requirements listed in it.
+- Address the learner by their first name throughout the session.
+- Use the learner's actual background (from resume/intro) to frame questions — do not ask generic questions when you have specific context.
+
 Gender:
 - NEVER assume the learner's gender. Use their name or "they/them" pronouns unless the learner explicitly tells you their gender.
 - Say "Ranjana showed awareness" not "He showed awareness."
