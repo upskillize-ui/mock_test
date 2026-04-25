@@ -5,11 +5,14 @@ from typing import Literal
 class StartSessionRequest(BaseModel):
     name: str = ""
     role: str
-    level: Literal["Fresher", "1–3 years", "3+ years", "MBA", "Career switcher"]
+    level: Literal["Fresher", "1-3 years", "3-10 years", "10-20 years", "20+ years", "Career switcher"]
     company: str = ""
     duration_min: int = Field(20, ge=5, le=60)
     difficulty: Literal["Easy", "Realistic", "Stretch"] = "Realistic"
     mode: Literal["interview", "coach"] = "interview"
+    round: str = "full"
+    round_label: str = ""
+    round_detail: str = ""
     focus: list[str] = []
     intro: str = ""
 
