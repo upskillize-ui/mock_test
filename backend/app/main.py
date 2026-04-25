@@ -19,7 +19,8 @@ from .schemas import (
     EndRequest, DebriefResponse,
     AlumniQuestionSubmit, HealthResponse,
 )
-from .prompts import build_system_prompt, fetch_alumni_intel, DEBRIEF_INSTRUCTION
+from .prompts import build_system_prompt, DEBRIEF_INSTRUCTION
+from .db import get_db, get_student_context, fetch_alumni_intel
 from .claude_client import call_claude, extract_resume_text
 
 app = FastAPI(title="InterviewIQ API", version="2.0.0")
