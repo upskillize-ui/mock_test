@@ -172,6 +172,13 @@ Begin the session now."""
 
 
 DEBRIEF_INSTRUCTION = """The interview has ended. Now switch to COACH mode and produce the full debrief report.
+CRITICAL SCORING RULE — READ FIRST:
+- Count how many questions the candidate actually answered with substantive content.
+- If they answered 0 questions → overall = 0, ALL subScores = 0. No exceptions.
+- If they answered 1-2 questions briefly → overall must be under 20, subScores max 2/10.
+- If they answered 3-4 questions → overall 20-45 range.
+- Do NOT give credit for "showing up" or "not being hostile". Zero answers = zero score.
+- "Showed up and initiated the session" is NOT a strength when no answers were given.
 
 Respond with ONLY a valid JSON object (no preamble, no markdown fences, no commentary). Use EXACTLY this schema:
 
