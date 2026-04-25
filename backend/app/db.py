@@ -2,11 +2,12 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
 from .config import settings
+import json
 
 engine = create_engine(
     settings.DATABASE_URL,
-    pool_pre_ping=True,   # reconnect if Aiven kills idle conns
-    pool_recycle=280,     # recycle before Aiven's 5-min timeout
+    pool_pre_ping=True,
+    pool_recycle=280,
     pool_size=10,
     max_overflow=20,
 )
@@ -15,7 +16,6 @@ SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 
 def get_db() -> Session:
-    """FastAPI dependency."""
     db = SessionLocal()
     try:
         yield db
@@ -25,7 +25,6 @@ def get_db() -> Session:
 
 @contextmanager
 def db_session():
-    """For use outside request context."""
     db = SessionLocal()
     try:
         yield db
@@ -35,3 +34,186 @@ def db_session():
         raise
     finally:
         db.close()
+
+
+def fetch_alumni_intel(db: Session, company: str, role: str, limit: int = 6) -> str:
+    if not company:
+        return ""
+    rows = db.execute(
+        text("""
+            SELECT question, round_type, city, interview_date
+            FROM vyom_alumni_questions
+            WHERE verified = 1
+              AND company LIKE :company
+              AND role LIKE :role
+              AND (interview_date IS NULL OR interview_date >= DATE_SUB(CURDATE(), INTERVAL 180 DAY))
+            ORDER BY interview_date DESC
+            LIMIT :limit
+        """),
+        {"company": f"%{company}%", "role": f"%{role}%", "limit": limit},
+    ).fetchall()
+
+    if not rows:
+        return ""
+
+    lines = [
+        f"- [{r.round_type or 'General'}] {r.question}" + (f"  (asked in {r.city})" if r.city else "")
+        for r in rows
+    ]
+    return (
+        "\n\nRECENT REAL QUESTIONS FROM UPSKILLIZE ALUMNI WHO INTERVIEWED AT "
+        f"{company.upper()} FOR {role.upper()} "
+        f"(use naturally during the interview — do NOT list them to the learner):\n"
+        + "\n".join(lines)
+    )
+
+
+def get_student_context(user_id: str, db: Session) -> dict:
+    """
+    Pull student context for InterviewIQ.
+    Everything is optional — interview proceeds regardless of what's available.
+    Priority: AI Enhancer profile → Student profile → Setup screen inputs
+    """
+    result = {
+        "name": None,
+        "ai_profile": None,
+        "enrollments": [],
+        "education": None,
+        "current_status": None,
+        "current_role": None,
+        "employer": None,
+        "skills": None,
+        "resume_url": None,
+        "psycho": None,
+        "source": [],
+    }
+
+    # 1. Name
+    try:
+        user = db.execute(
+            text("SELECT full_name FROM users WHERE id = :uid"),
+            {"uid": user_id}
+        ).fetchone()
+        if user and user.full_name:
+            result["name"] = user.full_name
+    except Exception:
+        pass
+
+    # 2. AI Enhancer profile (highest priority — richest data)
+    try:
+        ai = db.execute(
+            text("""
+                SELECT ai_profile_text, ai_profile_json
+                FROM student_ai_profiles
+                WHERE user_id = :uid
+                ORDER BY created_at DESC LIMIT 1
+            """),
+            {"uid": user_id}
+        ).fetchone()
+        if ai and (ai.ai_profile_text or ai.ai_profile_json):
+            result["ai_profile"] = ai.ai_profile_text or ai.ai_profile_json
+            result["source"].append("ai_enhancer")
+    except Exception:
+        pass  # table may not exist yet — skip silently
+
+    # 3. Enrolled courses + progress + certificates
+    try:
+        enrollments = db.execute(
+            text("""
+                SELECT c.course_name, e.progress_percentage,
+                       cert.id AS has_cert
+                FROM enrollments e
+                JOIN courses c ON e.course_id = c.id
+                LEFT JOIN certificates cert
+                    ON cert.student_id = e.student_id
+                    AND cert.course_id = c.id
+                WHERE e.student_id = :uid
+                ORDER BY e.created_at DESC
+                LIMIT 6
+            """),
+            {"uid": user_id}
+        ).fetchall()
+        if enrollments:
+            result["enrollments"] = [
+                {
+                    "course": r.course_name,
+                    "progress": r.progress_percentage or 0,
+                    "certified": bool(r.has_cert)
+                } for r in enrollments
+            ]
+            result["source"].append("enrollments")
+    except Exception:
+        pass
+
+    # 4. Student profile — education, work status, skills, resume
+    try:
+        profile = db.execute(
+            text("""
+                SELECT education_level, institution, graduation_year,
+                       field_of_study, work_experience_years,
+                       current_employer, current_designation,
+                       skills, resume_url
+                FROM student_profiles
+                WHERE user_id = :uid
+            """),
+            {"uid": user_id}
+        ).fetchone()
+
+        if profile:
+            # Education
+            edu_parts = [
+                profile.education_level,
+                profile.field_of_study,
+                profile.institution,
+                str(profile.graduation_year) if profile.graduation_year else None
+            ]
+            edu = " · ".join([x for x in edu_parts if x])
+            if edu.strip(" ·"):
+                result["education"] = edu
+                result["source"].append("education")
+
+            # Current status — derived from work experience years
+            yrs = (profile.work_experience_years or "").lower()
+            if yrs in ["fresher", "< 1 year", "", "none"]:
+                result["current_status"] = "student_or_fresher"
+            else:
+                result["current_status"] = "working_professional"
+
+            if profile.current_designation or profile.current_employer:
+                result["current_role"] = profile.current_designation
+                result["employer"] = profile.current_employer
+                result["source"].append("work_profile")
+
+            if profile.skills:
+                result["skills"] = profile.skills
+
+            if profile.resume_url:
+                result["resume_url"] = profile.resume_url
+
+    except Exception:
+        pass
+
+    # 5. Psychometric result
+    try:
+        psycho = db.execute(
+            text("SELECT psycho_result FROM student_profiles WHERE user_id = :uid"),
+            {"uid": user_id}
+        ).fetchone()
+        if psycho and psycho.psycho_result:
+            raw = psycho.psycho_result
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except Exception:
+                    pass
+            if isinstance(raw, dict):
+                result["psycho"] = {
+                    "type": raw.get("type", ""),
+                    "top": raw.get("topDimensions", [])[:3],
+                    "desc": raw.get("desc", "")
+                }
+                result["source"].append("psychometric")
+    except Exception:
+        pass
+
+    return result

@@ -1,4 +1,5 @@
 import httpx
+import io
 from fastapi import HTTPException
 from .config import settings
 
@@ -21,7 +22,6 @@ async def call_claude(
         "anthropic-version": settings.ANTHROPIC_VERSION,
     }
 
-    # Prompt caching: mark the big, unchanging system prompt as cacheable.
     system_block = [
         {
             "type": "text",
@@ -53,3 +53,46 @@ async def call_claude(
         if block.get("type") == "text"
     ]
     return "\n".join(parts).strip()
+
+
+async def extract_resume_text(url: str) -> str:
+    """Download resume PDF from Cloudinary and extract text.
+    
+    Returns up to 3000 chars of clean text.
+    Returns empty string silently on any failure — never blocks the interview.
+    """
+    if not url:
+        return ""
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return ""
+            content = resp.content
+
+        # Try pdfplumber (best quality)
+        try:
+            import pdfplumber
+            with pdfplumber.open(io.BytesIO(content)) as pdf:
+                pages = []
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        pages.append(text.strip())
+            result = "\n".join(pages).strip()
+            if result:
+                return result[:3000]
+        except Exception:
+            pass
+
+        # Fallback: raw UTF-8 decode (works for .txt resumes)
+        try:
+            return content.decode("utf-8", errors="ignore")[:3000]
+        except Exception:
+            pass
+
+    except Exception:
+        pass
+
+    return ""

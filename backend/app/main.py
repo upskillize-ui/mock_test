@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .db import get_db
+from .db import get_db, get_student_context
 from .auth import current_user
 from .schemas import (
     StartSessionRequest, StartSessionResponse,
@@ -20,9 +20,9 @@ from .schemas import (
     AlumniQuestionSubmit, HealthResponse,
 )
 from .prompts import build_system_prompt, fetch_alumni_intel, DEBRIEF_INSTRUCTION
-from .claude_client import call_claude
+from .claude_client import call_claude, extract_resume_text
 
-app = FastAPI(title="Vyom API", version="1.0.0")
+app = FastAPI(title="InterviewIQ API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,8 +32,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve React static files (built at Docker build time and placed in ./static)
-# This lets one HF Space serve both API (/session/*, /alumni/*, /health) and UI (/)
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 if STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
@@ -108,6 +106,9 @@ def _session_to_cfg(row: dict) -> dict:
         "duration_min": row["duration_min"],
         "difficulty": row["difficulty"],
         "mode": row["mode"],
+        "round": row.get("round") or "full",
+        "round_label": row.get("round_label") or "",
+        "round_detail": row.get("round_detail") or "",
         "focus": (row["focus"] or "").split(",") if row["focus"] else [],
         "intro": row["intro"] or "",
     }
@@ -134,6 +135,100 @@ async def start_session(
 ):
     _check_rate_limit(db, user_id)
 
+    # ── Pull student context from LMS (all optional, graceful fallback) ──
+    ctx = {}
+    try:
+        ctx = get_student_context(user_id, db)
+    except Exception:
+        pass  # never block the interview — proceed without context
+
+    # Override name from DB if available
+    if ctx.get("name"):
+        body.name = ctx["name"]
+
+    # Parse resume text from Cloudinary
+    resume_text = ""
+    if ctx.get("resume_url"):
+        try:
+            resume_text = await extract_resume_text(ctx["resume_url"])
+        except Exception:
+            pass
+
+    # ── Build silent student context block ───────────────────────────────
+    silent_lines = []
+
+    # Enrolled courses
+    if ctx.get("enrollments"):
+        course_lines = []
+        for e in ctx["enrollments"]:
+            status = "Certified" if e["certified"] else f"{e['progress']}% complete"
+            course_lines.append(f"  - {e['course']} ({status})")
+        silent_lines.append("ENROLLED COURSES:\n" + "\n".join(course_lines))
+
+    # Education
+    if ctx.get("education"):
+        silent_lines.append(f"EDUCATION: {ctx['education']}")
+
+    # Current status — most important for realistic interview behavior
+    status = ctx.get("current_status")
+    role_title = ctx.get("current_role")
+    employer = ctx.get("employer")
+
+    if status == "working_professional" and (role_title or employer):
+        who = f"{role_title} at {employer}" if role_title and employer else (role_title or employer)
+        silent_lines.append(
+            f"CURRENT STATUS: Working professional — currently {who}. "
+            f"They are targeting this new role. Probe their motivation for the change "
+            f"and what they're seeking in this opportunity. Ask naturally — do not make it sound interrogative."
+        )
+    elif status == "working_professional":
+        silent_lines.append(
+            "CURRENT STATUS: Working professional with experience. "
+            "Probe their reason for exploring this role. Treat them as experienced — "
+            "raise the bar accordingly."
+        )
+    elif status == "student_or_fresher":
+        silent_lines.append(
+            "CURRENT STATUS: Student or fresher — no full-time work experience. "
+            "Focus on academic projects, internships, learning experiences. "
+            "Do NOT ask 'why are you leaving your current job' or 'current employer'."
+        )
+
+    # Skills
+    if ctx.get("skills"):
+        silent_lines.append(f"STATED SKILLS (test at least 2 of these): {ctx['skills']}")
+
+    # AI Enhancer profile — richest source, use first if available
+    if ctx.get("ai_profile"):
+        silent_lines.append(
+            "AI-GENERATED PROFILE (highest quality data — use for deep personalization):\n"
+            + str(ctx["ai_profile"])[:2000]
+        )
+
+    # Resume text
+    if resume_text:
+        silent_lines.append(
+            "RESUME TEXT (cross-question on real projects, claims, gaps — "
+            "never tell them you read it):\n" + resume_text[:2500]
+        )
+
+    # Psychometric personality
+    if ctx.get("psycho"):
+        p = ctx["psycho"]
+        top = ", ".join(p["top"]) if p["top"] else p.get("type", "")
+        silent_lines.append(
+            f"PERSONALITY (psychometric test result): {p.get('type','')} — "
+            f"dominant traits: {top}. "
+            f"Analytical types → data-heavy questions with numbers. "
+            f"Execution types → scenario-based action questions. "
+            f"Collaboration/HR types → people-dynamic and stakeholder questions."
+        )
+
+    # Append silent block to intro — candidate never sees this
+    if silent_lines:
+        body.intro = (body.intro or "") + "\n\n" + "\n\n".join(silent_lines)
+
+    # ── Save session ──────────────────────────────────────────────────────
     session_id = str(uuid.uuid4())
 
     db.execute(
@@ -161,16 +256,16 @@ async def start_session(
     )
     db.commit()
 
-    # THE GOLDEN POINT: inject real alumni questions into the prompt
+    # Alumni intel injection (The Golden Point)
     alumni_intel = fetch_alumni_intel(db, body.company, body.role)
 
     cfg = body.model_dump()
     system_prompt = build_system_prompt(cfg, alumni_intel)
 
     kickoff = (
-        f"The session is starting now. Greet {body.name or 'the learner'} by "
+        f"The session is starting now. Greet {body.name or 'the candidate'} by "
         f"first name, confirm the role ({body.role}) and duration "
-        f"({body.duration_min} minutes), offer the calming cue, and ask the "
+        f"({body.duration_min} minutes), offer a brief calming cue, and ask the "
         f"first warm-up rapport question."
     )
 
@@ -196,10 +291,8 @@ async def session_turn(
     if session_row["status"] != "active":
         raise HTTPException(400, "Session is not active")
 
-    # Save user message
     _save_message(db, body.session_id, "user", body.message.strip())
 
-    # Rebuild context: system prompt (with alumni intel) + all messages
     cfg = _session_to_cfg(session_row)
     alumni_intel = fetch_alumni_intel(db, cfg["company"], cfg["role"])
     system_prompt = build_system_prompt(cfg, alumni_intel)
@@ -227,9 +320,7 @@ async def end_session(
     session_row = _load_session(db, body.session_id, user_id)
     cfg = _session_to_cfg(session_row)
 
-    # Build debrief using Sonnet (quality matters here)
-    alumni_intel = ""  # debrief doesn't need alumni intel — saves tokens
-    system_prompt = build_system_prompt(cfg, alumni_intel)
+    system_prompt = build_system_prompt(cfg, "")
     messages = _load_messages(db, body.session_id)
     messages.append({"role": "user", "content": DEBRIEF_INSTRUCTION})
 
@@ -240,7 +331,6 @@ async def end_session(
         max_tokens=2500,
     )
 
-    # Parse JSON (strip any accidental fences)
     cleaned = raw.replace("```json", "").replace("```", "").strip()
     start = cleaned.find("{")
     end = cleaned.rfind("}")
@@ -252,7 +342,6 @@ async def end_session(
     except json.JSONDecodeError as e:
         raise HTTPException(502, f"Debrief JSON parse error: {e}")
 
-    # Persist
     db.execute(
         text("""
             INSERT INTO vyom_debriefs
@@ -307,7 +396,6 @@ def get_session(
     db: Session = Depends(get_db),
     user_id: str = Depends(current_user),
 ):
-    """Fetch full session + messages + debrief (for replay or progress view)."""
     session_row = _load_session(db, session_id, user_id)
     messages = _load_messages(db, session_id)
     debrief = db.execute(
@@ -315,11 +403,7 @@ def get_session(
         {"s": session_id},
     ).first()
     debrief_data = json.loads(debrief.raw_json) if debrief else None
-    return {
-        "session": session_row,
-        "messages": messages,
-        "debrief": debrief_data,
-    }
+    return {"session": session_row, "messages": messages, "debrief": debrief_data}
 
 
 @app.get("/user/history")
@@ -327,7 +411,6 @@ def user_history(
     db: Session = Depends(get_db),
     user_id: str = Depends(current_user),
 ):
-    """List past sessions for progress tracking."""
     rows = db.execute(
         text("""
             SELECT s.id, s.role, s.company, s.level, s.difficulty,
@@ -343,28 +426,17 @@ def user_history(
     return {"sessions": [dict(r) for r in rows]}
 
 
-# ------------------------------------------------------------------------
-# GOLDEN POINT: Alumni intel contribution endpoint
-# ------------------------------------------------------------------------
-
 @app.post("/alumni/submit")
 def submit_alumni_question(
     body: AlumniQuestionSubmit,
     db: Session = Depends(get_db),
     user_id: str = Depends(current_user),
 ):
-    """Placed alumni submit real interview questions they were asked.
-    Admin reviews and flips verified=1 → then it starts getting injected
-    into Vyom sessions for the same company+role.
-
-    This is the compounding moat that makes Vyom un-copyable.
-    """
     db.execute(
         text("""
             INSERT INTO vyom_alumni_questions
             (submitted_by, company, role, city, round_type, question, interview_date)
-            VALUES
-            (:u, :company, :role, :city, :round_type, :question, :interview_date)
+            VALUES (:u, :company, :role, :city, :round_type, :question, :interview_date)
         """),
         {
             "u": user_id,
@@ -387,9 +459,6 @@ def alumni_preview(
     db: Session = Depends(get_db),
     user_id: str = Depends(current_user),
 ):
-    """For the setup screen: show learner how many real alumni questions
-    exist for their target company + role, as a trust signal.
-    """
     row = db.execute(
         text("""
             SELECT COUNT(*) AS cnt, MAX(interview_date) AS latest
@@ -404,10 +473,7 @@ def alumni_preview(
     return {"count": row.cnt or 0, "latest_date": str(row.latest) if row.latest else None}
 
 
-# ------------------------------------------------------------------------
-# Serve React SPA — catch-all for non-API routes
-# Must be the LAST route so it doesn't shadow /session/*, /alumni/*, etc.
-# ------------------------------------------------------------------------
+# ── SPA catch-all (must be last) ────────────────────────────────────────────
 
 @app.get("/")
 def spa_root():
@@ -419,12 +485,9 @@ def spa_root():
 
 @app.get("/{path:path}")
 def spa_catch_all(path: str):
-    # Don't swallow API paths — they're declared above and take precedence,
-    # but be defensive about unmatched paths that start with API prefixes.
     api_prefixes = ("session", "alumni", "user", "health", "assets", "docs", "openapi.json")
     if path.startswith(api_prefixes):
         raise HTTPException(404, "Not found")
-    # Serve the SPA shell for any other route
     index = STATIC_DIR / "index.html"
     if index.exists():
         return FileResponse(index)
