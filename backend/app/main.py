@@ -307,17 +307,23 @@ async def start_session(
     system_prompt = build_system_prompt(cfg, alumni_intel)
 
     kickoff = (
-        f"The session is starting now. Greet {body.name or 'the candidate'} by "
-        f"first name, confirm the role ({body.role}) and duration "
-        f"({body.duration_min} minutes), offer a brief calming cue, and ask the "
-        f"first warm-up rapport question."
+        f"The session is starting now. In a SHORT spoken greeting (max 4 sentences), "
+        f"greet {body.name or 'the candidate'} by first name, confirm the role "
+        f"({body.role}) and that you have about {body.duration_min} minutes together, "
+        f"give a brief calming cue, and ask the first warm-up rapport question.\n\n"
+        f"CRITICAL FORMATTING — apply to EVERY message you send, not just this one:\n"
+        f"- Never use markdown headers (no '#', '##', '###' lines).\n"
+        f"- Never use horizontal rules (no '---', '***', '___').\n"
+        f"- No section titles. No document-style formatting. Speak conversationally, "
+        f"as a human interviewer would over a video call.\n"
+        f"- Begin your greeting directly with the candidate's name: 'Hi {body.name or 'there'}! ...'"
     )
 
     greeting = await call_claude(
         system=system_prompt,
         messages=[{"role": "user", "content": kickoff}],
         model=settings.MODEL_INTERVIEW,
-        max_tokens=400,
+        max_tokens=250,
     )
 
     _save_message(db, session_id, "assistant", greeting)

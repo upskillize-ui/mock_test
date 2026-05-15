@@ -757,7 +757,7 @@ export default function App() {
       <style>{CSS}</style>
       {screen !== "interview" && (
         <div style={{ fontFamily: T.font, padding: "12px 28px 0", display: "flex", gap: 14, alignItems: "center", justifyContent: "flex-end" }}>
-          {screen !== "setup" && <button className="iq-tab" onClick={restart}>+ New Mock</button>}
+          {screen === "debrief" && <button className="iq-tab" onClick={restart}>+ New Mock</button>}
           {screen !== "history" && <button className="iq-tab" onClick={() => { setHistoryDetailId(null); setScreen("history"); }}>History</button>}
         </div>
       )}
