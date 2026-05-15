@@ -1,15 +1,19 @@
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
-from .config import settings
 import json
+import logging
+
+from .config import settings
+
+log = logging.getLogger(__name__)
 
 engine = create_engine(
     settings.DATABASE_URL,
     pool_pre_ping=True,
     pool_recycle=280,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=5,
+    max_overflow=10,
 )
 
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -36,28 +40,39 @@ def db_session():
         db.close()
 
 
+def like_escape(s: str) -> str:
+    if not s:
+        return ""
+    return "%" + s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
 def fetch_alumni_intel(db: Session, company: str, role: str, limit: int = 6) -> str:
     if not company:
         return ""
-    rows = db.execute(
-        text("""
-            SELECT question, round_type, city, interview_date
-            FROM vyom_alumni_questions
-            WHERE verified = 1
-              AND company LIKE :company
-              AND role LIKE :role
-              AND (interview_date IS NULL OR interview_date >= DATE_SUB(CURDATE(), INTERVAL 180 DAY))
-            ORDER BY interview_date DESC
-            LIMIT :limit
-        """),
-        {"company": f"%{company}%", "role": f"%{role}%", "limit": limit},
-    ).fetchall()
+    try:
+        rows = db.execute(
+            text(r"""
+                SELECT question, round_type, city, interview_date
+                FROM vyom_alumni_questions
+                WHERE verified = 1
+                  AND company LIKE :company ESCAPE '\\'
+                  AND role LIKE :role ESCAPE '\\'
+                  AND (interview_date IS NULL OR interview_date >= DATE_SUB(CURDATE(), INTERVAL 180 DAY))
+                ORDER BY interview_date DESC
+                LIMIT :limit
+            """),
+            {"company": like_escape(company), "role": like_escape(role), "limit": limit},
+        ).fetchall()
+    except Exception as e:
+        log.warning("fetch_alumni_intel failed: %s", e)
+        return ""
 
     if not rows:
         return ""
 
     lines = [
-        f"- [{r.round_type or 'General'}] {r.question}" + (f"  (asked in {r.city})" if r.city else "")
+        f"- [{r.round_type or 'General'}] {r.question}"
+        + (f"  (asked in {r.city})" if r.city else "")
         for r in rows
     ]
     return (
@@ -69,11 +84,6 @@ def fetch_alumni_intel(db: Session, company: str, role: str, limit: int = 6) -> 
 
 
 def get_student_context(user_id: str, db: Session) -> dict:
-    """
-    Pull student context for InterviewIQ.
-    Everything is optional — interview proceeds regardless of what's available.
-    Priority: AI Enhancer profile → Student profile → Setup screen inputs
-    """
     result = {
         "name": None,
         "ai_profile": None,
@@ -88,18 +98,16 @@ def get_student_context(user_id: str, db: Session) -> dict:
         "source": [],
     }
 
-    # 1. Name
     try:
         user = db.execute(
             text("SELECT full_name FROM users WHERE id = :uid"),
-            {"uid": user_id}
+            {"uid": user_id},
         ).fetchone()
         if user and user.full_name:
             result["name"] = user.full_name
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("ctx.user failed for uid=%s: %s", user_id, e)
 
-    # 2. AI Enhancer profile (highest priority — richest data)
     try:
         ai = db.execute(
             text("""
@@ -108,15 +116,14 @@ def get_student_context(user_id: str, db: Session) -> dict:
                 WHERE user_id = :uid
                 ORDER BY created_at DESC LIMIT 1
             """),
-            {"uid": user_id}
+            {"uid": user_id},
         ).fetchone()
         if ai and (ai.ai_profile_text or ai.ai_profile_json):
             result["ai_profile"] = ai.ai_profile_text or ai.ai_profile_json
             result["source"].append("ai_enhancer")
-    except Exception:
-        pass  # table may not exist yet — skip silently
+    except Exception as e:
+        log.debug("ctx.ai_profile skipped: %s", e)
 
-    # 3. Enrolled courses + progress + certificates
     try:
         enrollments = db.execute(
             text("""
@@ -131,21 +138,21 @@ def get_student_context(user_id: str, db: Session) -> dict:
                 ORDER BY e.created_at DESC
                 LIMIT 6
             """),
-            {"uid": user_id}
+            {"uid": user_id},
         ).fetchall()
         if enrollments:
             result["enrollments"] = [
                 {
                     "course": r.course_name,
                     "progress": r.progress_percentage or 0,
-                    "certified": bool(r.has_cert)
-                } for r in enrollments
+                    "certified": bool(r.has_cert),
+                }
+                for r in enrollments
             ]
             result["source"].append("enrollments")
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("ctx.enrollments skipped: %s", e)
 
-    # 4. Student profile — education, work status, skills, resume
     try:
         profile = db.execute(
             text("""
@@ -156,23 +163,21 @@ def get_student_context(user_id: str, db: Session) -> dict:
                 FROM student_profiles
                 WHERE user_id = :uid
             """),
-            {"uid": user_id}
+            {"uid": user_id},
         ).fetchone()
 
         if profile:
-            # Education
             edu_parts = [
                 profile.education_level,
                 profile.field_of_study,
                 profile.institution,
-                str(profile.graduation_year) if profile.graduation_year else None
+                str(profile.graduation_year) if profile.graduation_year else None,
             ]
             edu = " · ".join([x for x in edu_parts if x])
             if edu.strip(" ·"):
                 result["education"] = edu
                 result["source"].append("education")
 
-            # Current status — derived from work experience years
             yrs = (profile.work_experience_years or "").lower()
             if yrs in ["fresher", "< 1 year", "", "none"]:
                 result["current_status"] = "student_or_fresher"
@@ -189,15 +194,13 @@ def get_student_context(user_id: str, db: Session) -> dict:
 
             if profile.resume_url:
                 result["resume_url"] = profile.resume_url
+    except Exception as e:
+        log.debug("ctx.profile skipped: %s", e)
 
-    except Exception:
-        pass
-
-    # 5. Psychometric result
     try:
         psycho = db.execute(
             text("SELECT psycho_result FROM student_profiles WHERE user_id = :uid"),
-            {"uid": user_id}
+            {"uid": user_id},
         ).fetchone()
         if psycho and psycho.psycho_result:
             raw = psycho.psycho_result
@@ -210,10 +213,10 @@ def get_student_context(user_id: str, db: Session) -> dict:
                 result["psycho"] = {
                     "type": raw.get("type", ""),
                     "top": raw.get("topDimensions", [])[:3],
-                    "desc": raw.get("desc", "")
+                    "desc": raw.get("desc", ""),
                 }
                 result["source"].append("psychometric")
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("ctx.psycho skipped: %s", e)
 
     return result
