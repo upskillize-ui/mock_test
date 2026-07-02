@@ -1,6 +1,19 @@
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Literal, Annotated, Optional
 from datetime import date, datetime
+
+
+class SessionState(BaseModel):
+    """INT-04: the backend is the single source of truth for interview progress."""
+    current_stage: str
+    round_index: int
+    stage_total: int
+    awaiting_rating: bool
+    last_answer_id: Optional[int] = None
+    answer_count: int
+    answer_cap: int
+    next_action: str  # answer | rating | reverse_question | readout | done
+    stage_label: str
 
 
 class StartSessionRequest(BaseModel):
@@ -14,23 +27,40 @@ class StartSessionRequest(BaseModel):
     round: Literal["screening", "technical", "leadership", "hr", "full"] = "full"
     round_label: str = Field("", max_length=80)
     round_detail: str = Field("", max_length=1000)
-    focus: list[str] = Field(default_factory=list, max_length=10)
+    focus: list[Annotated[str, Field(max_length=80)]] = Field(default_factory=list, max_length=10)
     intro: str = Field("", max_length=8000)
 
 
 class StartSessionResponse(BaseModel):
     session_id: str
     greeting: str
+    state: SessionState
 
 
 class TurnRequest(BaseModel):
     session_id: str = Field(..., max_length=36)
     message: str = Field(..., min_length=1, max_length=4000)
+    # INT-04: the stage the client believes it is answering; a mismatch with the
+    # server's current_stage is rejected with 409. Optional for backward-compat.
+    stage: Optional[str] = Field(None, max_length=20)
 
 
 class TurnResponse(BaseModel):
     reply: str
-    turn_count: int
+    answer_id: int
+    state: SessionState
+
+
+class RatingRequest(BaseModel):
+    session_id: str = Field(..., max_length=36)
+    answer_id: int
+    # INT-01: 1-5, or null for "prefer not to say".
+    rating: Optional[int] = Field(None, ge=1, le=5)
+
+
+class RatingResponse(BaseModel):
+    accepted: bool
+    state: SessionState
 
 
 class EndRequest(BaseModel):
@@ -39,7 +69,9 @@ class EndRequest(BaseModel):
 
 class DebriefResponse(BaseModel):
     session_id: str
-    overall: int
+    # INT-03: the readout returns a band, never the raw percentage.
+    overall_band: str
+    round_bands: dict
     one_line: str
     sub_scores: dict
     strengths: list[str]
@@ -48,6 +80,8 @@ class DebriefResponse(BaseModel):
     interviewer_thoughts: list[dict]
     plan: list[str]
     next_focus: str
+    # INT-02: calibration profile block.
+    calibration: dict
 
 
 class AlumniQuestionSubmit(BaseModel):

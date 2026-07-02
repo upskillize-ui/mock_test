@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect } from "react";
 
 // ── API plumbing ───────────────────────────────────────────────────────────
-const API_URL = import.meta.env.VITE_INTERVIEWIQ_API_URL || "https://upskill25-mock-test.hf.space";
+// Accept either env var name; an explicitly-set empty string means same-origin (Docker/HF build).
+const _API_ENV = import.meta.env.VITE_INTERVIEWIQ_API_URL ?? import.meta.env.VITE_API_URL;
+const API_URL = _API_ENV === undefined ? "https://upskill25-mock-test.hf.space" : _API_ENV;
 const TOKEN_KEY = "upskillize_token";
 
 const getToken = () => localStorage.getItem(TOKEN_KEY) || localStorage.getItem("token") || "";
@@ -28,7 +30,9 @@ async function api(path, opts = {}) {
 }
 
 const startSession = (c) => api("/session/start", { method: "POST", body: JSON.stringify(c) });
-const sendTurn = (sid, msg) => api("/session/turn", { method: "POST", body: JSON.stringify({ session_id: sid, message: msg }) });
+const sendTurn = (sid, msg, stage) => api("/session/turn", { method: "POST", body: JSON.stringify({ session_id: sid, message: msg, stage }) });
+const submitRating = (sid, answerId, rating) => api("/session/turn/rating", { method: "POST", body: JSON.stringify({ session_id: sid, answer_id: answerId, rating }) });
+const fetchSessionState = (sid) => api(`/session/${encodeURIComponent(sid)}/state`);
 const endSession = (sid) => api("/session/end", { method: "POST", body: JSON.stringify({ session_id: sid }) });
 const abandonSession = (sid) => api("/session/abandon", { method: "POST", body: JSON.stringify({ session_id: sid }) }).catch(() => {});
 const fetchAlumniPreview = (co, ro) => api("/alumni/preview?company=" + encodeURIComponent(co) + "&role=" + encodeURIComponent(ro));
@@ -43,6 +47,32 @@ const T = {
   green: "#2d6a2d", greenSoft: "#edf7ed", red: "#c0392b", redSoft: "#fdf1f0", blue: "#1e3a6b", blueSoft: "#eef2fb",
   font: "'Plus Jakarta Sans', sans-serif",
 };
+
+// ── InterviewIQ brand tokens for spec-aligned components (rating, bands, calibration)
+const IQ = {
+  navy: "#0B1628", gold: "#C8992A", teal: "#00C4A0", orange: "#E8521A",
+  buildingNavy: "#1a2744", cream: "#FBF7EF",
+  mono: "'DM Mono', 'SFMono-Regular', Menlo, monospace",
+  display: "'Playfair Display', Georgia, serif",
+  sans: "'Plus Jakarta Sans', sans-serif",
+};
+
+// INT-03: readiness band pill colours (cream text on each).
+const BAND_STYLE = {
+  "Offer-Ready": { bg: IQ.gold, fg: IQ.cream },
+  "Interview-Ready": { bg: IQ.teal, fg: IQ.cream },
+  "Building": { bg: IQ.buildingNavy, fg: IQ.cream },
+  "Not Ready": { bg: IQ.orange, fg: IQ.cream },
+};
+
+// INT-02: calibration profile pill colour + coaching copy (never punitive).
+const CALIBRATION_COPY = {
+  well_calibrated: { bg: IQ.teal, label: "Well-calibrated", copy: "Your confidence matches your quality. Keep it." },
+  over_confident: { bg: IQ.orange, label: "Over-confident", copy: "This is the pattern panels reject. Your confidence outran your answers." },
+  under_confident: { bg: IQ.gold, label: "Under-confident", copy: "Your answers were stronger than you thought. This is coachable." },
+};
+
+const ROUND_BAND_LABELS = { warmup: "Warm-up", domain: "Domain", behavioural: "Behavioural", case: "Case", reverse: "Your Questions" };
 
 // ── Markdown rendering ─────────────────────────────────────────────────────
 function fmt(text) {
@@ -231,7 +261,7 @@ function SetupScreen({ onStart, userName }) {
         intro: [intro, jd ? "\n\n--- JOB DESCRIPTION ---\n" + jd : ""].filter(Boolean).join(""),
       };
       const r = await startSession(payload);
-      onStart({ ...payload, focus: allFocus }, r.session_id, r.greeting);
+      onStart({ ...payload, focus: allFocus }, r.session_id, r.greeting, r.state);
     } catch (e) { setError(e.message); setStarting(false); }
   };
 
@@ -421,40 +451,110 @@ function SetupScreen({ onStart, userName }) {
     </div>
   );
 }
-function InterviewScreen({ config, sessionId, greeting, onEnd, onRestart }) {
+// INT-01: confidence rating widget shown after every scored answer.
+function RatingWidget({ busy, onRate }) {
+  const [picked, setPicked] = useState(undefined);
+  const choose = (n) => { if (busy) return; setPicked(n); onRate(n); };
+  const pillStyle = (n) => {
+    const isPicked = picked === n;
+    return {
+      width: 46, height: 46, borderRadius: 10, fontFamily: IQ.mono, fontSize: 18, fontWeight: 500,
+      cursor: busy ? "not-allowed" : "pointer", transition: "all .15s",
+      border: "1.5px solid " + (isPicked ? IQ.teal : T.border),
+      background: isPicked ? IQ.teal : "#fff", color: isPicked ? IQ.cream : IQ.navy,
+    };
+  };
+  return (
+    <div style={{ background: "#fff", border: "1px solid " + T.border, borderRadius: 12, padding: "16px 18px", fontFamily: IQ.sans, animation: "iqFade .3s ease" }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: IQ.navy, marginBottom: 4 }}>How confident are you in that answer?</div>
+      <div style={{ fontSize: 12, color: T.muted, marginBottom: 12 }}>1 = not confident, 5 = very confident</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        {[1, 2, 3, 4, 5].map(n => (
+          <button key={n} disabled={busy} onClick={() => choose(n)} style={pillStyle(n)}
+            onMouseEnter={e => { if (!busy && picked !== n) { e.currentTarget.style.background = IQ.gold; e.currentTarget.style.color = IQ.cream; e.currentTarget.style.borderColor = IQ.gold; } }}
+            onMouseLeave={e => { if (picked !== n) { e.currentTarget.style.background = "#fff"; e.currentTarget.style.color = IQ.navy; e.currentTarget.style.borderColor = T.border; } }}>
+            {n}
+          </button>
+        ))}
+        <button disabled={busy} onClick={() => choose(null)} style={{ marginLeft: 6, padding: "0 16px", height: 46, borderRadius: 10, border: "1.5px dashed " + (picked === null ? IQ.teal : T.border), background: picked === null ? IQ.teal : "#fff", color: picked === null ? IQ.cream : T.muted, fontSize: 13, fontWeight: 600, cursor: busy ? "not-allowed" : "pointer", fontFamily: IQ.sans }}>
+          Prefer not to say
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function InterviewScreen({ config, sessionId, greeting, initialState, onEnd, onRestart }) {
   const [messages, setMessages] = useState([{ role: "assistant", content: greeting }]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [secondsLeft, setSecondsLeft] = useState(config.duration_min * 60);
-  const [turnCount, setTurnCount] = useState(0);
+  const [sstate, setSstate] = useState(initialState || null);
+  const [ratingBusy, setRatingBusy] = useState(false);
   const [ended, setEnded] = useState(false);
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
 
+  const nextAction = sstate?.next_action || "answer";
+  const awaitingRating = nextAction === "rating";
+  const reverseMode = nextAction === "reverse_question";
+  const uc = messages.filter(m => m.role === "user").length;
+
   useEffect(() => { if (secondsLeft <= 0 || ended) return; const t = setInterval(() => setSecondsLeft(s => s - 1), 1000); return () => clearInterval(t); }, [secondsLeft, ended]);
-  useEffect(() => { if (secondsLeft <= 0 && !ended && !loading) { setEnded(true); if (messages.filter(m => m.role === "user").length > 0) onEnd(); } }, [secondsLeft, ended, loading, messages, onEnd]);
-  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, loading]);
+  useEffect(() => { if (secondsLeft <= 0 && !ended && !loading) { setEnded(true); if (uc > 0) onEnd(); } }, [secondsLeft, ended, loading, uc, onEnd]);
+  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, loading, awaitingRating]);
+
+  // Backend is the source of truth: when it reports the interview is done, move to the readout.
+  useEffect(() => {
+    if (ended) return;
+    if (nextAction === "readout" || nextAction === "done") { setEnded(true); onEnd(); }
+  }, [nextAction, ended, onEnd]);
 
   const send = async () => {
-    const textVal = input.trim(); if (!textVal || loading || ended) return;
+    const textVal = input.trim(); if (!textVal || loading || ended || awaitingRating) return;
     setMessages(m => [...m, { role: "user", content: textVal }]); setInput(""); setLoading(true); setError(null);
-    try { const res = await sendTurn(sessionId, textVal); setMessages(m => [...m, { role: "assistant", content: res.reply }]); setTurnCount(res.turn_count); }
-    catch (e) { setError(e.message); } finally { setLoading(false); setTimeout(() => inputRef.current?.focus(), 50); }
+    try {
+      const res = await sendTurn(sessionId, textVal, sstate?.current_stage);
+      setMessages(m => [...m, { role: "assistant", content: res.reply }]);
+      setSstate(res.state);
+    } catch (e) {
+      setError(e.message);
+      try { setSstate(await fetchSessionState(sessionId)); } catch { /* noop */ }
+    } finally { setLoading(false); setTimeout(() => inputRef.current?.focus(), 50); }
   };
+
+  const rate = async (val) => {
+    if (ratingBusy || !awaitingRating || !sstate?.last_answer_id) return;
+    setRatingBusy(true); setError(null);
+    try {
+      const res = await submitRating(sessionId, sstate.last_answer_id, val);
+      setSstate(res.state);
+    } catch (e) {
+      setError(e.message);
+      try { setSstate(await fetchSessionState(sessionId)); } catch { /* noop */ }
+    } finally { setRatingBusy(false); }
+  };
+
+  // Keyboard 1-5 submits the confidence rating on desktop.
+  useEffect(() => {
+    if (!awaitingRating) return;
+    const onKey = (e) => { if (["1", "2", "3", "4", "5"].includes(e.key) && e.target.tagName !== "TEXTAREA") { e.preventDefault(); rate(Number(e.key)); } };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [awaitingRating, ratingBusy, sstate]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleKey = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } };
   const mmss = (s) => Math.floor(Math.max(0, s) / 60) + ":" + String(Math.max(0, s) % 60).padStart(2, "0");
-
-  const stageLabels = ["Warm-up", "About you", "Deep-dive", "Role Q&A", "Pressure", "Your turn", "Wrap-up"];
-  const stage = Math.min(7, Math.max(1, Math.ceil((turnCount + 1) / 2)));
-  const uc = messages.filter(m => m.role === "user").length;
-  const currentRound = ROUNDS.find(r => r.v === config.round) || ROUNDS[ROUNDS.length - 1];
+  const stageLabel = sstate?.stage_label || "Warm-up";
 
   const handleEndClick = async () => {
     setEnded(true);
     if (uc > 0) { onEnd(); }
     else { await abandonSession(sessionId); onRestart(); }
   };
+
+  const inputDisabled = loading || ended || awaitingRating;
 
   return (
     <div style={{ fontFamily: T.font, margin: "-24px -28px", display: "flex", flexDirection: "column", height: "calc(100vh - 70px)", minHeight: 500 }}>
@@ -466,11 +566,10 @@ function InterviewScreen({ config, sessionId, greeting, onEnd, onRestart }) {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 14px", borderRadius: 20, background: "rgba(184,150,11,.2)", border: "1px solid rgba(184,150,11,.4)" }}>
             <div style={{ width: 7, height: 7, borderRadius: "50%", background: T.gold }} />
-            <span style={{ fontSize: 12, fontWeight: 700, color: T.gold }}>{currentRound.l}</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: T.gold }}>{stageLabel}</span>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontSize: 12, fontWeight: 600, padding: "4px 12px", borderRadius: 6, background: "rgba(255,255,255,.08)", color: "rgba(255,255,255,.6)" }}>Stage {stage}/7 — {stageLabels[stage - 1]}</span>
           <span style={{ fontSize: 18, fontWeight: 800, color: secondsLeft <= 60 ? "#ff6b6b" : secondsLeft <= 180 ? T.gold : "#fff", fontVariantNumeric: "tabular-nums" }}>{mmss(secondsLeft)}</span>
           <button onClick={handleEndClick} style={{ padding: "6px 16px", borderRadius: 8, border: "1px solid rgba(255,255,255,.15)", background: "rgba(255,255,255,.06)", cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#fff", fontFamily: T.font }}>End</button>
         </div>
@@ -484,6 +583,8 @@ function InterviewScreen({ config, sessionId, greeting, onEnd, onRestart }) {
               <div style={{ padding: "12px 16px", borderRadius: isV ? "2px 12px 12px 12px" : "12px 2px 12px 12px", maxWidth: "78%", fontSize: 14, lineHeight: 1.65, background: isV ? T.white : T.navy, color: isV ? T.text : "#fff", border: isV ? "1px solid " + T.border : "none", fontFamily: T.font }}>{isV ? renderMd(m.content) : m.content}</div>
             </div>); })}
           {loading && <div style={{ display: "flex", gap: 10 }}><div style={{ width: 32, height: 32, borderRadius: "50%", background: T.navy, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ color: "#fff", fontWeight: 800, fontSize: 11 }}>IQ</span></div><div style={{ padding: "14px 18px", borderRadius: "2px 12px 12px 12px", background: T.white, border: "1px solid " + T.border }}><div style={{ display: "flex", gap: 5 }}>{[0,1,2].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: T.subtle, animation: "iqPulse 1.2s ease-in-out infinite", animationDelay: i * 0.15 + "s" }} />)}</div></div></div>}
+          {awaitingRating && !loading && <RatingWidget busy={ratingBusy} onRate={rate} />}
+          {reverseMode && !loading && <div style={{ padding: "12px 16px", borderRadius: 10, background: IQ.cream, border: "1px solid " + IQ.gold, color: "#5a4500", fontSize: 13, fontWeight: 600, fontFamily: IQ.sans }}>Your turn to interview us. Ask us two questions.</div>}
           {error && <div style={{ padding: "10px 14px", borderRadius: 8, background: T.redSoft, color: T.red, fontSize: 13 }}>{error}</div>}
           {secondsLeft <= 0 && <div style={{ padding: "14px 18px", borderRadius: 8, background: T.bg, border: "1px solid " + T.border, textAlign: "center", fontSize: 14, color: T.muted }}>{uc > 0 ? <span style={{ fontWeight: 700 }}>Time is up. Generating your report...</span> : <div><div style={{ fontWeight: 700, marginBottom: 8 }}>Time is up. No answers given.</div><button onClick={onRestart} className="vbtn" style={{ width: "auto", display: "inline-flex", fontSize: 13, padding: "8px 20px" }}>Try Again</button></div>}</div>}
           {ended && uc === 0 && secondsLeft > 0 && <div style={{ padding: "14px 18px", borderRadius: 8, background: T.bg, border: "1px solid " + T.border, textAlign: "center" }}><div style={{ fontWeight: 700, marginBottom: 8, color: T.muted }}>Session ended.</div><button onClick={onRestart} className="vbtn" style={{ width: "auto", display: "inline-flex", fontSize: 13, padding: "8px 20px" }}>Start New Session</button></div>}
@@ -492,10 +593,49 @@ function InterviewScreen({ config, sessionId, greeting, onEnd, onRestart }) {
 
       <div style={{ background: T.white, borderTop: "1px solid " + T.border, padding: "14px 28px", flexShrink: 0 }}>
         <div style={{ maxWidth: 700, margin: "0 auto", display: "flex", gap: 10, alignItems: "flex-end" }}>
-          <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value.slice(0, 4000))} onKeyDown={handleKey} rows={1} maxLength={4000} placeholder={ended ? "Interview ended" : "Type your answer..."} disabled={loading || ended} className="vi" style={{ flex: 1, resize: "none", minHeight: 44, maxHeight: 140, borderRadius: 10 }} />
-          <button onClick={send} disabled={loading || !input.trim() || ended} className="mba-btn-primary" style={{ padding: "10px 22px", fontSize: 14, opacity: loading || !input.trim() || ended ? 0.5 : 1 }}>Send</button>
+          <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value.slice(0, 4000))} onKeyDown={handleKey} rows={1} maxLength={4000} placeholder={awaitingRating ? "Rate your confidence above to continue" : ended ? "Interview ended" : reverseMode ? "Ask your question…" : "Type your answer…"} disabled={inputDisabled} className="vi" style={{ flex: 1, resize: "none", minHeight: 44, maxHeight: 140, borderRadius: 10 }} />
+          <button onClick={send} disabled={inputDisabled || !input.trim()} className="mba-btn-primary" style={{ padding: "10px 22px", fontSize: 14, opacity: inputDisabled || !input.trim() ? 0.5 : 1 }}>Send</button>
         </div>
-        <div style={{ fontSize: 11, color: T.subtle, marginTop: 6, maxWidth: 700, margin: "6px auto 0" }}>Enter to send — Shift+Enter for new line</div>
+        <div style={{ fontSize: 11, color: T.subtle, marginTop: 6, maxWidth: 700, margin: "6px auto 0" }}>{awaitingRating ? "Tap 1–5 or press a number key to rate your confidence." : "Enter to send — Shift+Enter for new line"}</div>
+      </div>
+    </div>
+  );
+}
+
+// INT-02: calibration profile — three summary tiles + a coaching pill (never punitive).
+function CalibrationBlock({ cal }) {
+  const profile = cal?.profile;
+  const hasData = profile && profile !== "insufficient_data" && cal.avg_confidence != null;
+  const copy = CALIBRATION_COPY[profile];
+  const delta = cal?.calibration_delta;
+  return (
+    <div className="vc" style={{ marginBottom: 16 }}>
+      <div className="vc-h"><span className="vc-t">Calibration Profile</span></div>
+      <div className="vc-b">
+        {!hasData ? (
+          <div style={{ fontSize: 13, color: T.muted, fontFamily: IQ.sans }}>Not enough data — rate your confidence on a few answers next time to see how your self-assessment compares with your performance.</div>
+        ) : (
+          <>
+            <div className="mba-grid-3" style={{ marginBottom: 14 }}>
+              {[
+                ["Your Average Confidence", cal.avg_confidence, "/5"],
+                ["Your Average Score", cal.avg_score, "/5"],
+                ["Your Calibration Delta", (delta > 0 ? "+" : "") + delta, ""],
+              ].map(([label, val, suffix], i) => (
+                <div key={i} className="mba-metric">
+                  <div className="mba-metric-label">{label}</div>
+                  <div className="mba-metric-value" style={{ fontFamily: IQ.mono }}>{val}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle, fontFamily: IQ.sans }}>{suffix}</span></div>
+                </div>
+              ))}
+            </div>
+            {copy && (
+              <div style={{ display: "inline-block", padding: "12px 18px", borderRadius: 10, background: copy.bg, color: IQ.cream, fontFamily: IQ.sans, maxWidth: 580 }}>
+                <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 3 }}>{copy.label}</div>
+                <div style={{ fontSize: 13, lineHeight: 1.5 }}>{copy.copy}</div>
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
@@ -504,35 +644,53 @@ function InterviewScreen({ config, sessionId, greeting, onEnd, onRestart }) {
 function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
   const [d, setD] = useState(null);
   const [error, setError] = useState(null);
-  useEffect(() => { (async () => { try { const r = await endSession(sessionId); if (r.overall <= 15) { r.one_line = "Session ended before answering. Start another when ready."; r.next_focus = "Prepare your introduction, pick a role, and try again."; } setD(r); } catch (e) { setError(e.message); } })(); }, [sessionId]);
+  useEffect(() => { (async () => { try {
+    const r = await endSession(sessionId);
+    if (!(r.strengths?.length) && !(r.star_breakdown?.length)) {
+      r.one_line = r.one_line || "Session ended before answering. Start another when ready.";
+      r.next_focus = r.next_focus || "Prepare your introduction, pick a role, and try again.";
+    }
+    setD(r);
+  } catch (e) { setError(e.message); } })(); }, [sessionId]);
 
   if (error) return <div className="vc" style={{ padding: 28, textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 700, color: T.navy, marginBottom: 8 }}>Could not generate report</div><div style={{ fontSize: 13, color: T.muted, marginBottom: 20 }}>{error}</div><button onClick={onRestart} className="mba-btn-primary">Start new session</button></div>;
   if (!d) return <div style={{ textAlign: "center", padding: "80px 20px" }}><div className="mba-spinner" style={{ margin: "0 auto 16px" }} /><div style={{ fontSize: 16, fontWeight: 700, color: T.navy }}>Analyzing your interview...</div><div style={{ fontSize: 13, color: T.subtle, marginTop: 4 }}>Scoring each response against the STAR framework.</div></div>;
 
-  const score = d.overall || 0;
-  const selChance = score >= 85 ? "Very High (85%+)" : score >= 70 ? "Good (60-75%)" : score >= 55 ? "Moderate (35-50%)" : score >= 40 ? "Low (15-30%)" : "Needs Work (<15%)";
+  const band = d.overall_band || "Not Ready";
+  const bandStyle = BAND_STYLE[band] || BAND_STYLE["Not Ready"];
+  const roundBands = d.round_bands || {};
+  const cal = d.calibration || {};
   const ss = d.sub_scores || {};
   const pk = (k) => ({ communication:"Communication",roleKnowledge:"Role Knowledge",clarity:"Clarity",confidence:"Confidence",structure:"Structure",problemSolving:"Problem Solving" })[k] || k;
   const currentRound = ROUNDS.find(r => r.v === config.round) || ROUNDS[ROUNDS.length - 1];
 
   return (
     <div style={{ fontFamily: T.font, margin: "-24px -28px", padding: "24px 28px" }}>
-      <div style={{ background: T.navy, borderRadius: 12, padding: "28px 32px", marginBottom: 16, display: "flex", alignItems: "center", gap: 28 }}>
-        <div style={{ textAlign: "center" }}>
-          <div style={{ width: 96, height: 96, borderRadius: "50%", border: "3px solid " + (score >= 70 ? "rgba(45,106,45,.5)" : score >= 50 ? "rgba(184,150,11,.5)" : "rgba(192,57,43,.5)"), display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,.05)" }}>
-            <div><div style={{ fontSize: 34, fontWeight: 800, color: "#fff", lineHeight: 1 }}>{score}</div><div style={{ fontSize: 11, color: "rgba(255,255,255,.45)" }}>/100</div></div>
+      <div style={{ background: T.navy, borderRadius: 12, padding: "28px 32px", marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.3)" }}>Readiness</div>
+          <div style={{ padding: "3px 10px", borderRadius: 10, background: "rgba(184,150,11,.2)", border: "1px solid rgba(184,150,11,.3)", fontSize: 10, fontWeight: 700, color: T.gold }}>{currentRound.l}</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
+          <div style={{ display: "inline-flex", alignItems: "center", padding: "10px 24px", borderRadius: 10, background: bandStyle.bg, color: bandStyle.fg, fontFamily: IQ.display, fontWeight: 700, letterSpacing: "-0.01em", fontSize: 26 }}>{band}</div>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#fff", lineHeight: 1.4 }}>{d.one_line}</div>
+            <div style={{ fontSize: 12, color: "rgba(255,255,255,.3)", marginTop: 8 }}>{config.role} — {config.level} — {config.company || "General"} — {currentRound.l} — {config.duration_min} min</div>
           </div>
         </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.3)" }}>Performance Report</div>
-            <div style={{ padding: "3px 10px", borderRadius: 10, background: "rgba(184,150,11,.2)", border: "1px solid rgba(184,150,11,.3)", fontSize: 10, fontWeight: 700, color: T.gold }}>{currentRound.l}</div>
+        {Object.keys(roundBands).length > 0 && (
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 18 }}>
+            {Object.entries(roundBands).map(([k, v]) => { const bs = BAND_STYLE[v] || BAND_STYLE["Not Ready"]; return (
+              <div key={k} style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 10, color: "rgba(255,255,255,.4)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".04em" }}>{ROUND_BAND_LABELS[k] || k}</span>
+                <span style={{ padding: "3px 12px", borderRadius: 8, background: bs.bg, color: bs.fg, fontFamily: IQ.display, fontWeight: 700, fontSize: 13 }}>{v}</span>
+              </div>
+            ); })}
           </div>
-          <div style={{ fontSize: 17, fontWeight: 700, color: "#fff", lineHeight: 1.4, marginBottom: 10 }}>{d.one_line}</div>
-          <div style={{ display: "inline-block", padding: "5px 14px", borderRadius: 6, background: "rgba(255,255,255,.08)", fontSize: 13, fontWeight: 700, color: "#fff" }}>Selection chances: {selChance}</div>
-          <div style={{ fontSize: 12, color: "rgba(255,255,255,.3)", marginTop: 8 }}>{config.role} — {config.level} — {config.company || "General"} — {currentRound.l} — {config.duration_min} min</div>
-        </div>
+        )}
       </div>
+
+      <CalibrationBlock cal={cal} />
 
       <div className="mba-grid-3" style={{ marginBottom: 16 }}>{Object.entries(ss).map(([k, v]) => {
         const co = v >= 7 ? T.green : v >= 5 ? T.gold : T.red;
@@ -737,6 +895,7 @@ export default function App() {
   const [config, setConfig] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const [greeting, setGreeting] = useState("");
+  const [initialState, setInitialState] = useState(null);
   const [userName, setUserName] = useState("Candidate");
   const [historyDetailId, setHistoryDetailId] = useState(null);
 
@@ -750,7 +909,7 @@ export default function App() {
     } catch { /* malformed token, ignore */ }
   }, []);
 
-  const restart = () => { setConfig(null); setSessionId(null); setGreeting(""); setHistoryDetailId(null); setScreen("setup"); };
+  const restart = () => { setConfig(null); setSessionId(null); setGreeting(""); setInitialState(null); setHistoryDetailId(null); setScreen("setup"); };
 
   return (
     <>
@@ -761,8 +920,8 @@ export default function App() {
           {screen !== "history" && <button className="iq-tab" onClick={() => { setHistoryDetailId(null); setScreen("history"); }}>History</button>}
         </div>
       )}
-      {screen === "setup" && <SetupScreen userName={userName} onStart={(cfg, id, gr) => { setConfig(cfg); setSessionId(id); setGreeting(gr); setScreen("interview"); }} />}
-      {screen === "interview" && <InterviewScreen config={config} sessionId={sessionId} greeting={greeting} onEnd={() => setScreen("debrief")} onRestart={restart} />}
+      {screen === "setup" && <SetupScreen userName={userName} onStart={(cfg, id, gr, st) => { setConfig(cfg); setSessionId(id); setGreeting(gr); setInitialState(st); setScreen("interview"); }} />}
+      {screen === "interview" && <InterviewScreen config={config} sessionId={sessionId} greeting={greeting} initialState={initialState} onEnd={() => setScreen("debrief")} onRestart={restart} />}
       {screen === "debrief" && <DebriefScreen config={config} sessionId={sessionId} onRestart={restart} onViewHistory={() => { setHistoryDetailId(null); setScreen("history"); }} />}
       {screen === "history" && !historyDetailId && <HistoryScreen onPickSession={(sid) => { setHistoryDetailId(sid); }} onStartNew={restart} />}
       {screen === "history" && historyDetailId && <HistoryDetail sessionId={historyDetailId} onBack={() => setHistoryDetailId(null)} />}

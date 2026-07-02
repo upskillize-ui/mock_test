@@ -10,18 +10,36 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from sqlalchemy.exc import IntegrityError
+
 from .config import settings
 from .db import get_db, get_student_context, fetch_alumni_intel, like_escape
 from .auth import current_user
+from . import stages
 from .schemas import (
     StartSessionRequest, StartSessionResponse,
     TurnRequest, TurnResponse,
+    RatingRequest, RatingResponse, SessionState,
     EndRequest, DebriefResponse,
     AlumniQuestionSubmit, HealthResponse,
     HistoryListResponse, HistoryListItem, HistoryDetailResponse,
 )
-from .prompts import build_system_prompt, DEBRIEF_INSTRUCTION
+from .prompts import build_system_prompt, DEBRIEF_INSTRUCTION, stage_turn_directive
 from .claude_client import call_claude, extract_resume_text
+
+
+def _as_obj(v, default):
+    """Coerce a MySQL JSON column (may arrive as str or already-parsed) to an object."""
+    if v is None:
+        return default
+    if isinstance(v, (dict, list)):
+        return v
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except Exception:
+            return default
+    return default
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,6 +57,24 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; img-src 'self' data:; "
+        "font-src 'self' data: https://fonts.gstatic.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "script-src 'self'; connect-src 'self'; "
+        "frame-ancestors 'none'; base-uri 'self'",
+    )
+    return response
+
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 if STATIC_DIR.exists():
@@ -128,6 +164,25 @@ def _session_to_cfg(row: dict) -> dict:
     }
 
 
+def _build_state(row: dict) -> SessionState:
+    """INT-04: assemble the client-facing state object from a session row."""
+    level = row.get("level", "")
+    current_stage = row.get("current_stage") or "WARMUP"
+    round_index = int(row.get("round_index") or 0)
+    awaiting = bool(row.get("awaiting_rating"))
+    return SessionState(
+        current_stage=current_stage,
+        round_index=round_index,
+        stage_total=stages.stage_total(level, current_stage),
+        awaiting_rating=awaiting,
+        last_answer_id=row.get("last_answer_id"),
+        answer_count=int(row.get("answer_count") or 0),
+        answer_cap=settings.MAX_ANSWERS_PER_SESSION,
+        next_action=stages.next_action(current_stage, awaiting),
+        stage_label=stages.stage_label(current_stage, round_index, level, awaiting),
+    )
+
+
 def _update_session_counters(db: Session, session_id: str) -> None:
     db.execute(
         text("""
@@ -154,6 +209,7 @@ def _finalize_session(db: Session, session_id: str, completion_type: str) -> Non
         text("""
             UPDATE vyom_sessions
             SET status = CASE WHEN status='active' THEN 'completed' ELSE status END,
+                current_stage = 'DONE',
                 ended_at = COALESCE(ended_at, NOW()),
                 actual_duration_seconds = COALESCE(
                     actual_duration_seconds,
@@ -276,11 +332,11 @@ async def start_session(
             INSERT INTO vyom_sessions
             (id, user_id, name, role, level, company, duration_min,
              difficulty, mode, round, round_label, round_detail,
-             focus, intro, status)
+             focus, intro, status, current_stage)
             VALUES
             (:id, :user_id, :name, :role, :level, :company, :duration_min,
              :difficulty, :mode, :round, :round_label, :round_detail,
-             :focus, :intro, 'active')
+             :focus, :intro, 'active', 'WARMUP')
         """),
         {
             "id": session_id,
@@ -329,7 +385,15 @@ async def start_session(
     _save_message(db, session_id, "assistant", greeting)
     _update_session_counters(db, session_id)
 
-    return StartSessionResponse(session_id=session_id, greeting=greeting)
+    state = _build_state({
+        "level": body.level,
+        "current_stage": "WARMUP",
+        "round_index": 0,
+        "awaiting_rating": 0,
+        "last_answer_id": None,
+        "answer_count": 0,
+    })
+    return StartSessionResponse(session_id=session_id, greeting=greeting, state=state)
 
 
 @app.post("/session/turn", response_model=TurnResponse)
@@ -348,25 +412,151 @@ async def session_turn(
         raise HTTPException(400, "Session is not active")
 
     session_row = _load_session(db, body.session_id, user_id)
-    _save_message(db, body.session_id, "user", body.message.strip())
+    st = session_row.get("current_stage") or "WARMUP"
+    level = session_row.get("level", "")
+    round_index = int(session_row.get("round_index") or 0)
+    awaiting = bool(session_row.get("awaiting_rating"))
+    answer_count = int(session_row.get("answer_count") or 0)
+
+    # INT-04 — enforce the stage machine. Out-of-order posts return 409.
+    if st in ("READOUT", "DONE", "SETUP"):
+        raise HTTPException(409, "This interview has finished — there are no more questions to answer.")
+    if awaiting:
+        raise HTTPException(409, "Please rate your confidence in your previous answer before continuing.")
+    if body.stage and body.stage.strip().upper() != st:
+        current_name = stages.STAGE_LABELS.get(st, st.title())
+        raise HTTPException(409, f"Out of order: the interview is on the {current_name} round right now.")
+    if answer_count >= settings.MAX_ANSWERS_PER_SESSION:
+        raise HTTPException(409, "You've reached the maximum number of answers for one session.")
+
+    # Persist the answer and capture its id (used later as the rating target).
+    res = db.execute(
+        text("INSERT INTO vyom_messages (session_id, role, content) VALUES (:s, 'user', :c)"),
+        {"s": body.session_id, "c": body.message.strip()},
+    )
+    db.commit()
+    answer_id = int(res.lastrowid)
+    round_index_after = round_index + 1
 
     cfg = _session_to_cfg(session_row)
     alumni_intel = fetch_alumni_intel(db, cfg["company"], cfg["role"])
     system_prompt = build_system_prompt(cfg, alumni_intel)
     messages = _load_messages(db, body.session_id)
+    directive = stage_turn_directive(cfg, st, round_index_after)
 
     reply = await call_claude(
         system=system_prompt,
         messages=messages,
         model=settings.MODEL_INTERVIEW,
         max_tokens=500,
+        system_suffix=directive,
     )
-
     _save_message(db, body.session_id, "assistant", reply)
+
+    # Advance the stage machine.
+    if st == "REVERSE":
+        # Not rating-gated; advance straight to READOUT when the round completes.
+        new_stage, new_round = stages.advance_after_reverse(round_index_after, level)
+        new_awaiting, new_last = 0, None
+    else:
+        # Scored stage: hold here until the learner submits a confidence rating (INT-01).
+        new_stage, new_round = st, round_index_after
+        new_awaiting, new_last = 1, answer_id
+
+    db.execute(
+        text("""
+            UPDATE vyom_sessions
+            SET current_stage=:cs, round_index=:ri, awaiting_rating=:aw,
+                last_answer_id=:la, answer_count=answer_count + 1
+            WHERE id=:id
+        """),
+        {"cs": new_stage, "ri": new_round, "aw": new_awaiting,
+         "la": new_last, "id": body.session_id},
+    )
+    db.commit()
     _update_session_counters(db, body.session_id)
 
-    turn_count = sum(1 for m in messages if m["role"] == "user")
-    return TurnResponse(reply=reply, turn_count=turn_count)
+    state = _build_state({
+        "level": level,
+        "current_stage": new_stage,
+        "round_index": new_round,
+        "awaiting_rating": new_awaiting,
+        "last_answer_id": new_last,
+        "answer_count": answer_count + 1,
+    })
+    return TurnResponse(reply=reply, answer_id=answer_id, state=state)
+
+
+@app.get("/session/{session_id}/state", response_model=SessionState)
+def session_state(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(current_user),
+):
+    row = _load_session(db, session_id, user_id)
+    return _build_state(row)
+
+
+@app.post("/session/turn/rating", response_model=RatingResponse)
+def submit_rating(
+    body: RatingRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(current_user),
+):
+    locked = db.execute(
+        text("""
+            SELECT id, status, level, current_stage, round_index,
+                   awaiting_rating, last_answer_id, answer_count
+            FROM vyom_sessions WHERE id=:id AND user_id=:u FOR UPDATE
+        """),
+        {"id": body.session_id, "u": user_id},
+    ).mappings().first()
+    if not locked:
+        raise HTTPException(404, "Session not found")
+
+    if not locked["awaiting_rating"]:
+        raise HTTPException(409, "No answer is awaiting a confidence rating right now.")
+    if body.answer_id != locked["last_answer_id"]:
+        raise HTTPException(409, "That answer is not the one awaiting a rating.")
+
+    # PK on answer_id is the hard double-submit guard.
+    try:
+        db.execute(
+            text("""
+                INSERT INTO vyom_answer_ratings (answer_id, session_id, rating, stage)
+                VALUES (:aid, :sid, :rating, :stage)
+            """),
+            {"aid": body.answer_id, "sid": body.session_id,
+             "rating": body.rating, "stage": locked["current_stage"]},
+        )
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "You've already rated this answer.")
+
+    level = locked["level"] or ""
+    new_stage, new_round = stages.advance_after_rating(
+        locked["current_stage"], int(locked["round_index"] or 0), level
+    )
+    db.execute(
+        text("""
+            UPDATE vyom_sessions
+            SET current_stage=:cs, round_index=:ri, awaiting_rating=0, last_answer_id=NULL
+            WHERE id=:id
+        """),
+        {"cs": new_stage, "ri": new_round, "id": body.session_id},
+    )
+    db.commit()
+
+    state = _build_state({
+        "level": level,
+        "current_stage": new_stage,
+        "round_index": new_round,
+        "awaiting_rating": 0,
+        "last_answer_id": None,
+        "answer_count": int(locked["answer_count"] or 0),
+    })
+    return RatingResponse(accepted=True, state=state)
 
 
 @app.post("/session/end", response_model=DebriefResponse)
@@ -377,6 +567,31 @@ async def end_session(
 ):
     session_row = _load_session(db, body.session_id, user_id)
     cfg = _session_to_cfg(session_row)
+
+    # Idempotency + cost guard: if a debrief already exists, return it instead of
+    # re-running the (billed) Sonnet debrief on every /session/end call.
+    existing = db.execute(
+        text("SELECT raw_json, overall, overall_band, round_bands, calibration "
+             "FROM vyom_debriefs WHERE session_id=:s"),
+        {"s": body.session_id},
+    ).mappings().first()
+    if existing and existing.get("raw_json"):
+        d = _as_obj(existing["raw_json"], None)
+        if isinstance(d, dict):
+            return DebriefResponse(
+                session_id=body.session_id,
+                overall_band=existing.get("overall_band") or stages.band_for(d.get("overall")),
+                round_bands=_as_obj(existing.get("round_bands"), {}),
+                one_line=d.get("oneLine", ""),
+                sub_scores=d.get("subScores", {}),
+                strengths=d.get("strengths", []),
+                gaps=d.get("gaps", []),
+                star_breakdown=d.get("starBreakdown", []),
+                interviewer_thoughts=d.get("interviewerThoughts", []),
+                plan=d.get("plan", []),
+                next_focus=d.get("nextFocus", ""),
+                calibration=_as_obj(existing.get("calibration"), {}),
+            )
 
     system_prompt = build_system_prompt(cfg, "")
     messages = _load_messages(db, body.session_id)
@@ -402,24 +617,44 @@ async def end_session(
         log.error("Debrief JSON parse error: %s — raw=%s", e, raw[:500])
         raise HTTPException(502, "Debrief generation failed")
 
+    # INT-03: derive readiness bands from the raw (internal) percentages.
+    overall_pct = int(debrief.get("overall", 0))
+    overall_band = stages.band_for(overall_pct)
+    round_bands = stages.round_bands_from_scores(debrief.get("roundScores", {}) or {})
+
+    # INT-02: calibrate learner confidence ratings against the model's per-answer
+    # quality scores. Both lists are in answer order, so we zip by position.
+    rating_rows = db.execute(
+        text("SELECT rating FROM vyom_answer_ratings WHERE session_id=:s ORDER BY answer_id ASC"),
+        {"s": body.session_id},
+    ).fetchall()
+    rating_vals = [r.rating for r in rating_rows]
+    per_scores = debrief.get("perAnswerScores", []) or []
+    score_vals = [s.get("score") for s in per_scores if isinstance(s, dict)]
+    calibration = stages.calibration_profile(list(zip(rating_vals, score_vals)))
+
     db.execute(
         text("""
             INSERT INTO vyom_debriefs
-            (session_id, overall, sub_scores, strengths, gaps, star, plan,
-             next_focus, one_line, raw_json)
+            (session_id, overall, overall_band, round_bands, calibration,
+             sub_scores, strengths, gaps, star, plan, next_focus, one_line, raw_json)
             VALUES
-            (:session_id, :overall, :sub_scores, :strengths, :gaps, :star,
-             :plan, :next_focus, :one_line, :raw_json)
+            (:session_id, :overall, :overall_band, :round_bands, :calibration,
+             :sub_scores, :strengths, :gaps, :star, :plan, :next_focus, :one_line, :raw_json)
             ON DUPLICATE KEY UPDATE
-              overall=VALUES(overall), sub_scores=VALUES(sub_scores),
-              strengths=VALUES(strengths), gaps=VALUES(gaps),
-              star=VALUES(star), plan=VALUES(plan),
+              overall=VALUES(overall), overall_band=VALUES(overall_band),
+              round_bands=VALUES(round_bands), calibration=VALUES(calibration),
+              sub_scores=VALUES(sub_scores), strengths=VALUES(strengths),
+              gaps=VALUES(gaps), star=VALUES(star), plan=VALUES(plan),
               next_focus=VALUES(next_focus), one_line=VALUES(one_line),
               raw_json=VALUES(raw_json)
         """),
         {
             "session_id": body.session_id,
-            "overall": int(debrief.get("overall", 0)),
+            "overall": overall_pct,
+            "overall_band": overall_band,
+            "round_bands": json.dumps(round_bands),
+            "calibration": json.dumps(calibration),
             "sub_scores": json.dumps(debrief.get("subScores", {})),
             "strengths": json.dumps(debrief.get("strengths", [])),
             "gaps": json.dumps(debrief.get("gaps", [])),
@@ -436,7 +671,8 @@ async def end_session(
 
     return DebriefResponse(
         session_id=body.session_id,
-        overall=int(debrief.get("overall", 0)),
+        overall_band=overall_band,
+        round_bands=round_bands,
         one_line=debrief.get("oneLine", ""),
         sub_scores=debrief.get("subScores", {}),
         strengths=debrief.get("strengths", []),
@@ -445,6 +681,7 @@ async def end_session(
         interviewer_thoughts=debrief.get("interviewerThoughts", []),
         plan=debrief.get("plan", []),
         next_focus=debrief.get("nextFocus", ""),
+        calibration=calibration,
     )
 
 

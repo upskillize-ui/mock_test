@@ -19,6 +19,7 @@ async def call_claude(
     messages: list[dict],
     model: str,
     max_tokens: int = 600,
+    system_suffix: str = "",
 ) -> str:
     headers = {
         "Content-Type": "application/json",
@@ -26,6 +27,8 @@ async def call_claude(
         "anthropic-version": settings.ANTHROPIC_VERSION,
     }
 
+    # The big prompt stays cached; the per-turn stage directive is a small,
+    # un-cached second block so it can change every turn without a cache miss.
     system_block = [
         {
             "type": "text",
@@ -33,6 +36,8 @@ async def call_claude(
             "cache_control": {"type": "ephemeral"},
         }
     ]
+    if system_suffix:
+        system_block.append({"type": "text", "text": system_suffix})
 
     payload = {
         "model": model,

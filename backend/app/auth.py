@@ -13,7 +13,10 @@ def current_user(authorization: str | None = Header(default=None)) -> str:
 
     token = authorization.removeprefix("Bearer ").strip()
     try:
-        kwargs = {"algorithms": [settings.JWT_ALGORITHM]}
+        kwargs = {
+            "algorithms": [settings.JWT_ALGORITHM],
+            "options": {"require": ["exp"], "verify_exp": True},
+        }
         if settings.JWT_AUDIENCE:
             kwargs["audience"] = settings.JWT_AUDIENCE
         if settings.JWT_ISSUER:

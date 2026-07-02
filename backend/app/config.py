@@ -17,6 +17,15 @@ class Settings:
     JWT_ISSUER: str = os.getenv("JWT_ISSUER", "")
     MAX_SESSIONS_PER_DAY: int = int(os.getenv("MAX_SESSIONS_PER_DAY", "10"))
     MAX_ALUMNI_PER_DAY: int = int(os.getenv("MAX_ALUMNI_PER_DAY", "5"))
+    # INT-04: hard cap on answered questions per session (spec math + buffer).
+    MAX_ANSWERS_PER_SESSION: int = int(os.getenv("MAX_ANSWERS_PER_SESSION", "20"))
+
+    # INT-03: readiness band thresholds (configurable, not hardcoded in logic).
+    # Not Ready < BUILDING_MIN; Building < INTERVIEW_READY_MIN;
+    # Interview-Ready < OFFER_READY_MIN; Offer-Ready >= OFFER_READY_MIN.
+    BAND_BUILDING_MIN: int = int(os.getenv("BAND_BUILDING_MIN", "50"))
+    BAND_INTERVIEW_READY_MIN: int = int(os.getenv("BAND_INTERVIEW_READY_MIN", "70"))
+    BAND_OFFER_READY_MIN: int = int(os.getenv("BAND_OFFER_READY_MIN", "85"))
     MODEL_INTERVIEW: str = os.getenv("MODEL_INTERVIEW", "claude-haiku-4-5-20251001")
     MODEL_DEBRIEF: str = os.getenv("MODEL_DEBRIEF", "claude-sonnet-4-6")
     APP_ENV: str = os.getenv("APP_ENV", "production")

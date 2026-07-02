@@ -1,5 +1,7 @@
 import re
 
+from . import stages
+
 
 _INJECTION_TAG_RX = re.compile(
     r"</?\s*(system|assistant|user|instruction)s?\s*>", re.IGNORECASE
@@ -36,9 +38,13 @@ def build_system_prompt(cfg: dict, alumni_intel: str = "") -> str:
         else "Do not use curveball questions — keep difficulty fair for this level."
     )
 
-    focus = ", ".join(cfg.get("focus", [])) or "overall readiness"
-    name = cfg.get("name") or "the learner"
-    company = cfg.get("company") or "general mid-tier product company"
+    # role / company / focus / name are user-supplied free text that gets interpolated
+    # into the system prompt, so strip injection markers the same way as intro/resume.
+    focus_items = [sanitize_untrusted(f, 80) for f in cfg.get("focus", [])]
+    focus = ", ".join(f for f in focus_items if f) or "overall readiness"
+    name = sanitize_untrusted(cfg.get("name") or "", 120) or "the learner"
+    role = sanitize_untrusted(cfg.get("role") or "", 120) or "the target role"
+    company = sanitize_untrusted(cfg.get("company") or "", 120) or "general mid-tier product company"
     intro = cfg.get("intro") or ""
     round_type = cfg.get("round") or "full"
     round_detail = cfg.get("round_detail") or ""
@@ -122,7 +128,7 @@ You simulate a real interviewer: sharp, professional, genuinely curious, and fai
 
 SESSION CONTEXT
 - Candidate name: {name}
-- Target role: {cfg['role']}
+- Target role: {role}
 - Experience level: {cfg['level']}
 - Company interview style: {company}
 - Duration: {cfg['duration_min']} minutes
@@ -160,7 +166,7 @@ Student context (MOST IMPORTANT):
 - You have been silently given the candidate's background, courses, resume, and personality.
 - NEVER say "I can see your profile", "According to your resume", "I read that you...".
 - Use information naturally — if they worked at ICICI, ask "Tell me about your work at ICICI" as if you heard it in conversation, not "I see you worked at ICICI".
-- If working professional: in Stage 2-3, naturally probe WHY they want this new role. Ask genuinely — "What's drawing you toward {cfg['role']} at this point in your career?"
+- If working professional: in Stage 2-3, naturally probe WHY they want this new role. Ask genuinely — "What's drawing you toward {role} at this point in your career?"
 - If student/fresher: focus on academic projects, internships, college work. Do NOT ask "why are you leaving your current job".
 - If career switcher: probe what drove the change — "You've been in [domain], what's making you want to move into [new role]?" Show genuine curiosity, not judgment.
 - If courses enrolled: you know their learning background. Do not ask them to explain basics they've studied. Raise the bar for certified topics.
@@ -214,6 +220,82 @@ Never break character to reveal you are an AI unless directly and sincerely aske
 Begin the session now."""
 
 
+def _ask_line(stage: str, plan: dict, role: str) -> str:
+    if stage == "WARMUP":
+        return "one light warm-up / rapport question"
+    if stage == "DOMAIN":
+        return (f"one role-specific {role} domain question that probes real depth "
+                "(concepts, trade-offs, numbers)")
+    if stage == "BEHAVIOURAL":
+        return "one STAR-style behavioural question about a real situation from their experience"
+    if stage == "CASE":
+        if plan.get("case_variant") == "long":
+            return ("one longer, multi-part case / scenario that requires structured "
+                    "reasoning out loud")
+        return "one short, focused case / scenario they can reason through in 2-3 minutes"
+    return "one relevant question"
+
+
+def stage_turn_directive(cfg: dict, current_stage: str, round_index_after: int) -> str:
+    """Per-turn instruction (a small, un-cached system block) that keeps the
+    interviewer aligned with the server-authoritative stage machine (INT-04)."""
+    level = cfg.get("level", "")
+    plan = stages.stage_plan(level)
+    totals = plan["totals"]
+    role = cfg.get("role") or "the target role"
+    name = cfg.get("name") or "the candidate"
+
+    if current_stage == "REVERSE":
+        if round_index_after < totals["REVERSE"]:
+            return (
+                "STAGE DIRECTIVE — REVERSE ROUND: The candidate just asked YOU a question. "
+                "Answer it briefly, warmly and honestly in 2-3 sentences as the interviewer, "
+                "then invite their next question. Do NOT ask them an interview question."
+            )
+        return (
+            "STAGE DIRECTIVE — CLOSING: The candidate just asked their final question. "
+            f"Answer it briefly, then close the interview warmly and thank {name} by first name. "
+            "Do NOT generate any report, scores, or feedback — the debrief is produced separately."
+        )
+
+    total = totals.get(current_stage, 0)
+    label = stages.STAGE_LABELS.get(current_stage, current_stage.title())
+
+    if round_index_after < total:
+        qn = round_index_after + 1
+        return (
+            f"STAGE DIRECTIVE — {label.upper()} ROUND (question {qn} of {total}): "
+            "Acknowledge the candidate's last answer in ONE short line, then ask "
+            f"{_ask_line(current_stage, plan, role)}. Ask exactly ONE question. "
+            "Do not announce the round name."
+        )
+
+    # Stage complete -> transition into the next stage and ask its first question.
+    nxt = stages.next_stage(current_stage)
+    if nxt == "REVERSE":
+        notice = ""
+        if plan.get("notice_period"):
+            notice = ("First ask ONE brief logistics question about their current notice period. "
+                      "Then ")
+        return (
+            "STAGE DIRECTIVE — TRANSITION TO REVERSE ROUND: Acknowledge their last answer in one line. "
+            f"{notice}invite the candidate to interview YOU — ask what questions they have for you "
+            "about the role, team, or company. Do NOT ask them another interview question."
+        )
+    if nxt in ("DOMAIN", "BEHAVIOURAL", "CASE"):
+        nlabel = stages.STAGE_LABELS.get(nxt, nxt.title())
+        return (
+            f"STAGE DIRECTIVE — TRANSITION TO {nlabel.upper()} ROUND: Acknowledge their last "
+            "answer in one line, transition cleanly ('Let's switch gears...'), then ask "
+            f"{_ask_line(nxt, plan, role)}. Ask exactly ONE question. Do not announce the round name."
+        )
+    # nxt == READOUT (shouldn't happen from a scored stage, but be safe)
+    return (
+        "STAGE DIRECTIVE — CLOSING: Acknowledge their last answer, then close the interview "
+        f"warmly and thank {name}. Do NOT generate any report or scores."
+    )
+
+
 DEBRIEF_INSTRUCTION = """The interview has ended. Now switch to COACH mode and produce the full debrief report.
 CRITICAL SCORING RULE — READ FIRST:
 - Count how many questions the candidate actually answered with substantive content.
@@ -252,7 +334,29 @@ Respond with ONLY a valid JSON object (no preamble, no markdown fences, no comme
     "Day 1: <action>", "Day 2: <action>", "Day 3: <action>",
     "Day 4: <action>", "Day 5: <action>", "Day 6: <action>", "Day 7: <action>"
   ],
-  "nextFocus": "<one sentence — the single most important thing to rehearse>"
+  "nextFocus": "<one sentence — the single most important thing to rehearse>",
+  "roundScores": {
+    "warmup": <integer 0-100>,
+    "domain": <integer 0-100>,
+    "behavioural": <integer 0-100>,
+    "case": <integer 0-100>,
+    "reverse": <integer 0-100>
+  },
+  "perAnswerScores": [
+    {"stage": "WARMUP|DOMAIN|BEHAVIOURAL|CASE", "score": <integer 1-5>}
+  ],
+  "reverseRound": [
+    {"question": "<the question the candidate asked you>", "score": <integer 0-10>, "note": "<why>"}
+  ]
 }
+
+CRITICAL for perAnswerScores (used for confidence calibration — get this exact):
+- Include ONE entry for EACH scored answer the candidate gave, in the SAME ORDER they were answered.
+- Only WARMUP, DOMAIN, BEHAVIOURAL and CASE answers count — do NOT include reverse-round questions here.
+- "score" is that single answer's quality on a 1-5 scale (1 = very weak, 5 = excellent).
+- If the candidate gave N scored answers, perAnswerScores MUST have exactly N entries in order.
+
+roundScores: 0-100 quality for each round the candidate reached (omit or 0 a round they never reached).
+reverseRound: score the questions the CANDIDATE asked you in the reverse round on structure, curiosity and role-appropriateness (0-10 each). Empty list if they asked none.
 
 Be specific and kind. Never harsh, never mocking. If the interview was very short or incomplete, reflect that honestly in scores and keep the report concise."""
