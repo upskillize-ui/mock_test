@@ -33,12 +33,36 @@ const startSession = (c) => api("/session/start", { method: "POST", body: JSON.s
 const sendTurn = (sid, msg, stage) => api("/session/turn", { method: "POST", body: JSON.stringify({ session_id: sid, message: msg, stage }) });
 const submitRating = (sid, answerId, rating) => api("/session/turn/rating", { method: "POST", body: JSON.stringify({ session_id: sid, answer_id: answerId, rating }) });
 const fetchSessionState = (sid) => api(`/session/${encodeURIComponent(sid)}/state`);
+const fetchSessionMessages = (sid) => api(`/session/${encodeURIComponent(sid)}/messages`);
 const endSession = (sid) => api("/session/end", { method: "POST", body: JSON.stringify({ session_id: sid }) });
 const abandonSession = (sid) => api("/session/abandon", { method: "POST", body: JSON.stringify({ session_id: sid }) }).catch(() => {});
 const fetchAlumniPreview = (co, ro) => api("/alumni/preview?company=" + encodeURIComponent(co) + "&role=" + encodeURIComponent(ro));
 const fetchHistory = (limit = 50, offset = 0) => api(`/user/history?limit=${limit}&offset=${offset}`);
 const fetchHistoryDetail = (sid) => api(`/user/history/${encodeURIComponent(sid)}`);
 const fetchStats = () => api("/user/stats");
+// INT-07 DPDPA data rights + consent.
+const recordConsent = (payload) => api("/consent", { method: "POST", body: JSON.stringify(payload) });
+const fetchMyData = () => api("/me/data");
+const requestDataDeletion = () => api("/me/data/delete-request", { method: "POST", body: JSON.stringify({}) });
+const confirmDataDeletion = (token) => api("/me/data", { method: "DELETE", body: JSON.stringify({ confirmation_token: token }) });
+
+// ── INT-06: active-session persistence (survives page refresh) ───────────────
+const ACTIVE_KEY = "interviewiq_active_session";
+// INT-07: remembers that the current learner already saw+accepted the consent copy.
+const CONSENT_KEY = "interviewiq_consent_v0-draft";
+const CONSENT_COPY_VERSION = "v0-draft";
+
+function saveActiveSession(sessionId, config, startedAt) {
+  try { localStorage.setItem(ACTIVE_KEY, JSON.stringify({ session_id: sessionId, config, started_at: startedAt })); }
+  catch { /* storage full / disabled — resume simply won't be available */ }
+}
+function loadActiveSession() {
+  try { const raw = localStorage.getItem(ACTIVE_KEY); return raw ? JSON.parse(raw) : null; }
+  catch { return null; }
+}
+function clearActiveSession() {
+  try { localStorage.removeItem(ACTIVE_KEY); } catch { /* noop */ }
+}
 
 // ── Theme ─────────────────────────────────────────────────────────────────
 const T = {
@@ -222,6 +246,8 @@ function SetupScreen({ onStart, userName }) {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState(null);
   const [tipIdx, setTipIdx] = useState(0);
+  // INT-07: consent gate. Once accepted (this browser), we don't re-prompt.
+  const [consented, setConsented] = useState(() => { try { return localStorage.getItem(CONSENT_KEY) === "1"; } catch { return false; } });
 
   const toggleFocus = (f) => {
     if (f === "Other") { setFocus(c => c.includes("Other") ? c.filter(x => x !== "Other") : [...c, "Other"]); return; }
@@ -261,6 +287,9 @@ function SetupScreen({ onStart, userName }) {
         intro: [intro, jd ? "\n\n--- JOB DESCRIPTION ---\n" + jd : ""].filter(Boolean).join(""),
       };
       const r = await startSession(payload);
+      // INT-07: record the consent grant against this session (non-blocking).
+      try { await recordConsent({ consent_type: "data_processing", copy_version: CONSENT_COPY_VERSION, session_id: r.session_id }); } catch { /* non-blocking */ }
+      try { localStorage.setItem(CONSENT_KEY, "1"); } catch { /* noop */ }
       onStart({ ...payload, focus: allFocus }, r.session_id, r.greeting, r.state);
     } catch (e) { setError(e.message); setStarting(false); }
   };
@@ -445,8 +474,31 @@ function SetupScreen({ onStart, userName }) {
         </div>
       </div>
 
+      {/* INT-07: consent notice shown at (first) session start.
+          [PENDING LEGAL REVIEW] — placeholder copy only; final wording and the
+          retention windows are signed off by Legal outside this sprint. Recorded
+          with copy_version="v0-draft" so we can trace exactly what was shown. */}
+      {!consented && (
+        <div className="vc" style={{ marginTop: 14, borderLeft: "3px solid " + T.gold }}>
+          <div className="vc-h"><span className="vc-t">Before you begin</span></div>
+          <div className="vc-b">
+            <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
+              <input type="checkbox" checked={consented} onChange={e => setConsented(e.target.checked)} style={{ marginTop: 3, width: 16, height: 16, flexShrink: 0, accentColor: T.navy }} />
+              <span style={{ fontSize: 13, color: T.muted, lineHeight: 1.6 }}>
+                {/* [PENDING LEGAL REVIEW] */}
+                I agree that InterviewIQ may process my interview responses to generate my
+                practice feedback and scorecard. My transcript and report are retained for a
+                limited period and I can download or delete my data any time from Settings.
+                <span style={{ color: T.subtle }}> (Draft notice — pending legal review.)</span>
+              </span>
+            </label>
+          </div>
+        </div>
+      )}
+
       {error && <div style={{ marginTop: 14, padding: "12px 16px", borderRadius: 10, background: T.redSoft, border: "1px solid #f5c6c2", color: T.red, fontSize: 13 }}>{error}</div>}
-      <button className="vbtn" style={{ marginTop: 16 }} onClick={handleStart}>Start Interview</button>
+      <button className="vbtn" style={{ marginTop: 16 }} onClick={handleStart} disabled={!consented}>Start Interview</button>
+      {!consented && <p style={{ textAlign: "center", fontSize: 12, color: T.subtle, marginTop: 8 }}>Please accept the notice above to begin.</p>}
       <p style={{ textAlign: "center", fontSize: 12, color: T.subtle, marginTop: 10 }}>No judgement. No abuse. No matter how you answer.</p>
     </div>
   );
@@ -484,12 +536,21 @@ function RatingWidget({ busy, onRate }) {
   );
 }
 
-function InterviewScreen({ config, sessionId, greeting, initialState, onEnd, onRestart }) {
-  const [messages, setMessages] = useState([{ role: "assistant", content: greeting }]);
+function InterviewScreen({ config, sessionId, greeting, initialState, initialMessages, startedAt, onEnd, onRestart }) {
+  // INT-06: on resume we hydrate from server history; on a fresh start we seed with the greeting.
+  const [messages, setMessages] = useState(
+    initialMessages && initialMessages.length ? initialMessages : [{ role: "assistant", content: greeting }]
+  );
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [secondsLeft, setSecondsLeft] = useState(config.duration_min * 60);
+  // INT-06: timer remaining is derived from the persisted start time so a refresh
+  // resumes the same countdown instead of restarting it.
+  const [secondsLeft, setSecondsLeft] = useState(() => {
+    const total = config.duration_min * 60;
+    if (!startedAt) return total;
+    return Math.max(0, total - Math.floor((Date.now() - startedAt) / 1000));
+  });
   const [sstate, setSstate] = useState(initialState || null);
   const [ratingBusy, setRatingBusy] = useState(false);
   const [ended, setEnded] = useState(false);
@@ -890,14 +951,118 @@ function HistoryDetail({ sessionId, onBack }) {
   );
 }
 
+// INT-07: DPDPA "Your data" controls — export + two-step erasure.
+function SettingsScreen({ onBack }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [error, setError] = useState(null);
+  const [confirming, setConfirming] = useState(false);
+
+  const download = async () => {
+    setBusy(true); setError(null); setMsg(null);
+    try {
+      const data = await fetchMyData();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "interviewiq-my-data.json";
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      setMsg("Your data has been downloaded as a JSON file.");
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const doDelete = async () => {
+    setBusy(true); setError(null); setMsg(null);
+    try {
+      // Two-step: request a short-lived token, then confirm the deletion with it.
+      const req = await requestDataDeletion();
+      await confirmDataDeletion(req.confirmation_token);
+      clearActiveSession();
+      setConfirming(false);
+      setMsg("Your data has been deleted and is no longer accessible. You can start fresh any time.");
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ fontFamily: T.font, margin: "-24px -28px", padding: "24px 28px", maxWidth: 720 }}>
+      <button onClick={onBack} style={{ background: "none", border: "none", color: T.navy, fontWeight: 700, fontSize: 13, cursor: "pointer", padding: 0, marginBottom: 14, fontFamily: T.font }}>← Back</button>
+
+      <div style={{ background: T.navy, borderRadius: 12, padding: "22px 28px", marginBottom: 16 }}>
+        <div style={{ color: "#fff", fontWeight: 800, fontSize: 20 }}>Settings</div>
+        <div style={{ color: "rgba(255,255,255,.5)", fontSize: 12, marginTop: 4 }}>Manage the data InterviewIQ holds for you.</div>
+      </div>
+
+      <div className="vc" style={{ marginBottom: 16 }}>
+        <div className="vc-h"><span className="vc-t">Your data</span></div>
+        <div className="vc-b">
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: T.navy, marginBottom: 4 }}>Download my data</div>
+            <div style={{ fontSize: 13, color: T.muted, lineHeight: 1.6, marginBottom: 10 }}>Get a copy of everything we hold for you — your sessions, transcripts, confidence ratings, debriefs and consents — as a JSON file.</div>
+            <button onClick={download} disabled={busy} className="vbtn" style={{ width: "auto", display: "inline-flex", opacity: busy ? 0.6 : 1 }}>Download my data</button>
+          </div>
+
+          <div style={{ borderTop: "1px solid " + T.border, paddingTop: 18 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: T.navy, marginBottom: 4 }}>Delete my data</div>
+            <div style={{ fontSize: 13, color: T.muted, lineHeight: 1.6, marginBottom: 10 }}>This removes all your interviews, transcripts and reports from InterviewIQ. Your data becomes inaccessible immediately and is permanently erased after a short recovery window. This cannot be undone.</div>
+            {!confirming ? (
+              <button onClick={() => { setConfirming(true); setMsg(null); setError(null); }} disabled={busy} className="vbtn" style={{ width: "auto", display: "inline-flex", background: T.white, color: T.red, border: "1.5px solid " + T.red, opacity: busy ? 0.6 : 1 }}>Delete my data</button>
+            ) : (
+              <div style={{ padding: "14px 16px", borderRadius: 10, background: T.redSoft, border: "1px solid #f5c6c2" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: T.red, marginBottom: 4 }}>Are you sure?</div>
+                <div style={{ fontSize: 13, color: "#7a2018", lineHeight: 1.6, marginBottom: 12 }}>This permanently deletes all your InterviewIQ data. This action cannot be reversed.</div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button onClick={doDelete} disabled={busy} className="vbtn" style={{ width: "auto", display: "inline-flex", background: T.red }}>Yes, delete everything</button>
+                  <button onClick={() => setConfirming(false)} disabled={busy} className="vbtn" style={{ width: "auto", display: "inline-flex", background: T.white, color: T.navy, border: "1.5px solid " + T.border }}>Cancel</button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {msg && <div style={{ marginTop: 14, padding: "12px 16px", borderRadius: 10, background: T.greenSoft, color: T.green, fontSize: 13 }}>{msg}</div>}
+          {error && <div style={{ marginTop: 14, padding: "12px 16px", borderRadius: 10, background: T.redSoft, color: T.red, fontSize: 13 }}>{error}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// INT-06: shown on load when a stored session is idle > 30 min.
+function ResumePrompt({ config, onResume, onDiscard }) {
+  return (
+    <div style={{ fontFamily: T.font, maxWidth: 460, margin: "80px auto", padding: "0 20px" }}>
+      <div className="vc" style={{ padding: 0 }}>
+        <div style={{ background: T.navy, borderRadius: "12px 12px 0 0", padding: "20px 24px" }}>
+          <div style={{ color: "#fff", fontWeight: 800, fontSize: 18 }}>You have an unfinished interview</div>
+          <div style={{ color: "rgba(255,255,255,.5)", fontSize: 13, marginTop: 4 }}>Resume or start fresh?</div>
+        </div>
+        <div style={{ padding: "20px 24px" }}>
+          <div style={{ fontSize: 13, color: T.muted, lineHeight: 1.6, marginBottom: 18 }}>
+            {config ? <>{config.role}{config.company ? ` — ${config.company}` : ""} · {config.level} · {config.duration_min} min</> : "A previous session was left open."}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={onResume} className="vbtn">Resume interview</button>
+            <button onClick={onDiscard} className="vbtn" style={{ background: T.white, color: T.navy, border: "1.5px solid " + T.border }}>Start fresh</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
-  const [screen, setScreen] = useState("setup");
+  const [screen, setScreen] = useState("loading");   // INT-06: check for a resumable session first
   const [config, setConfig] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const [greeting, setGreeting] = useState("");
   const [initialState, setInitialState] = useState(null);
+  const [initialMessages, setInitialMessages] = useState(null);
+  const [startedAt, setStartedAt] = useState(null);
   const [userName, setUserName] = useState("Candidate");
   const [historyDetailId, setHistoryDetailId] = useState(null);
+  const [resumeCfg, setResumeCfg] = useState(null);   // stale-session prompt payload
 
   useEffect(() => {
     try {
@@ -909,22 +1074,96 @@ export default function App() {
     } catch { /* malformed token, ignore */ }
   }, []);
 
-  const restart = () => { setConfig(null); setSessionId(null); setGreeting(""); setInitialState(null); setHistoryDetailId(null); setScreen("setup"); };
+  // INT-06: on load, restore an in-flight session if one is stored.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const stored = loadActiveSession();
+      if (!stored?.session_id) { setScreen("setup"); return; }
+      try {
+        const st = await fetchSessionState(stored.session_id);
+        if (cancelled) return;
+        setConfig(stored.config);
+        setSessionId(stored.session_id);
+        setStartedAt(stored.started_at || null);
+        setInitialState(st);
+        // Finished (or past the questions) → straight to the debrief.
+        if (st.next_action === "done" || st.next_action === "readout" ||
+            st.status === "completed" || st.status === "abandoned") {
+          setScreen("debrief");
+          return;
+        }
+        // Idle too long → let the learner choose resume vs fresh.
+        if (st.stale) { setResumeCfg(stored.config); setScreen("resume"); return; }
+        // Active & fresh → drop back into the interview with full history.
+        const hist = await fetchSessionMessages(stored.session_id).catch(() => ({ messages: [] }));
+        if (cancelled) return;
+        setInitialMessages(hist.messages || []);
+        setScreen("interview");
+      } catch (e) {
+        // 404 (session gone) or any error → clear silently and start fresh.
+        if (cancelled) return;
+        clearActiveSession();
+        setScreen("setup");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const restart = () => {
+    clearActiveSession();
+    setConfig(null); setSessionId(null); setGreeting(""); setInitialState(null);
+    setInitialMessages(null); setStartedAt(null); setResumeCfg(null); setHistoryDetailId(null);
+    setScreen("setup");
+  };
+
+  const handleStart = (cfg, id, gr, st) => {
+    const now = Date.now();
+    setConfig(cfg); setSessionId(id); setGreeting(gr); setInitialState(st);
+    setInitialMessages(null); setStartedAt(now);
+    saveActiveSession(id, cfg, now);   // INT-06: persist the instant the session starts
+    setScreen("interview");
+  };
+
+  // INT-06: resume a stale session — pull history, then re-enter the interview.
+  const doResume = async () => {
+    setScreen("loading");
+    try {
+      const hist = await fetchSessionMessages(sessionId);
+      setInitialMessages(hist.messages || []);
+      setScreen("interview");
+    } catch { clearActiveSession(); restart(); }
+  };
+
+  if (screen === "loading") {
+    return (
+      <>
+        <style>{CSS}</style>
+        <div style={{ textAlign: "center", padding: "120px 20px", fontFamily: T.font }}>
+          <div className="mba-spinner" style={{ margin: "0 auto 14px" }} />
+          <div style={{ color: T.muted }}>Loading InterviewIQ...</div>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
       <style>{CSS}</style>
-      {screen !== "interview" && (
+      {screen !== "interview" && screen !== "resume" && (
         <div style={{ fontFamily: T.font, padding: "16px 32px 8", display: "flex", gap: 14, alignItems: "center", justifyContent: "flex-end" }}>
           {screen === "debrief" && <button className="iq-tab" onClick={restart}>+ New Mock</button>}
           {screen !== "history" && <button className="iq-tab" onClick={() => { setHistoryDetailId(null); setScreen("history"); }}>History</button>}
+          {screen !== "settings" && <button className="iq-tab" onClick={() => setScreen("settings")}>Settings</button>}
         </div>
       )}
-      {screen === "setup" && <SetupScreen userName={userName} onStart={(cfg, id, gr, st) => { setConfig(cfg); setSessionId(id); setGreeting(gr); setInitialState(st); setScreen("interview"); }} />}
-      {screen === "interview" && <InterviewScreen config={config} sessionId={sessionId} greeting={greeting} initialState={initialState} onEnd={() => setScreen("debrief")} onRestart={restart} />}
+      {screen === "setup" && <SetupScreen userName={userName} onStart={handleStart} />}
+      {screen === "resume" && <ResumePrompt config={resumeCfg} onResume={doResume} onDiscard={restart} />}
+      {screen === "interview" && <InterviewScreen config={config} sessionId={sessionId} greeting={greeting} initialState={initialState} initialMessages={initialMessages} startedAt={startedAt} onEnd={() => setScreen("debrief")} onRestart={restart} />}
       {screen === "debrief" && <DebriefScreen config={config} sessionId={sessionId} onRestart={restart} onViewHistory={() => { setHistoryDetailId(null); setScreen("history"); }} />}
       {screen === "history" && !historyDetailId && <HistoryScreen onPickSession={(sid) => { setHistoryDetailId(sid); }} onStartNew={restart} />}
       {screen === "history" && historyDetailId && <HistoryDetail sessionId={historyDetailId} onBack={() => setHistoryDetailId(null)} />}
+      {screen === "settings" && <SettingsScreen onBack={() => setScreen("setup")} />}
     </>
   );
 }

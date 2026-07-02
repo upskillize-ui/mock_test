@@ -30,6 +30,24 @@ class Settings:
     MODEL_DEBRIEF: str = os.getenv("MODEL_DEBRIEF", "claude-sonnet-4-6")
     APP_ENV: str = os.getenv("APP_ENV", "production")
 
+    # INT-07 (DPDPA): retention windows. Env-overridable; values still need a
+    # LEGAL sign-off before go-live (see PHASE0_COMPLETION_REPORT.md).
+    TRANSCRIPT_RETENTION_DAYS: int = int(os.getenv("TRANSCRIPT_RETENTION_DAYS", "90"))
+    DEBRIEF_RETENTION_DAYS: int = int(os.getenv("DEBRIEF_RETENTION_DAYS", "365"))
+    # Right-to-erasure recovery grace: soft-delete now, hard-delete after N days.
+    DELETE_GRACE_DAYS: int = int(os.getenv("DELETE_GRACE_DAYS", "30"))
+    # INT-06 resume: an active session idle this long is offered as resume-or-restart.
+    SESSION_IDLE_MINUTES: int = int(os.getenv("SESSION_IDLE_MINUTES", "30"))
+
+    # INT-07: voice mode is DPDPA-sensitive and OFF for this sprint. The consent
+    # gate is built now and enforced only once this flag flips true.
+    VOICE_ENABLED: bool = os.getenv("VOICE_ENABLED", "false").lower() in ("1", "true", "yes")
+
+    # INT-07: shared secret guarding the /admin/purge endpoint (cron-callable).
+    ADMIN_TOKEN: str = os.getenv("ADMIN_TOKEN", "")
+    # TTL of the two-step data-deletion confirmation token.
+    DELETE_TOKEN_TTL_SECONDS: int = int(os.getenv("DELETE_TOKEN_TTL_SECONDS", "600"))
+
     RESUME_HOST_ALLOWLIST: list[str] = [
         h.strip().lower()
         for h in os.getenv("RESUME_HOST_ALLOWLIST", "res.cloudinary.com").split(",")

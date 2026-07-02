@@ -54,7 +54,9 @@ async def call_claude(
         raise HTTPException(status_code=502, detail="Upstream model unreachable")
 
     if r.status_code != 200:
-        log.error("Claude API error status=%s body=%s", r.status_code, r.text[:1000])
+        # INT-07: log status only. The response body can echo request content
+        # (learner answers) on some error classes — keep it out of logs.
+        log.error("Claude API error status=%s", r.status_code)
         raise HTTPException(status_code=502, detail="Upstream model error")
 
     data = r.json()

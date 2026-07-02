@@ -4,7 +4,12 @@ from datetime import date, datetime
 
 
 class SessionState(BaseModel):
-    """INT-04: the backend is the single source of truth for interview progress."""
+    """INT-04: the backend is the single source of truth for interview progress.
+
+    INT-06: status/started_at/stale are populated by GET /session/{id}/state so the
+    frontend can resume after a refresh. They are optional (default None/False) so
+    the lighter start/turn/rating responses can omit them.
+    """
     current_stage: str
     round_index: int
     stage_total: int
@@ -14,6 +19,16 @@ class SessionState(BaseModel):
     answer_cap: int
     next_action: str  # answer | rating | reverse_question | readout | done
     stage_label: str
+    # INT-06 resume fields.
+    status: Optional[str] = None            # active | completed | abandoned
+    started_at: Optional[datetime] = None
+    stale: bool = False                     # active but idle > 30 min
+
+
+class SessionMessagesResponse(BaseModel):
+    """INT-06: full message history for an active session, for post-refresh resume."""
+    session_id: str
+    messages: list[dict]
 
 
 class StartSessionRequest(BaseModel):
@@ -131,3 +146,43 @@ class HistoryDetailResponse(BaseModel):
     session: HistoryListItem
     messages: list[dict]
     debrief: dict | None
+
+
+# ── INT-07: DPDPA consent + data-rights schemas ─────────────────────────────
+
+class ConsentRequest(BaseModel):
+    # e.g. "voice_recording", "data_processing". Free-form so legal can add types
+    # without a code change; the copy_version pins which wording was shown.
+    consent_type: str = Field(..., max_length=40)
+    copy_version: str = Field(..., max_length=40)
+    session_id: Optional[str] = Field(None, max_length=36)
+
+
+class ConsentResponse(BaseModel):
+    accepted: bool
+    consent_type: str
+    copy_version: str
+
+
+class DeleteRequestResponse(BaseModel):
+    # Two-step erasure: step 1 returns a short-lived signed token the client must
+    # echo back to confirm. Nothing is deleted at this step.
+    confirmation_token: str
+    expires_in_seconds: int
+    message: str
+
+
+class DeleteConfirmRequest(BaseModel):
+    confirmation_token: str = Field(..., max_length=2000)
+
+
+class DeleteConfirmResponse(BaseModel):
+    deleted: bool
+    message: str
+
+
+class PurgeResponse(BaseModel):
+    messages_purged: int
+    debriefs_purged: int
+    sessions_hard_deleted: int
+    consents_hard_deleted: int

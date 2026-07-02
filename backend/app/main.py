@@ -1,9 +1,9 @@
 import json
 import logging
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -11,18 +11,24 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from sqlalchemy.exc import IntegrityError
+from jose import jwt, JWTError
 
 from .config import settings
 from .db import get_db, get_student_context, fetch_alumni_intel, like_escape
 from .auth import current_user
 from . import stages
+from . import compliance
 from .schemas import (
     StartSessionRequest, StartSessionResponse,
     TurnRequest, TurnResponse,
     RatingRequest, RatingResponse, SessionState,
+    SessionMessagesResponse,
     EndRequest, DebriefResponse,
     AlumniQuestionSubmit, HealthResponse,
     HistoryListResponse, HistoryListItem, HistoryDetailResponse,
+    ConsentRequest, ConsentResponse,
+    DeleteRequestResponse, DeleteConfirmRequest, DeleteConfirmResponse,
+    PurgeResponse,
 )
 from .prompts import build_system_prompt, DEBRIEF_INSTRUCTION, stage_turn_directive
 from .claude_client import call_claude, extract_resume_text
@@ -41,10 +47,30 @@ def _as_obj(v, default):
             return default
     return default
 
+class _PIIRedactionFilter(logging.Filter):
+    """INT-07: last-line-of-defence PII scrub applied to every log record.
+
+    The formatted message is passed through compliance.redact() so any email or
+    phone-like string that slips into a log line (e.g. echoed in an upstream error
+    body) is masked at log-write. Learner message content, names and emails must
+    never be logged in the clear.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            record.msg = compliance.redact(record.getMessage())
+            record.args = ()
+        except Exception:
+            pass
+        return True
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
+for _h in logging.getLogger().handlers:
+    _h.addFilter(_PIIRedactionFilter())
 log = logging.getLogger(__name__)
 
 
@@ -122,8 +148,9 @@ def _check_alumni_rate_limit(db: Session, user_id: str) -> None:
 
 
 def _load_session(db: Session, session_id: str, user_id: str) -> dict:
+    # INT-07: soft-deleted sessions (deleted_at set) are invisible to the owner.
     row = db.execute(
-        text("SELECT * FROM vyom_sessions WHERE id=:id AND user_id=:u"),
+        text("SELECT * FROM vyom_sessions WHERE id=:id AND user_id=:u AND deleted_at IS NULL"),
         {"id": session_id, "u": user_id},
     ).mappings().first()
     if not row:
@@ -164,8 +191,12 @@ def _session_to_cfg(row: dict) -> dict:
     }
 
 
-def _build_state(row: dict) -> SessionState:
-    """INT-04: assemble the client-facing state object from a session row."""
+def _build_state(row: dict, *, stale: bool = False) -> SessionState:
+    """INT-04: assemble the client-facing state object from a session row.
+
+    INT-06: status/started_at/stale ride along so the frontend can resume after a
+    refresh (only the state endpoint fills them; start/turn/rating leave them None).
+    """
     level = row.get("level", "")
     current_stage = row.get("current_stage") or "WARMUP"
     round_index = int(row.get("round_index") or 0)
@@ -180,6 +211,9 @@ def _build_state(row: dict) -> SessionState:
         answer_cap=settings.MAX_ANSWERS_PER_SESSION,
         next_action=stages.next_action(current_stage, awaiting),
         stage_label=stages.stage_label(current_stage, round_index, level, awaiting),
+        status=row.get("status"),
+        started_at=row.get("started_at"),
+        stale=stale,
     )
 
 
@@ -247,6 +281,21 @@ async def start_session(
     user_id: str = Depends(current_user),
 ):
     _check_rate_limit(db, user_id)
+
+    # INT-07: consent gate. Voice mode requires an active consent row; while
+    # VOICE_ENABLED is false this is a no-op (gate always passes). Built now so the
+    # enforcement path exists the moment voice ships.
+    if settings.VOICE_ENABLED:
+        has_consent = db.execute(
+            text("""
+                SELECT 1 FROM vyom_consents
+                WHERE user_id = :u AND consent_type = 'voice_recording'
+                LIMIT 1
+            """),
+            {"u": user_id},
+        ).first() is not None
+        if not compliance.consent_gate_ok(settings.VOICE_ENABLED, has_consent):
+            raise HTTPException(403, "Voice consent is required before starting a voice session.")
 
     ctx = {}
     try:
@@ -493,8 +542,41 @@ def session_state(
     db: Session = Depends(get_db),
     user_id: str = Depends(current_user),
 ):
+    # INT-06: auth-guarded (_load_session filters by user_id) — a second browser on
+    # another account cannot fetch this session; it 404s.
     row = _load_session(db, session_id, user_id)
-    return _build_state(row)
+
+    # Staleness uses the DB clock for both sides to avoid app/DB timezone drift.
+    stale = False
+    if row.get("status") == "active":
+        ts = db.execute(
+            text("SELECT MAX(created_at) AS last_at, NOW() AS db_now "
+                 "FROM vyom_messages WHERE session_id=:s"),
+            {"s": session_id},
+        ).mappings().first()
+        stale = compliance.is_stale(
+            ts["last_at"] if ts else None,
+            ts["db_now"] if ts else None,
+            settings.SESSION_IDLE_MINUTES,
+        )
+    return _build_state(row, stale=stale)
+
+
+@app.get("/session/{session_id}/messages", response_model=SessionMessagesResponse)
+def session_messages(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(current_user),
+):
+    """INT-06: full message history for resume after a page refresh.
+
+    Auth-guarded — _load_session enforces the session belongs to the requester.
+    """
+    _load_session(db, session_id, user_id)
+    return SessionMessagesResponse(
+        session_id=session_id,
+        messages=_load_messages(db, session_id),
+    )
 
 
 @app.post("/session/turn/rating", response_model=RatingResponse)
@@ -608,13 +690,14 @@ async def end_session(
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start == -1 or end == -1:
-        log.error("Debrief model did not return JSON: %s", raw[:500])
+        # INT-07: never log raw model output — it quotes learner answers.
+        log.error("Debrief model did not return JSON (len=%d)", len(raw))
         raise HTTPException(502, "Debrief generation failed")
 
     try:
         debrief = json.loads(cleaned[start: end + 1])
     except json.JSONDecodeError as e:
-        log.error("Debrief JSON parse error: %s — raw=%s", e, raw[:500])
+        log.error("Debrief JSON parse error: %s (len=%d)", e, len(raw))
         raise HTTPException(502, "Debrief generation failed")
 
     # INT-03: derive readiness bands from the raw (internal) percentages.
@@ -738,7 +821,7 @@ def user_history(
                    d.overall, d.one_line
             FROM vyom_sessions s
             LEFT JOIN vyom_debriefs d ON d.session_id = s.id
-            WHERE s.user_id = :u
+            WHERE s.user_id = :u AND s.deleted_at IS NULL
             ORDER BY s.started_at DESC
             LIMIT :lim OFFSET :off
         """),
@@ -746,7 +829,7 @@ def user_history(
     ).mappings().all()
 
     total_row = db.execute(
-        text("SELECT COUNT(*) AS cnt FROM vyom_sessions WHERE user_id = :u"),
+        text("SELECT COUNT(*) AS cnt FROM vyom_sessions WHERE user_id = :u AND deleted_at IS NULL"),
         {"u": user_id},
     ).first()
     total = total_row.cnt if total_row else 0
@@ -773,7 +856,7 @@ def user_history_detail(
                    d.overall, d.one_line, d.raw_json
             FROM vyom_sessions s
             LEFT JOIN vyom_debriefs d ON d.session_id = s.id
-            WHERE s.id = :id AND s.user_id = :u
+            WHERE s.id = :id AND s.user_id = :u AND s.deleted_at IS NULL
         """),
         {"id": session_id, "u": user_id},
     ).mappings().first()
@@ -817,7 +900,7 @@ def user_stats(
               MIN(d.overall) AS worst_score
             FROM vyom_sessions s
             LEFT JOIN vyom_debriefs d ON d.session_id = s.id
-            WHERE s.user_id = :u
+            WHERE s.user_id = :u AND s.deleted_at IS NULL
         """),
         {"u": user_id},
     ).mappings().first()
@@ -827,7 +910,7 @@ def user_stats(
             SELECT s.role, COUNT(*) AS n, AVG(d.overall) AS avg_score
             FROM vyom_sessions s
             LEFT JOIN vyom_debriefs d ON d.session_id = s.id
-            WHERE s.user_id = :u AND s.status = 'completed'
+            WHERE s.user_id = :u AND s.status = 'completed' AND s.deleted_at IS NULL
             GROUP BY s.role
             ORDER BY n DESC
             LIMIT 10
@@ -840,7 +923,7 @@ def user_stats(
             SELECT s.round, COUNT(*) AS n, AVG(d.overall) AS avg_score
             FROM vyom_sessions s
             LEFT JOIN vyom_debriefs d ON d.session_id = s.id
-            WHERE s.user_id = :u AND s.status = 'completed'
+            WHERE s.user_id = :u AND s.status = 'completed' AND s.deleted_at IS NULL
             GROUP BY s.round
         """),
         {"u": user_id},
@@ -901,6 +984,210 @@ def alumni_preview(
     return {"count": row.cnt or 0, "latest_date": str(row.latest) if row.latest else None}
 
 
+# ── INT-07: DPDPA consent + data rights ─────────────────────────────────────
+
+@app.post("/consent", response_model=ConsentResponse)
+def record_consent(
+    body: ConsentRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(current_user),
+):
+    """Record a consent grant. copy_version pins exactly which wording the learner
+    agreed to (legal copy is finalised outside this sprint — see the report)."""
+    db.execute(
+        text("""
+            INSERT INTO vyom_consents (user_id, session_id, consent_type, copy_version)
+            VALUES (:u, :sid, :ct, :cv)
+        """),
+        {"u": user_id, "sid": body.session_id,
+         "ct": body.consent_type.strip(), "cv": body.copy_version.strip()},
+    )
+    db.commit()
+    return ConsentResponse(
+        accepted=True,
+        consent_type=body.consent_type.strip(),
+        copy_version=body.copy_version.strip(),
+    )
+
+
+@app.get("/me/data")
+def export_my_data(
+    db: Session = Depends(get_db),
+    user_id: str = Depends(current_user),
+):
+    """DPDPA data-portability: every artefact held for the requester, as JSON.
+
+    Soft-deleted sessions are excluded — once a learner deletes their data the app
+    consistently reports it as no longer accessible (the grace window is only for
+    internal recovery, not continued access).
+    """
+    sessions = db.execute(
+        text("SELECT * FROM vyom_sessions WHERE user_id = :u AND deleted_at IS NULL "
+             "ORDER BY started_at DESC"),
+        {"u": user_id},
+    ).mappings().all()
+    session_ids = [s["id"] for s in sessions]
+
+    messages, ratings, debriefs = [], [], []
+    if session_ids:
+        messages = db.execute(
+            text("SELECT id, session_id, role, content, created_at "
+                 "FROM vyom_messages WHERE session_id IN :ids ORDER BY id ASC"),
+            {"ids": tuple(session_ids)},
+        ).mappings().all()
+        ratings = db.execute(
+            text("SELECT answer_id, session_id, rating, stage, created_at "
+                 "FROM vyom_answer_ratings WHERE session_id IN :ids ORDER BY answer_id ASC"),
+            {"ids": tuple(session_ids)},
+        ).mappings().all()
+        debriefs = db.execute(
+            text("SELECT * FROM vyom_debriefs WHERE session_id IN :ids"),
+            {"ids": tuple(session_ids)},
+        ).mappings().all()
+
+    consents = db.execute(
+        text("SELECT * FROM vyom_consents WHERE user_id = :u ORDER BY granted_at ASC"),
+        {"u": user_id},
+    ).mappings().all()
+
+    def _rows(rows):
+        return [{k: (v.isoformat() if isinstance(v, (datetime, date)) else v)
+                 for k, v in dict(r).items()} for r in rows]
+
+    return {
+        "user_id": user_id,
+        "exported_at": datetime.utcnow().isoformat() + "Z",
+        "sessions": _rows(sessions),
+        "messages": _rows(messages),
+        "ratings": _rows(ratings),
+        "debriefs": _rows(debriefs),
+        "consents": _rows(consents),
+    }
+
+
+def _delete_token(user_id: str) -> str:
+    exp = datetime.utcnow() + timedelta(seconds=settings.DELETE_TOKEN_TTL_SECONDS)
+    return jwt.encode(
+        {"sub": str(user_id), "purpose": "delete_my_data", "exp": exp},
+        settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM,
+    )
+
+
+@app.post("/me/data/delete-request", response_model=DeleteRequestResponse)
+def request_data_deletion(user_id: str = Depends(current_user)):
+    """Step 1 of erasure: issue a short-lived signed token. Nothing is deleted yet."""
+    return DeleteRequestResponse(
+        confirmation_token=_delete_token(user_id),
+        expires_in_seconds=settings.DELETE_TOKEN_TTL_SECONDS,
+        message="Confirm within the time window to delete all your data.",
+    )
+
+
+@app.delete("/me/data", response_model=DeleteConfirmResponse)
+def confirm_data_deletion(
+    body: DeleteConfirmRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(current_user),
+):
+    """Step 2 of erasure: verify the token, then soft-delete immediately.
+
+    Soft-delete (deleted_at set) hides all data from the user right away; the
+    nightly purge hard-deletes after DELETE_GRACE_DAYS.
+    """
+    try:
+        claims = jwt.decode(
+            body.confirmation_token, settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+            options={"require": ["exp"], "verify_exp": True},
+        )
+    except JWTError:
+        raise HTTPException(400, "Invalid or expired confirmation token. Please request deletion again.")
+
+    if claims.get("purpose") != "delete_my_data" or str(claims.get("sub")) != str(user_id):
+        raise HTTPException(400, "Confirmation token does not match your account.")
+
+    db.execute(
+        text("UPDATE vyom_sessions SET deleted_at = NOW() "
+             "WHERE user_id = :u AND deleted_at IS NULL"),
+        {"u": user_id},
+    )
+    db.commit()
+    return DeleteConfirmResponse(
+        deleted=True,
+        message="Your data has been scheduled for deletion and is no longer accessible.",
+    )
+
+
+@app.post("/admin/purge", response_model=PurgeResponse)
+def admin_purge(
+    db: Session = Depends(get_db),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Retention enforcement — call from cron (e.g. nightly).
+
+    - Hard-delete messages of finished sessions past TRANSCRIPT_RETENTION_DAYS.
+    - Hard-delete debriefs past DEBRIEF_RETENTION_DAYS.
+    - Hard-delete soft-deleted accounts past DELETE_GRACE_DAYS (cascades to
+      messages/ratings/debriefs via FK ON DELETE CASCADE).
+    All windows compared against the DB clock (NOW()). Guarded by ADMIN_TOKEN.
+    """
+    if not settings.ADMIN_TOKEN or x_admin_token != settings.ADMIN_TOKEN:
+        raise HTTPException(401, "Admin token required")
+
+    # 1) Transcripts of finished, non-soft-deleted sessions past the window.
+    msg_res = db.execute(
+        text("""
+            DELETE m FROM vyom_messages m
+            JOIN vyom_sessions s ON s.id = m.session_id
+            WHERE s.status IN ('completed', 'abandoned')
+              AND s.deleted_at IS NULL
+              AND s.ended_at IS NOT NULL
+              AND s.ended_at < DATE_SUB(NOW(), INTERVAL :days DAY)
+        """),
+        {"days": settings.TRANSCRIPT_RETENTION_DAYS},
+    )
+    # 2) Debriefs past the (longer) debrief window.
+    deb_res = db.execute(
+        text("""
+            DELETE d FROM vyom_debriefs d
+            JOIN vyom_sessions s ON s.id = d.session_id
+            WHERE s.deleted_at IS NULL
+              AND s.ended_at IS NOT NULL
+              AND s.ended_at < DATE_SUB(NOW(), INTERVAL :days DAY)
+        """),
+        {"days": settings.DEBRIEF_RETENTION_DAYS},
+    )
+    # 3) Right-to-erasure: hard-delete soft-deleted accounts past the grace window.
+    #    Consents are user-scoped (no session FK), so purge them explicitly first.
+    con_res = db.execute(
+        text("""
+            DELETE c FROM vyom_consents c
+            WHERE c.user_id IN (
+                SELECT DISTINCT user_id FROM vyom_sessions
+                WHERE deleted_at IS NOT NULL
+                  AND deleted_at < DATE_SUB(NOW(), INTERVAL :days DAY)
+            )
+        """),
+        {"days": settings.DELETE_GRACE_DAYS},
+    )
+    sess_res = db.execute(
+        text("""
+            DELETE FROM vyom_sessions
+            WHERE deleted_at IS NOT NULL
+              AND deleted_at < DATE_SUB(NOW(), INTERVAL :days DAY)
+        """),
+        {"days": settings.DELETE_GRACE_DAYS},
+    )
+    db.commit()
+
+    return PurgeResponse(
+        messages_purged=msg_res.rowcount or 0,
+        debriefs_purged=deb_res.rowcount or 0,
+        sessions_hard_deleted=sess_res.rowcount or 0,
+        consents_hard_deleted=con_res.rowcount or 0,
+    )
+
+
 @app.get("/")
 def spa_root():
     index = STATIC_DIR / "index.html"
@@ -911,7 +1198,8 @@ def spa_root():
 
 @app.get("/{path:path}")
 def spa_catch_all(path: str):
-    api_prefixes = ("session", "alumni", "user", "health", "assets", "docs", "openapi.json")
+    api_prefixes = ("session", "alumni", "user", "health", "assets", "docs", "openapi.json",
+                    "consent", "me", "admin")
     if path.startswith(api_prefixes):
         raise HTTPException(404, "Not found")
     index = STATIC_DIR / "index.html"
