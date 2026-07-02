@@ -33,6 +33,7 @@ def test_stage_plan_by_level():
 
 def test_stage_order_and_advancement():
     # WARMUP question 1 -> stay; question 2 -> advance to DOMAIN.
+    # (WARMUP is not rating-gated; main.py calls advance_after_rating directly.)
     assert s.advance_after_rating("WARMUP", 1, "Fresher") == ("WARMUP", 1)
     assert s.advance_after_rating("WARMUP", 2, "Fresher") == ("DOMAIN", 0)
     # DOMAIN(4) complete -> BEHAVIOURAL; BEHAVIOURAL(3) complete -> CASE; CASE(1) -> REVERSE.
@@ -42,6 +43,18 @@ def test_stage_order_and_advancement():
     # REVERSE is not rating-gated; 2 questions -> READOUT.
     assert s.advance_after_reverse(1, "Fresher") == ("REVERSE", 1)
     assert s.advance_after_reverse(2, "Fresher") == ("READOUT", 0)
+
+
+def test_rating_gating():
+    # Ratings are collected from DOMAIN onward; WARMUP is exempt (product change).
+    assert s.is_rating_gated("WARMUP") is False
+    assert s.is_rating_gated("DOMAIN") is True
+    assert s.is_rating_gated("BEHAVIOURAL") is True
+    assert s.is_rating_gated("CASE") is True
+    # Non-answer/flow stages are never rating-gated.
+    assert s.is_rating_gated("REVERSE") is False
+    assert s.is_rating_gated("READOUT") is False
+    assert s.is_rating_gated("DONE") is False
 
 
 def test_next_action():

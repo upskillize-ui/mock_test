@@ -529,10 +529,15 @@ async def session_turn(
         # Not rating-gated; advance straight to READOUT when the round completes.
         new_stage, new_round = stages.advance_after_reverse(round_index_after, level)
         new_awaiting, new_last = 0, None
-    else:
-        # Scored stage: hold here until the learner submits a confidence rating (INT-01).
+    elif stages.is_rating_gated(st):
+        # DOMAIN/BEHAVIOURAL/CASE: hold here until the learner submits a confidence
+        # rating (INT-01); advancement happens in /session/turn/rating.
         new_stage, new_round = st, round_index_after
         new_awaiting, new_last = 1, answer_id
+    else:
+        # WARMUP: not rating-gated (product) — advance straight to the next question.
+        new_stage, new_round = stages.advance_after_rating(st, round_index_after, level)
+        new_awaiting, new_last = 0, None
 
     db.execute(
         text("""

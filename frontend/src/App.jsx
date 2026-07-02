@@ -29,6 +29,18 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
+// Voice Phase 1 fix: native <audio> requests don't carry our Authorization header
+// (and bypass the CORS fetch path), so the auth-guarded /session/audio/{hash}
+// endpoint rejects them. Fetch the audio ourselves with auth, then hand the
+// <audio> element a local blob URL. `path` is relative; API_URL makes it absolute
+// against the backend (not the vite dev server).
+async function fetchAudioObjectUrl(path) {
+  const res = await fetch(API_URL + path, { headers: { ...authHeaders() } });
+  if (!res.ok) throw new Error(`audio request failed (${res.status})`);
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
 const startSession = (c) => api("/session/start", { method: "POST", body: JSON.stringify(c) });
 const sendTurn = (sid, msg, stage, voice) => api("/session/turn", { method: "POST", body: JSON.stringify({ session_id: sid, message: msg, stage, voice }) });
 const submitRating = (sid, answerId, rating) => api("/session/turn/rating", { method: "POST", body: JSON.stringify({ session_id: sid, answer_id: answerId, rating }) });
@@ -600,6 +612,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   const [audioPlaying, setAudioPlaying] = useState(false);
   const [needsTap, setNeedsTap] = useState(false);   // autoplay blocked (iOS) → tap-to-play
   const playedIdxRef = useRef(-1);                    // last message index auto-played
+  const audioBlobCache = useRef(new Map());           // audio_url -> object URL (so Replay reuses, no re-fetch)
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -648,16 +661,26 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
       p.removeEventListener("pause", onStop);
       p.removeEventListener("error", onStop);
       try { p.pause(); } catch { /* noop */ }   // stop audio when leaving the interview
+      // Revoke cached blob URLs so audio buffers are freed when the session ends.
+      audioBlobCache.current.forEach(u => { try { URL.revokeObjectURL(u); } catch { /* noop */ } });
+      audioBlobCache.current.clear();
     };
   }, []);
 
   // force=true is used by the explicit replay/tap controls (a user gesture), so it
   // plays even when muted; autoplay respects the mute toggle.
-  const playAudio = (url, force = false) => {
+  // The audio is fetched with our auth headers and played from a blob URL cached
+  // per message, so Replay never re-fetches and the endpoint stays auth-guarded.
+  const playAudio = async (url, force = false) => {
     const p = player();
     if (!p || !url || (muted && !force)) return;
     try {
-      p.src = API_URL + url;
+      let objUrl = audioBlobCache.current.get(url);
+      if (!objUrl) {
+        objUrl = await fetchAudioObjectUrl(url);
+        audioBlobCache.current.set(url, objUrl);
+      }
+      p.src = objUrl;
       const pr = p.play();
       if (pr && pr.then) pr.then(() => setNeedsTap(false)).catch(() => setNeedsTap(true));
     } catch { setNeedsTap(true); }

@@ -5,10 +5,11 @@ Pure logic only (no DB, no I/O) so it is trivially testable. Consumed by main.py
 Stages (INT-04):
   SETUP -> WARMUP -> DOMAIN -> BEHAVIOURAL -> CASE -> REVERSE -> READOUT -> DONE
 
-The learner answers questions in WARMUP/DOMAIN/BEHAVIOURAL/CASE (these are
-"scored" stages and each answer is followed by a confidence rating, INT-01).
-REVERSE flips the flow: the learner asks the interviewer questions (not rated).
-READOUT is terminal input-wise; the debrief is generated at /session/end.
+The learner answers questions in WARMUP/DOMAIN/BEHAVIOURAL/CASE (these are the
+"scored" stages). Confidence ratings (INT-01) are collected from DOMAIN onward;
+WARMUP is intentionally exempt — warm-up answers advance straight to the next
+question. REVERSE flips the flow: the learner asks the interviewer questions
+(not rated). READOUT is terminal input-wise; the debrief is at /session/end.
 """
 
 from .config import settings
@@ -16,6 +17,9 @@ from .config import settings
 # Ordered, answerable stages (excludes SETUP/READOUT/DONE which take no /turn answer).
 STAGE_ORDER = ["WARMUP", "DOMAIN", "BEHAVIOURAL", "CASE", "REVERSE"]
 SCORED_STAGES = {"WARMUP", "DOMAIN", "BEHAVIOURAL", "CASE"}
+# Stages whose answers are followed by a confidence rating. WARMUP is excluded
+# by product decision — warm-up is a rapport ice-breaker, not rating-gated.
+RATING_STAGES = {"DOMAIN", "BEHAVIOURAL", "CASE"}
 TERMINAL_STAGES = {"READOUT", "DONE"}
 
 STAGE_LABELS = {
@@ -89,6 +93,12 @@ def next_stage(stage: str) -> str:
 
 def is_scored(stage: str) -> bool:
     return stage in SCORED_STAGES
+
+
+def is_rating_gated(stage: str) -> bool:
+    """True if a learner answer in this stage must be followed by a confidence
+    rating before the interview can proceed. WARMUP is not gated (INT-01 exemption)."""
+    return stage in RATING_STAGES
 
 
 def stage_label(stage: str, round_index: int, level: str, awaiting_rating: bool = False) -> str:
