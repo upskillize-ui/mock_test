@@ -30,7 +30,7 @@ async function api(path, opts = {}) {
 }
 
 const startSession = (c) => api("/session/start", { method: "POST", body: JSON.stringify(c) });
-const sendTurn = (sid, msg, stage) => api("/session/turn", { method: "POST", body: JSON.stringify({ session_id: sid, message: msg, stage }) });
+const sendTurn = (sid, msg, stage, voice) => api("/session/turn", { method: "POST", body: JSON.stringify({ session_id: sid, message: msg, stage, voice }) });
 const submitRating = (sid, answerId, rating) => api("/session/turn/rating", { method: "POST", body: JSON.stringify({ session_id: sid, answer_id: answerId, rating }) });
 const fetchSessionState = (sid) => api(`/session/${encodeURIComponent(sid)}/state`);
 const fetchSessionMessages = (sid) => api(`/session/${encodeURIComponent(sid)}/messages`);
@@ -63,6 +63,39 @@ function loadActiveSession() {
 function clearActiveSession() {
   try { localStorage.removeItem(ACTIVE_KEY); } catch { /* noop */ }
 }
+
+// ── Voice Phase 1: TTS playback (interviewer speaks; learner still types) ─────
+const MUTE_KEY = "interviewiq_muted";
+const VOICE_KEY = "interviewiq_voice";   // "female" | "male"
+const getVoicePref = () => { try { return localStorage.getItem(VOICE_KEY) === "male" ? "male" : "female"; } catch { return "female"; } };
+const getMutePref = () => { try { return localStorage.getItem(MUTE_KEY) === "1"; } catch { return false; } };
+
+// One shared <audio> element across screens so the iOS unlock (done on the Start
+// button gesture) carries over to programmatic playback in the interview.
+let _player = null;
+function player() {
+  if (!_player && typeof Audio !== "undefined") { _player = new Audio(); _player.preload = "auto"; }
+  return _player;
+}
+// Minimal silent WAV — played inside the Start-button gesture to unlock autoplay
+// on iOS Safari, which otherwise blocks programmatic .play().
+const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
+async function unlockAudioPlayback() {
+  const p = player(); if (!p) return;
+  try { p.src = SILENT_WAV; await p.play(); p.pause(); p.currentTime = 0; }
+  catch { /* still blocked — the UI will offer a tap-to-play affordance */ }
+}
+
+// Inline Lucide-style line icons (1.6px stroke). No emojis.
+const IconSpeaker = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z" /><path d="M15.5 8.5a5 5 0 0 1 0 7" /><path d="M19 5a9 9 0 0 1 0 14" /></svg>
+);
+const IconSpeakerOff = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z" /><line x1="22" y1="9" x2="16" y2="15" /><line x1="16" y1="9" x2="22" y2="15" /></svg>
+);
+const IconReplay = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3 2v6h6" /><path d="M3 8a9 9 0 1 0 3-5.7L3 8" /></svg>
+);
 
 // ── Theme ─────────────────────────────────────────────────────────────────
 const T = {
@@ -156,6 +189,12 @@ const CSS = `
   @keyframes iqLoad { 0%{width:0%}50%{width:70%}100%{width:100%}}
   @keyframes iqFade { from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
   @keyframes iqSpin { to { transform: rotate(360deg); } }
+  @keyframes iqTealPulse { 0%,100%{box-shadow:0 0 0 0 rgba(0,196,160,.55)}50%{box-shadow:0 0 0 6px rgba(0,196,160,0)}}
+  .iq-avatar-speaking{animation:iqTealPulse 1.2s ease-in-out infinite}
+  .iq-audio-btn{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.06);color:#fff;cursor:pointer;transition:all .15s}
+  .iq-audio-btn:hover{background:rgba(255,255,255,.14)}
+  .iq-audio-btn:disabled{opacity:.4;cursor:not-allowed}
+  .iq-audio-btn:focus-visible{outline:2px solid #00C4A0;outline-offset:2px}
   .iq-stat{position:relative;cursor:default;transition:all .25s}
   .iq-stat:hover{background:rgba(255,255,255,.12)!important}
   .iq-stat .iq-tip{visibility:hidden;opacity:0;position:absolute;top:calc(100% + 12px);left:50%;transform:translateX(-50%);min-width:220px;z-index:200;transition:opacity .2s,visibility .2s}
@@ -248,6 +287,8 @@ function SetupScreen({ onStart, userName }) {
   const [tipIdx, setTipIdx] = useState(0);
   // INT-07: consent gate. Once accepted (this browser), we don't re-prompt.
   const [consented, setConsented] = useState(() => { try { return localStorage.getItem(CONSENT_KEY) === "1"; } catch { return false; } });
+  // Voice Phase 1: interviewer TTS voice preference (default female).
+  const [voice, setVoice] = useState(getVoicePref());
 
   const toggleFocus = (f) => {
     if (f === "Other") { setFocus(c => c.includes("Other") ? c.filter(x => x !== "Other") : [...c, "Other"]); return; }
@@ -267,6 +308,10 @@ function SetupScreen({ onStart, userName }) {
   useEffect(() => { if (!starting) return; const t = setInterval(() => setTipIdx(i => (i + 1) % LOADING_TIPS.length), 2500); return () => clearInterval(t); }, [starting]);
 
   const handleStart = async () => {
+    // Voice Phase 1: unlock audio inside this user gesture so iOS Safari will
+    // allow the interviewer's voice to autoplay later.
+    unlockAudioPlayback();
+    try { localStorage.setItem(VOICE_KEY, voice); } catch { /* noop */ }
     setStarting(true); setError(null); setTipIdx(0);
     const allFocus = [...focus.filter(f => f !== "Other")];
     if (focus.includes("Other") && customFocus.trim()) allFocus.push(customFocus.trim());
@@ -285,12 +330,13 @@ function SetupScreen({ onStart, userName }) {
         round_detail: selectedRound?.detail || "",
         focus: allFocus,
         intro: [intro, jd ? "\n\n--- JOB DESCRIPTION ---\n" + jd : ""].filter(Boolean).join(""),
+        voice,
       };
       const r = await startSession(payload);
       // INT-07: record the consent grant against this session (non-blocking).
       try { await recordConsent({ consent_type: "data_processing", copy_version: CONSENT_COPY_VERSION, session_id: r.session_id }); } catch { /* non-blocking */ }
       try { localStorage.setItem(CONSENT_KEY, "1"); } catch { /* noop */ }
-      onStart({ ...payload, focus: allFocus }, r.session_id, r.greeting, r.state);
+      onStart({ ...payload, focus: allFocus }, r.session_id, r.greeting, r.state, r.audio_url);
     } catch (e) { setError(e.message); setStarting(false); }
   };
 
@@ -439,6 +485,14 @@ function SetupScreen({ onStart, userName }) {
                   </button>
                 ))}
               </div>
+
+              {/* Voice Phase 1: interviewer voice picker. */}
+              <label className="vl" style={{ marginTop: 14 }}>Interviewer Voice</label>
+              <div style={{ display: "flex", gap: 6 }}>
+                {[{ v: "female", l: "Female" }, { v: "male", l: "Male" }].map(o => (
+                  <button key={o.v} className={"vchip" + (voice === o.v ? " vchip-on" : "")} onClick={() => setVoice(o.v)}>{o.l}</button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -536,11 +590,16 @@ function RatingWidget({ busy, onRate }) {
   );
 }
 
-function InterviewScreen({ config, sessionId, greeting, initialState, initialMessages, startedAt, onEnd, onRestart }) {
+function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initialState, initialMessages, startedAt, onEnd, onRestart }) {
   // INT-06: on resume we hydrate from server history; on a fresh start we seed with the greeting.
   const [messages, setMessages] = useState(
-    initialMessages && initialMessages.length ? initialMessages : [{ role: "assistant", content: greeting }]
+    initialMessages && initialMessages.length ? initialMessages : [{ role: "assistant", content: greeting, audio_url: greetingAudioUrl }]
   );
+  // Voice Phase 1: playback state.
+  const [muted, setMuted] = useState(getMutePref);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  const [needsTap, setNeedsTap] = useState(false);   // autoplay blocked (iOS) → tap-to-play
+  const playedIdxRef = useRef(-1);                    // last message index auto-played
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -572,12 +631,73 @@ function InterviewScreen({ config, sessionId, greeting, initialState, initialMes
     if (nextAction === "readout" || nextAction === "done") { setEnded(true); onEnd(); }
   }, [nextAction, ended, onEnd]);
 
+  // Voice Phase 1: track playback so the avatar can pulse and errors fall back to text.
+  useEffect(() => {
+    const p = player(); if (!p) return;
+    const onPlay = () => { setAudioPlaying(true); setNeedsTap(false); };
+    const onStop = () => setAudioPlaying(false);
+    p.addEventListener("play", onPlay);
+    p.addEventListener("playing", onPlay);
+    p.addEventListener("ended", onStop);
+    p.addEventListener("pause", onStop);
+    p.addEventListener("error", onStop);
+    return () => {
+      p.removeEventListener("play", onPlay);
+      p.removeEventListener("playing", onPlay);
+      p.removeEventListener("ended", onStop);
+      p.removeEventListener("pause", onStop);
+      p.removeEventListener("error", onStop);
+      try { p.pause(); } catch { /* noop */ }   // stop audio when leaving the interview
+    };
+  }, []);
+
+  // force=true is used by the explicit replay/tap controls (a user gesture), so it
+  // plays even when muted; autoplay respects the mute toggle.
+  const playAudio = (url, force = false) => {
+    const p = player();
+    if (!p || !url || (muted && !force)) return;
+    try {
+      p.src = API_URL + url;
+      const pr = p.play();
+      if (pr && pr.then) pr.then(() => setNeedsTap(false)).catch(() => setNeedsTap(true));
+    } catch { setNeedsTap(true); }
+  };
+
+  // Autoplay the newest interviewer message when its audio arrives (once per message).
+  useEffect(() => {
+    const idx = messages.length - 1;
+    const last = messages[idx];
+    if (!last || last.role !== "assistant" || !last.audio_url) return;
+    if (idx === playedIdxRef.current) return;
+    playedIdxRef.current = idx;
+    if (!muted) playAudio(last.audio_url);
+  }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const latestAudioUrl = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "assistant" && messages[i].audio_url) return messages[i].audio_url;
+    return null;
+  })();
+  const lastAssistantIdx = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "assistant") return i;
+    return -1;
+  })();
+
+  const toggleMute = () => {
+    setMuted(m => {
+      const next = !m;
+      try { localStorage.setItem(MUTE_KEY, next ? "1" : "0"); } catch { /* noop */ }
+      if (next) { try { player()?.pause(); } catch { /* noop */ } }
+      return next;
+    });
+  };
+  const replay = () => { if (latestAudioUrl) playAudio(latestAudioUrl, true); };
+
   const send = async () => {
     const textVal = input.trim(); if (!textVal || loading || ended || awaitingRating) return;
     setMessages(m => [...m, { role: "user", content: textVal }]); setInput(""); setLoading(true); setError(null);
     try {
-      const res = await sendTurn(sessionId, textVal, sstate?.current_stage);
-      setMessages(m => [...m, { role: "assistant", content: res.reply }]);
+      const res = await sendTurn(sessionId, textVal, sstate?.current_stage, config.voice || "female");
+      setMessages(m => [...m, { role: "assistant", content: res.reply, audio_url: res.audio_url }]);
       setSstate(res.state);
     } catch (e) {
       setError(e.message);
@@ -631,6 +751,16 @@ function InterviewScreen({ config, sessionId, greeting, initialState, initialMes
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {latestAudioUrl && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <button className="iq-audio-btn" onClick={toggleMute} title={muted ? "Unmute interviewer voice" : "Mute interviewer voice"} aria-label={muted ? "Unmute interviewer voice" : "Mute interviewer voice"} style={muted ? {} : { color: IQ.teal }}>
+                {muted ? <IconSpeakerOff /> : <IconSpeaker />}
+              </button>
+              <button className="iq-audio-btn" onClick={replay} disabled={!latestAudioUrl} title="Replay question" aria-label="Replay question">
+                <IconReplay />
+              </button>
+            </div>
+          )}
           <span style={{ fontSize: 18, fontWeight: 800, color: secondsLeft <= 60 ? "#ff6b6b" : secondsLeft <= 180 ? T.gold : "#fff", fontVariantNumeric: "tabular-nums" }}>{mmss(secondsLeft)}</span>
           <button onClick={handleEndClick} style={{ padding: "6px 16px", borderRadius: 8, border: "1px solid rgba(255,255,255,.15)", background: "rgba(255,255,255,.06)", cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#fff", fontFamily: T.font }}>End</button>
         </div>
@@ -638,12 +768,17 @@ function InterviewScreen({ config, sessionId, greeting, initialState, initialMes
 
       <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "20px 28px", background: T.bg }}>
         <div style={{ maxWidth: 700, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
-          {messages.map((m, i) => { const isV = m.role === "assistant"; return (
+          {messages.map((m, i) => { const isV = m.role === "assistant"; const speaking = isV && i === lastAssistantIdx && audioPlaying; return (
             <div key={i} style={{ display: "flex", gap: 10, flexDirection: isV ? "row" : "row-reverse", alignItems: "flex-start", animation: "iqFade .3s ease" }}>
-              <div style={{ width: 32, height: 32, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: isV ? T.navy : T.border, color: isV ? "#fff" : T.navy, fontWeight: 800, fontSize: 11 }}>{isV ? "IQ" : (config.name?.[0]?.toUpperCase() || "Y")}</div>
+              <div className={speaking ? "iq-avatar-speaking" : ""} style={{ width: 32, height: 32, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: isV ? T.navy : T.border, color: isV ? "#fff" : T.navy, fontWeight: 800, fontSize: 11 }}>{isV ? "IQ" : (config.name?.[0]?.toUpperCase() || "Y")}</div>
               <div style={{ padding: "12px 16px", borderRadius: isV ? "2px 12px 12px 12px" : "12px 2px 12px 12px", maxWidth: "78%", fontSize: 14, lineHeight: 1.65, background: isV ? T.white : T.navy, color: isV ? T.text : "#fff", border: isV ? "1px solid " + T.border : "none", fontFamily: T.font }}>{isV ? renderMd(m.content) : m.content}</div>
             </div>); })}
           {loading && <div style={{ display: "flex", gap: 10 }}><div style={{ width: 32, height: 32, borderRadius: "50%", background: T.navy, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ color: "#fff", fontWeight: 800, fontSize: 11 }}>IQ</span></div><div style={{ padding: "14px 18px", borderRadius: "2px 12px 12px 12px", background: T.white, border: "1px solid " + T.border }}><div style={{ display: "flex", gap: 5 }}>{[0,1,2].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: T.subtle, animation: "iqPulse 1.2s ease-in-out infinite", animationDelay: i * 0.15 + "s" }} />)}</div></div></div>}
+          {needsTap && latestAudioUrl && !muted && (
+            <button onClick={() => playAudio(latestAudioUrl, true)} style={{ alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 14px", borderRadius: 20, border: "1px solid " + IQ.teal, background: "#fff", color: IQ.navy, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: T.font }}>
+              <span style={{ color: IQ.teal, display: "inline-flex" }}><IconSpeaker size={16} /></span> Tap to hear the question
+            </button>
+          )}
           {awaitingRating && !loading && <RatingWidget busy={ratingBusy} onRate={rate} />}
           {reverseMode && !loading && <div style={{ padding: "12px 16px", borderRadius: 10, background: IQ.cream, border: "1px solid " + IQ.gold, color: "#5a4500", fontSize: 13, fontWeight: 600, fontFamily: IQ.sans }}>Your turn to interview us. Ask us two questions.</div>}
           {error && <div style={{ padding: "10px 14px", borderRadius: 8, background: T.redSoft, color: T.red, fontSize: 13 }}>{error}</div>}
@@ -1057,6 +1192,7 @@ export default function App() {
   const [config, setConfig] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const [greeting, setGreeting] = useState("");
+  const [greetingAudioUrl, setGreetingAudioUrl] = useState(null);
   const [initialState, setInitialState] = useState(null);
   const [initialMessages, setInitialMessages] = useState(null);
   const [startedAt, setStartedAt] = useState(null);
@@ -1112,14 +1248,14 @@ export default function App() {
 
   const restart = () => {
     clearActiveSession();
-    setConfig(null); setSessionId(null); setGreeting(""); setInitialState(null);
+    setConfig(null); setSessionId(null); setGreeting(""); setGreetingAudioUrl(null); setInitialState(null);
     setInitialMessages(null); setStartedAt(null); setResumeCfg(null); setHistoryDetailId(null);
     setScreen("setup");
   };
 
-  const handleStart = (cfg, id, gr, st) => {
+  const handleStart = (cfg, id, gr, st, audioUrl) => {
     const now = Date.now();
-    setConfig(cfg); setSessionId(id); setGreeting(gr); setInitialState(st);
+    setConfig(cfg); setSessionId(id); setGreeting(gr); setGreetingAudioUrl(audioUrl || null); setInitialState(st);
     setInitialMessages(null); setStartedAt(now);
     saveActiveSession(id, cfg, now);   // INT-06: persist the instant the session starts
     setScreen("interview");
@@ -1159,7 +1295,7 @@ export default function App() {
       )}
       {screen === "setup" && <SetupScreen userName={userName} onStart={handleStart} />}
       {screen === "resume" && <ResumePrompt config={resumeCfg} onResume={doResume} onDiscard={restart} />}
-      {screen === "interview" && <InterviewScreen config={config} sessionId={sessionId} greeting={greeting} initialState={initialState} initialMessages={initialMessages} startedAt={startedAt} onEnd={() => setScreen("debrief")} onRestart={restart} />}
+      {screen === "interview" && <InterviewScreen config={config} sessionId={sessionId} greeting={greeting} greetingAudioUrl={greetingAudioUrl} initialState={initialState} initialMessages={initialMessages} startedAt={startedAt} onEnd={() => setScreen("debrief")} onRestart={restart} />}
       {screen === "debrief" && <DebriefScreen config={config} sessionId={sessionId} onRestart={restart} onViewHistory={() => { setHistoryDetailId(null); setScreen("history"); }} />}
       {screen === "history" && !historyDetailId && <HistoryScreen onPickSession={(sid) => { setHistoryDetailId(sid); }} onStartNew={restart} />}
       {screen === "history" && historyDetailId && <HistoryDetail sessionId={historyDetailId} onBack={() => setHistoryDetailId(null)} />}

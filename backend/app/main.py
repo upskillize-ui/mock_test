@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -18,6 +19,7 @@ from .db import get_db, get_student_context, fetch_alumni_intel, like_escape
 from .auth import current_user
 from . import stages
 from . import compliance
+from . import tts
 from .schemas import (
     StartSessionRequest, StartSessionResponse,
     TurnRequest, TurnResponse,
@@ -172,6 +174,24 @@ def _save_message(db: Session, session_id: str, role: str, content: str) -> None
         {"s": session_id, "r": role, "c": content},
     )
     db.commit()
+
+
+def _resolve_speaker(voice: str | None) -> str:
+    """Map the learner's voice preference to a Sarvam speaker id (default female)."""
+    return settings.TTS_VOICE_MALE if (voice or "").lower() == "male" else settings.TTS_VOICE_FEMALE
+
+
+async def _try_tts(session_id: str, text_out: str, voice: str | None) -> str | None:
+    """Best-effort synth → returns a relative audio_url or None. Never raises;
+    TTS must never block the interview (question text always goes out anyway)."""
+    if not settings.TTS_ENABLED:
+        return None
+    try:
+        h = await tts.get_audio_hash(session_id, text_out, _resolve_speaker(voice))
+        return f"/session/audio/{h}" if h else None
+    except Exception as e:
+        log.warning("tts synth skipped: %s", type(e).__name__)
+        return None
 
 
 def _session_to_cfg(row: dict) -> dict:
@@ -434,6 +454,8 @@ async def start_session(
     _save_message(db, session_id, "assistant", greeting)
     _update_session_counters(db, session_id)
 
+    audio_url = await _try_tts(session_id, greeting, body.voice)
+
     state = _build_state({
         "level": body.level,
         "current_stage": "WARMUP",
@@ -442,7 +464,7 @@ async def start_session(
         "last_answer_id": None,
         "answer_count": 0,
     })
-    return StartSessionResponse(session_id=session_id, greeting=greeting, state=state)
+    return StartSessionResponse(session_id=session_id, greeting=greeting, state=state, audio_url=audio_url)
 
 
 @app.post("/session/turn", response_model=TurnResponse)
@@ -525,6 +547,8 @@ async def session_turn(
     db.commit()
     _update_session_counters(db, body.session_id)
 
+    audio_url = await _try_tts(body.session_id, reply, body.voice)
+
     state = _build_state({
         "level": level,
         "current_stage": new_stage,
@@ -533,7 +557,7 @@ async def session_turn(
         "last_answer_id": new_last,
         "answer_count": answer_count + 1,
     })
-    return TurnResponse(reply=reply, answer_id=answer_id, state=state)
+    return TurnResponse(reply=reply, answer_id=answer_id, state=state, audio_url=audio_url)
 
 
 @app.get("/session/{session_id}/state", response_model=SessionState)
@@ -576,6 +600,29 @@ def session_messages(
     return SessionMessagesResponse(
         session_id=session_id,
         messages=_load_messages(db, session_id),
+    )
+
+
+@app.get("/session/audio/{audio_hash}")
+def session_audio(
+    audio_hash: str,
+    user_id: str = Depends(current_user),
+):
+    """Voice Phase 1: serve cached TTS audio by content hash. Auth required.
+
+    The hash is content-addressed (sha256 of preprocessed text + speaker), not
+    enumerable; we validate the shape to block any path traversal, then stream the
+    cached mp3. Cache is shared across sessions/users by design (questions repeat).
+    """
+    if not re.fullmatch(r"[0-9a-f]{64}", audio_hash):
+        raise HTTPException(404, "Not found")
+    path = tts.cache_path(audio_hash)
+    if not path.exists():
+        raise HTTPException(404, "Audio not available")
+    return FileResponse(
+        path,
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "private, max-age=86400"},
     )
 
 

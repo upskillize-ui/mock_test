@@ -44,12 +44,16 @@ class StartSessionRequest(BaseModel):
     round_detail: str = Field("", max_length=1000)
     focus: list[Annotated[str, Field(max_length=80)]] = Field(default_factory=list, max_length=10)
     intro: str = Field("", max_length=8000)
+    # Voice Phase 1: TTS voice preference. "female" (default) | "male".
+    voice: Literal["female", "male"] = "female"
 
 
 class StartSessionResponse(BaseModel):
     session_id: str
     greeting: str
     state: SessionState
+    # Voice Phase 1: relative URL to spoken greeting audio; null when TTS is off/failed.
+    audio_url: Optional[str] = None
 
 
 class TurnRequest(BaseModel):
@@ -58,12 +62,16 @@ class TurnRequest(BaseModel):
     # INT-04: the stage the client believes it is answering; a mismatch with the
     # server's current_stage is rejected with 409. Optional for backward-compat.
     stage: Optional[str] = Field(None, max_length=20)
+    # Voice Phase 1: TTS voice preference for this turn's spoken question.
+    voice: Literal["female", "male"] = "female"
 
 
 class TurnResponse(BaseModel):
     reply: str
     answer_id: int
     state: SessionState
+    # Voice Phase 1: relative URL to spoken question audio; null when TTS off/failed.
+    audio_url: Optional[str] = None
 
 
 class RatingRequest(BaseModel):

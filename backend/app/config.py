@@ -48,6 +48,19 @@ class Settings:
     # TTL of the two-step data-deletion confirmation token.
     DELETE_TOKEN_TTL_SECONDS: int = int(os.getenv("DELETE_TOKEN_TTL_SECONDS", "600"))
 
+    # ── Voice Phase 1: TTS (interviewer speaks; learner still types) ──────────
+    # Independent of VOICE_ENABLED (that flag gates future STT/mic consent).
+    # TTS is output-only: no mic, no recording, no consent required.
+    SARVAM_API_KEY: str = os.getenv("SARVAM_API_KEY", "")
+    TTS_ENABLED: bool = os.getenv("TTS_ENABLED", "false").lower() in ("1", "true", "yes")
+    TTS_MODEL: str = os.getenv("TTS_MODEL", "bulbul:v2")
+    TTS_LANG: str = os.getenv("TTS_LANG", "en-IN")
+    # Sarvam speaker ids per gender preference (default female). Env-overridable so
+    # ops can swap voices without a code change.
+    TTS_VOICE_FEMALE: str = os.getenv("TTS_VOICE_FEMALE", "anushka")
+    TTS_VOICE_MALE: str = os.getenv("TTS_VOICE_MALE", "abhilash")
+    TTS_CACHE_DIR: str = os.getenv("TTS_CACHE_DIR", "tts_cache")
+
     RESUME_HOST_ALLOWLIST: list[str] = [
         h.strip().lower()
         for h in os.getenv("RESUME_HOST_ALLOWLIST", "res.cloudinary.com").split(",")
