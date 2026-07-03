@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 _TIMEOUT = httpx.Timeout(connect=3.0, read=5.0, write=3.0, pool=3.0)
 _SARVAM_URL = "https://api.sarvam.ai/text-to-speech"
-# Sarvam bulbul:v2 caps at 1500 chars/request; keep a safe margin.
+# Sarvam Bulbul caps request text length; keep a safe margin under the limit.
 _MAX_TTS_CHARS = 1400
 
 # BFSI acronyms that a generic TTS voice mispronounces. Expanded to a phonetic or
@@ -89,12 +89,18 @@ def preprocess(text: str) -> str:
 
 
 def cache_key(text: str, speaker: str) -> str:
-    """Stable content address for a (preprocessed text, speaker) pair.
+    """Stable content address for a synthesised clip.
 
-    Hashes the PREPROCESSED text so two inputs that synthesize identically share a
-    cache entry, and the key is independent of surrounding markdown noise.
+    Hashes the PREPROCESSED text plus every parameter that changes the audio the
+    vendor returns — **model, speaker, and sample rate** — so a model/voice upgrade
+    can NEVER serve stale audio from a previous version (e.g. legacy Bulbul v2 clips
+    can't leak through after the v3 upgrade). The key is independent of surrounding
+    markdown noise because the text is preprocessed first.
     """
-    payload = f"{preprocess(text)}|{speaker}".encode("utf-8")
+    payload = (
+        f"{preprocess(text)}|model={settings.TTS_MODEL}|spk={speaker}"
+        f"|sr={settings.TTS_SAMPLE_RATE}|temp={settings.TTS_TEMPERATURE}|pace={settings.TTS_PACE}"
+    ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -128,6 +134,29 @@ def _write_cache(key: str, data: bytes) -> None:
         log.warning("tts cache write failed: %s", type(e).__name__)
 
 
+def build_payload(text: str, speaker: str) -> dict:
+    """Assemble the Bulbul v3 request body for `text`.
+
+    v3 notes baked in here:
+      - NO pitch/loudness (unsupported on v3 — sending them errors the request).
+      - temperature + pace tune delivery; speech_sample_rate up to 48000.
+      - dict_id is attached only when a pronunciation dictionary is configured.
+    """
+    payload = {
+        "text": preprocess(text),
+        "target_language_code": settings.TTS_LANG,
+        "model": settings.TTS_MODEL,
+        "speaker": speaker,
+        "output_audio_codec": "mp3",
+        "speech_sample_rate": settings.TTS_SAMPLE_RATE,
+        "temperature": settings.TTS_TEMPERATURE,
+        "pace": settings.TTS_PACE,
+    }
+    if settings.TTS_DICT_ID:
+        payload["dict_id"] = settings.TTS_DICT_ID
+    return payload
+
+
 async def synthesize(text: str, speaker: str) -> bytes | None:
     """Call Sarvam and return decoded audio bytes, or None on ANY failure.
 
@@ -141,13 +170,17 @@ async def synthesize(text: str, speaker: str) -> bytes | None:
     if not spoken:
         return None
 
-    payload = {
-        "text": spoken,
-        "target_language_code": settings.TTS_LANG,
-        "model": settings.TTS_MODEL,
-        "speaker": speaker,
-        "output_audio_codec": "mp3",
-    }
+    # Evaluation aid: v3 auto-preprocesses English/numerics, so the acronym dict may
+    # become redundant. Log raw vs preprocessed (DEBUG only) so we can measure how
+    # often the dict actually changes anything before deciding to drop it. This is
+    # interviewer question text (model-generated), not learner content; the global
+    # PII filter still scrubs any stray contact detail.
+    if spoken != text:
+        log.debug("tts preprocess changed text: raw=%r preprocessed=%r", text, spoken)
+    else:
+        log.debug("tts preprocess no-op (v3 may handle it natively): %r", text)
+
+    payload = build_payload(text, speaker)
     headers = {
         "api-subscription-key": settings.SARVAM_API_KEY,
         "Content-Type": "application/json",

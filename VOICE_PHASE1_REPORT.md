@@ -94,3 +94,27 @@ Run with `TTS_ENABLED=true` and a valid `SARVAM_API_KEY`.
 
 ## 7. Guardrails honoured
 Feature-flagged **off** by default. **No STT/mic code** whatsoever. The **API key and learner content are never logged** (vendor errors log status codes only). **`vyom_` tables untouched.** Inline Lucide-style SVG icons (no emojis); brand palette (teal `#00C4A0`) for the voice cues.
+
+---
+
+## 8. Addendum — Bulbul v3 upgrade (2026-07-03)
+
+The v2 voices were legacy/low quality; TTS is upgraded to **Bulbul v3**.
+
+- **Model** `bulbul:v3` (was `bulbul:v2`). **temperature=0.4** (stable, professional read),
+  **pace=1.0**. **`pitch`/`loudness` removed** — v3 rejects them.
+- **`speech_sample_rate=44100`** (v3 REST supports up to 48000); mp3 output retained.
+- **Speakers** now the v3 catalog, lowercase, env-overridable: `TTS_VOICE_FEMALE=ritu`,
+  `TTS_VOICE_MALE=shubh`. The v2-only `anushka`/`abhilash` are removed (they fail on v3).
+- **Cache invalidation** — `cache_key` now hashes **model + speaker + sample_rate** (plus
+  temperature/pace) alongside the preprocessed text, so a v2 clip can never be served after the
+  upgrade. Existing `tts_cache/` contents were cleared as part of this change.
+- **Acronym dict kept as a fallback.** v3 auto-preprocesses English/numerics, so the BFSI acronym
+  map may be redundant; `synthesize` now logs raw-vs-preprocessed at DEBUG so we can measure how
+  often it changes anything before dropping it. New optional `TTS_DICT_ID` is passed as `dict_id`
+  when set — a hook for a future Sarvam pronunciation dictionary of BFSI terms.
+- **Config additions:** `TTS_TEMPERATURE` (0.4), `TTS_PACE` (1.0), `TTS_SAMPLE_RATE` (44100),
+  `TTS_DICT_ID` ("").  **Tests:** `test_tts.py` updated for the new cache key + v3 params
+  (payload asserts model/temperature/sample-rate and *no* pitch/loudness; cache-key versioning);
+  **13/13 green**. Verify the exact v3 speaker ids (`ritu`/`shubh`) against the live Sarvam v3
+  catalog on first real key and override via env if they differ.

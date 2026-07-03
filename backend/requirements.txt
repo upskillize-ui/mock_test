@@ -8,3 +8,4 @@ pymysql==1.1.1
 cryptography==43.0.1
 python-jose[cryptography]==3.3.0
 pdfplumber==0.11.4
+python-multipart==0.0.20

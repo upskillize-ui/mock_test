@@ -1,0 +1,318 @@
+"""Unit tests for Voice Phase 2 STT (app/stt.py + POST /session/stt).
+
+Covers the hard-rule surface: graceful None on failure (never a dead end),
+per-session cost cap, and the endpoint gates — feature flag, BEHAVIOURAL-only
+stage restriction, voice_recording consent, and the 10 MB size cap. No real
+Sarvam calls — the vendor path is monkeypatched; no real DB — a tiny fake stands
+in for the SQLAlchemy session.
+
+Runnable with either:  python -m pytest tests/test_stt.py
+                  or:  python tests/test_stt.py
+"""
+import asyncio
+import os
+import sys
+from types import SimpleNamespace
+
+os.environ.setdefault("JWT_SECRET", "test")
+os.environ.setdefault("DATABASE_URL", "mysql+pymysql://u:p@localhost/db")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test")
+os.environ.setdefault("ALLOWED_ORIGINS", "http://localhost")
+os.environ.setdefault("APP_ENV", "dev")
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from app import stt as s  # noqa: E402
+from app.main import app  # noqa: E402
+from app.db import get_db  # noqa: E402
+from app.auth import current_user  # noqa: E402
+
+
+# ── stt.transcribe: graceful None on any failure ────────────────────────────
+
+def test_transcribe_none_without_api_key():
+    old = s.settings.SARVAM_API_KEY
+    s.settings.SARVAM_API_KEY = ""
+    try:
+        assert asyncio.run(s.transcribe(b"some-audio-bytes", "audio/webm")) is None
+    finally:
+        s.settings.SARVAM_API_KEY = old
+
+
+def test_transcribe_none_on_empty_audio():
+    old = s.settings.SARVAM_API_KEY
+    s.settings.SARVAM_API_KEY = "present"
+    try:
+        assert asyncio.run(s.transcribe(b"", "audio/webm")) is None
+    finally:
+        s.settings.SARVAM_API_KEY = old
+
+
+# ── Per-session cost cap ────────────────────────────────────────────────────
+
+def test_cost_cap_counts_and_trips():
+    sid = "sess-cap"
+    s._session_stt_counts.pop(sid, None)
+    try:
+        assert s.stt_cap_reached(sid, 2) is False
+        s.note_stt_call(sid)
+        assert s.stt_calls_used(sid) == 1
+        assert s.stt_cap_reached(sid, 2) is False
+        s.note_stt_call(sid)
+        assert s.stt_cap_reached(sid, 2) is True   # at the cap -> blocked
+    finally:
+        s._session_stt_counts.pop(sid, None)
+
+
+# ── Endpoint gates: fake DB + auth override ─────────────────────────────────
+
+class _Result:
+    def __init__(self, row):
+        self._row = row
+    def mappings(self):
+        return self
+    def first(self):
+        return self._row
+
+
+class FakeDB:
+    """Routes the two queries the endpoint makes by table name."""
+    def __init__(self, session_row, has_consent):
+        self.session_row = session_row
+        self.has_consent = has_consent
+    def execute(self, stmt, params=None):
+        sql = str(stmt)
+        if "vyom_consents" in sql:
+            return _Result(1 if self.has_consent else None)
+        if "vyom_sessions" in sql:
+            return _Result(self.session_row)
+        return _Result(None)
+    def commit(self):
+        pass
+
+
+def _session_row(stage="BEHAVIOURAL", level="Fresher"):
+    return {"id": "sid-1", "user_id": "u1", "current_stage": stage, "level": level,
+            "status": "active", "deleted_at": None}
+
+
+def _client(session_row, has_consent=True):
+    app.dependency_overrides[get_db] = lambda: FakeDB(session_row, has_consent)
+    app.dependency_overrides[current_user] = lambda: "u1"
+    return TestClient(app)
+
+
+def _cleanup():
+    app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(current_user, None)
+    s._session_stt_counts.pop("sid-1", None)
+
+
+def _post(client, audio=b"fake-audio", ct="audio/webm"):
+    return client.post("/session/stt", data={"session_id": "sid-1"},
+                       files={"audio": ("answer.webm", audio, ct)})
+
+
+def _with_flags(stt_enabled, voice_enabled, fn):
+    o1, o2 = s.settings.STT_ENABLED, s.settings.VOICE_ENABLED
+    s.settings.STT_ENABLED, s.settings.VOICE_ENABLED = stt_enabled, voice_enabled
+    # main.settings is the same singleton, but set there too defensively.
+    from app import main as m
+    m.settings.STT_ENABLED, m.settings.VOICE_ENABLED = stt_enabled, voice_enabled
+    try:
+        return fn()
+    finally:
+        s.settings.STT_ENABLED, s.settings.VOICE_ENABLED = o1, o2
+        m.settings.STT_ENABLED, m.settings.VOICE_ENABLED = o1, o2
+
+
+def _fake_transcribe(text="the transcribed answer"):
+    async def _f(audio_bytes, mime):
+        return text
+    return _f
+
+
+def test_endpoint_404_when_feature_off():
+    def go():
+        client = _client(_session_row())
+        r = _post(client)
+        assert r.status_code == 404, r.text
+    try:
+        _with_flags(False, True, go)   # STT off
+        _with_flags(True, False, go)   # VOICE off
+    finally:
+        _cleanup()
+
+
+def test_endpoint_rejects_outside_behavioural():
+    def go():
+        client = _client(_session_row(stage="DOMAIN"))
+        r = _post(client)
+        assert r.status_code == 409, r.text
+        assert "behavioural" in r.text.lower()
+    try:
+        _with_flags(True, True, go)
+    finally:
+        _cleanup()
+
+
+def test_endpoint_requires_voice_consent():
+    def go():
+        client = _client(_session_row(), has_consent=False)
+        r = _post(client)
+        assert r.status_code == 403, r.text
+        assert "consent" in r.text.lower()
+    try:
+        _with_flags(True, True, go)
+    finally:
+        _cleanup()
+
+
+def test_endpoint_size_cap():
+    def go():
+        old = s.settings.STT_MAX_UPLOAD_BYTES
+        s.settings.STT_MAX_UPLOAD_BYTES = 10
+        from app import main as m
+        m.settings.STT_MAX_UPLOAD_BYTES = 10
+        try:
+            client = _client(_session_row())
+            r = _post(client, audio=b"x" * 50)   # 50 bytes > 10-byte cap
+            assert r.status_code == 413, r.text
+        finally:
+            s.settings.STT_MAX_UPLOAD_BYTES = old
+            m.settings.STT_MAX_UPLOAD_BYTES = old
+    try:
+        _with_flags(True, True, go)
+    finally:
+        _cleanup()
+
+
+def test_endpoint_cost_cap_429():
+    def go():
+        # Fresher behavioural=3, +3 retries -> cap 6. Pre-fill to the cap.
+        s._session_stt_counts["sid-1"] = 6
+        client = _client(_session_row(level="Fresher"))
+        r = _post(client)
+        assert r.status_code == 429, r.text
+    try:
+        _with_flags(True, True, go)
+    finally:
+        _cleanup()
+
+
+def test_endpoint_happy_path_returns_transcript():
+    orig = s.transcribe
+    s.transcribe = _fake_transcribe("my behavioural answer")
+    def go():
+        client = _client(_session_row())
+        r = _post(client)
+        assert r.status_code == 200, r.text
+        assert r.json()["transcript"] == "my behavioural answer"
+    try:
+        _with_flags(True, True, go)
+    finally:
+        s.transcribe = orig
+        _cleanup()
+
+
+def test_endpoint_graceful_null_on_transcribe_failure():
+    orig = s.transcribe
+    s.transcribe = _fake_transcribe(None)   # vendor failed -> None, never a dead end
+    def go():
+        client = _client(_session_row())
+        r = _post(client)
+        assert r.status_code == 200, r.text
+        assert r.json()["transcript"] is None
+    try:
+        s.transcribe = _fake_transcribe(None)
+        _with_flags(True, True, go)
+    finally:
+        s.transcribe = orig
+        _cleanup()
+
+
+# ── State signal: stt_available reflects the two flags ──────────────────────
+
+def test_state_stt_available_true_only_when_both_flags_on():
+    from app import main as m
+    row = {"level": "Fresher", "current_stage": "BEHAVIOURAL", "round_index": 1,
+           "awaiting_rating": 0, "answer_count": 1}
+    o1, o2 = m.settings.STT_ENABLED, m.settings.VOICE_ENABLED
+    try:
+        m.settings.STT_ENABLED, m.settings.VOICE_ENABLED = True, True
+        assert m._build_state(row).stt_available is True
+        m.settings.STT_ENABLED, m.settings.VOICE_ENABLED = True, False
+        assert m._build_state(row).stt_available is False   # VOICE off
+        m.settings.STT_ENABLED, m.settings.VOICE_ENABLED = False, True
+        assert m._build_state(row).stt_available is False   # STT off
+        m.settings.STT_ENABLED, m.settings.VOICE_ENABLED = False, False
+        assert m._build_state(row).stt_available is False
+    finally:
+        m.settings.STT_ENABLED, m.settings.VOICE_ENABLED = o1, o2
+
+
+# ── Decision 1: consent at point of capture — start_session must NOT gate ────
+# Regression guard. With VOICE_ENABLED=true and NO voice_recording consent, a
+# session must still start normally (typed-only learners are not blocked). Voice
+# consent is enforced only at capture (/session/stt), asserted above.
+
+class _StartDB:
+    """Permissive fake for the start_session path. Note: it never returns a
+    voice_recording consent row — if a start-time consent gate were re-added, the
+    gate would read has_consent=False and 403, failing this test."""
+    def execute(self, stmt, params=None):
+        sql = str(stmt)
+        if "session_count FROM vyom_rate_limits" in sql:
+            return _Result(SimpleNamespace(session_count=1))   # under the daily cap
+        return SimpleNamespace(lastrowid=1,
+                               mappings=lambda: _Result(None),
+                               first=lambda: None,
+                               fetchall=lambda: [])
+    def commit(self):
+        pass
+
+
+def test_start_session_does_not_require_voice_consent():
+    from app import main as m
+    saved = (m.get_student_context, m.fetch_alumni_intel, m.call_claude)
+
+    async def _fake_claude(**kwargs):
+        return "Hi there! Let's begin your interview."
+
+    m.get_student_context = lambda uid, db: {}
+    m.fetch_alumni_intel = lambda db, company, role: ""
+    m.call_claude = _fake_claude
+    app.dependency_overrides[get_db] = lambda: _StartDB()
+    app.dependency_overrides[current_user] = lambda: "u1"
+
+    def go():
+        client = TestClient(app)
+        r = client.post("/session/start", json={"role": "Software Engineer", "level": "Fresher"})
+        # The point: NOT 403 (no voice-consent gate at start), even with voice on.
+        assert r.status_code == 200, r.text
+        assert r.json().get("session_id")
+    try:
+        # VOICE_ENABLED on, STT off — the old gate would have 403'd here.
+        _with_flags(False, True, go)
+    finally:
+        m.get_student_context, m.fetch_alumni_intel, m.call_claude = saved
+        _cleanup()
+
+
+if __name__ == "__main__":
+    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
+    failed = 0
+    for fn in fns:
+        try:
+            fn()
+            print(f"PASS  {fn.__name__}")
+        except AssertionError as e:
+            failed += 1
+            print(f"FAIL  {fn.__name__}: {e}")
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            print(f"ERROR {fn.__name__}: {type(e).__name__}: {e}")
+    print(f"\n{len(fns) - failed}/{len(fns)} passed")
+    sys.exit(1 if failed else 0)

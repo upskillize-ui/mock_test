@@ -5,6 +5,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _env_bool(name: str, default: str = "false") -> bool:
+    """Parse an env var as a boolean, tolerant of case and stray whitespace.
+
+    `.strip()` guards against the classic footgun where `VOICE_ENABLED=true ` (a
+    trailing space or an inline comment) silently parses as False and a feature
+    never turns on. Accepts 1/true/yes/on.
+    """
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
 class Settings:
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
@@ -41,7 +51,7 @@ class Settings:
 
     # INT-07: voice mode is DPDPA-sensitive and OFF for this sprint. The consent
     # gate is built now and enforced only once this flag flips true.
-    VOICE_ENABLED: bool = os.getenv("VOICE_ENABLED", "false").lower() in ("1", "true", "yes")
+    VOICE_ENABLED: bool = _env_bool("VOICE_ENABLED")
 
     # INT-07: shared secret guarding the /admin/purge endpoint (cron-callable).
     ADMIN_TOKEN: str = os.getenv("ADMIN_TOKEN", "")
@@ -51,15 +61,41 @@ class Settings:
     # ── Voice Phase 1: TTS (interviewer speaks; learner still types) ──────────
     # Independent of VOICE_ENABLED (that flag gates future STT/mic consent).
     # TTS is output-only: no mic, no recording, no consent required.
+    #
+    # Upgraded to Bulbul v3 (v2 voices were legacy/low quality). v3 auto-preprocesses
+    # English + numerics, supports temperature and higher sample rates, and does NOT
+    # accept pitch/loudness. Speakers are the v3 catalog (lowercase); the old v2
+    # speakers (anushka/abhilash) fail on v3, so they are removed.
     SARVAM_API_KEY: str = os.getenv("SARVAM_API_KEY", "")
-    TTS_ENABLED: bool = os.getenv("TTS_ENABLED", "false").lower() in ("1", "true", "yes")
-    TTS_MODEL: str = os.getenv("TTS_MODEL", "bulbul:v2")
+    TTS_ENABLED: bool = _env_bool("TTS_ENABLED")
+    TTS_MODEL: str = os.getenv("TTS_MODEL", "bulbul:v3")
     TTS_LANG: str = os.getenv("TTS_LANG", "en-IN")
-    # Sarvam speaker ids per gender preference (default female). Env-overridable so
-    # ops can swap voices without a code change.
-    TTS_VOICE_FEMALE: str = os.getenv("TTS_VOICE_FEMALE", "anushka")
-    TTS_VOICE_MALE: str = os.getenv("TTS_VOICE_MALE", "abhilash")
+    # Sarvam v3 speaker ids per gender preference (default female). Env-overridable.
+    TTS_VOICE_FEMALE: str = os.getenv("TTS_VOICE_FEMALE", "ritu")
+    TTS_VOICE_MALE: str = os.getenv("TTS_VOICE_MALE", "shubh")
     TTS_CACHE_DIR: str = os.getenv("TTS_CACHE_DIR", "tts_cache")
+    # v3 delivery tuning. temperature=0.4 → stable, professional read; pace=1.0
+    # natural. speech_sample_rate 44100 (v3 REST supports up to 48000). mp3 output.
+    TTS_TEMPERATURE: float = float(os.getenv("TTS_TEMPERATURE", "0.4"))
+    TTS_PACE: float = float(os.getenv("TTS_PACE", "1.0"))
+    TTS_SAMPLE_RATE: int = int(os.getenv("TTS_SAMPLE_RATE", "44100"))
+    # Optional Sarvam pronunciation-dictionary id (future BFSI-terms dictionary).
+    # When set, it is passed as dict_id on every synth call; empty = omitted.
+    TTS_DICT_ID: str = os.getenv("TTS_DICT_ID", "")
+
+    # ── Voice Phase 2: STT (learner speaks their answer; BEHAVIOURAL round only) ──
+    # OFF by default. Additionally gated at runtime by VOICE_ENABLED + a
+    # voice_recording consent row (the INT-07 consent machinery). Reuses
+    # SARVAM_API_KEY. No raw audio is ever stored — transcribe-and-discard.
+    STT_ENABLED: bool = _env_bool("STT_ENABLED")
+    STT_MODEL: str = os.getenv("STT_MODEL", "saarika:v2.5")
+    # "unknown" asks Saarika to auto-detect (Hinglish / en-IN / regional). Ops can
+    # pin "en-IN" for a stricter English bias.
+    STT_LANGUAGE: str = os.getenv("STT_LANGUAGE", "unknown")
+    # Hard cap on a single uploaded answer, in bytes (spec: 10 MB).
+    STT_MAX_UPLOAD_BYTES: int = int(os.getenv("STT_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
+    # Extra STT attempts allowed beyond the behavioural question count (retries).
+    STT_RETRY_ALLOWANCE: int = int(os.getenv("STT_RETRY_ALLOWANCE", "3"))
 
     RESUME_HOST_ALLOWLIST: list[str] = [
         h.strip().lower()

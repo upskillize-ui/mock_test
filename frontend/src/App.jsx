@@ -52,6 +52,22 @@ const fetchAlumniPreview = (co, ro) => api("/alumni/preview?company=" + encodeUR
 const fetchHistory = (limit = 50, offset = 0) => api(`/user/history?limit=${limit}&offset=${offset}`);
 const fetchHistoryDetail = (sid) => api(`/user/history/${encodeURIComponent(sid)}`);
 const fetchStats = () => api("/user/stats");
+// Voice Phase 2: STT — upload a recorded behavioural answer, get back { transcript }.
+// Multipart: we must NOT set Content-Type ourselves (the browser adds the boundary),
+// and we send only the auth header. On any non-OK we throw so the caller falls back
+// to typing. The endpoint transcribes-and-discards; raw audio is never stored.
+async function sttTranscribe(sessionId, blob, filename = "answer.webm") {
+  const fd = new FormData();
+  fd.append("session_id", sessionId);
+  fd.append("audio", blob, filename);
+  const res = await fetch(API_URL + "/session/stt", { method: "POST", headers: { ...authHeaders() }, body: fd });
+  if (!res.ok) {
+    let msg = "";
+    try { const j = await res.json(); msg = j.detail || ""; } catch { /* noop */ }
+    throw new Error(msg || `stt failed (${res.status})`);
+  }
+  return res.json();   // { transcript: string | null }
+}
 // INT-07 DPDPA data rights + consent.
 const recordConsent = (payload) => api("/consent", { method: "POST", body: JSON.stringify(payload) });
 const fetchMyData = () => api("/me/data");
@@ -107,6 +123,13 @@ const IconSpeakerOff = ({ size = 18 }) => (
 );
 const IconReplay = ({ size = 18 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3 2v6h6" /><path d="M3 8a9 9 0 1 0 3-5.7L3 8" /></svg>
+);
+// Voice Phase 2: mic / stop icons (learner speaks their behavioural answer).
+const IconMic = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10a7 7 0 0 0 14 0" /><line x1="12" y1="17" x2="12" y2="22" /><line x1="8" y1="22" x2="16" y2="22" /></svg>
+);
+const IconStop = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
 );
 
 // ── Theme ─────────────────────────────────────────────────────────────────
@@ -203,6 +226,39 @@ const CSS = `
   @keyframes iqSpin { to { transform: rotate(360deg); } }
   @keyframes iqTealPulse { 0%,100%{box-shadow:0 0 0 0 rgba(0,196,160,.55)}50%{box-shadow:0 0 0 6px rgba(0,196,160,0)}}
   .iq-avatar-speaking{animation:iqTealPulse 1.2s ease-in-out infinite}
+  /* Voice Phase 2: mic button + recording pulse + transcribing shimmer */
+  @keyframes iqMicPulse { 0%,100%{box-shadow:0 0 0 0 rgba(232,82,26,.5)}50%{box-shadow:0 0 0 8px rgba(232,82,26,0)}}
+  @keyframes iqRecDot { 0%,100%{opacity:.35}50%{opacity:1}}
+  @keyframes iqShimmer { 0%{background-position:-220px 0}100%{background-position:220px 0}}
+  .iq-mic-btn{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;min-height:44px;border-radius:10px;border:1.5px solid #e8e9f0;background:#fff;color:#0B1628;cursor:pointer;transition:all .15s;flex-shrink:0}
+  .iq-mic-btn:hover{border-color:#c0c1c8;background:#fafbfe}
+  .iq-mic-btn:disabled{opacity:.4;cursor:not-allowed}
+  .iq-mic-btn:focus-visible{outline:2px solid #0B1628;outline-offset:2px}
+  .iq-mic-recording{background:#E8521A;border-color:#E8521A;color:#fff;animation:iqMicPulse 1.2s ease-in-out infinite}
+  .iq-mic-recording:hover{background:#cf460f;border-color:#cf460f}
+  /* Locked (STT available but not yet the behavioural round): faint, line-only,
+     no orange. Uses aria-disabled, so it stays hoverable for the tooltip. */
+  .iq-mic-locked{opacity:.45;cursor:help;background:#fff;border-color:#e8e9f0;color:#0B1628}
+  .iq-mic-locked:hover{opacity:.6;background:#fafbfe;border-color:#e8e9f0}
+  .iq-shimmer-text{background:linear-gradient(90deg,#a8a49f 0%,#e8e9f0 40%,#a8a49f 80%);background-size:220px 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:iqShimmer 1.1s linear infinite}
+  /* Interview HUD — responsive header. No fixed heights (min-height:auto); wraps
+     and truncates so title/stage text never clips, safe down to 360px. */
+  .iq-hud{background:#1a2744;flex-shrink:0;display:flex;flex-direction:column;gap:8px;padding:12px 20px;min-height:auto}
+  .iq-hud-bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px}
+  .iq-hud-brand{min-width:0;flex:1 1 auto}
+  .iq-hud-title{color:#fff;font-weight:800;font-size:15px;line-height:1.2;white-space:nowrap}
+  .iq-hud-sub{color:rgba(255,255,255,.4);font-size:11px;line-height:1.35;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+  .iq-hud-right{display:flex;align-items:center;gap:10px;flex-shrink:0}
+  .iq-hud-audio{display:flex;align-items:center;gap:6px}
+  .iq-hud-timer{font-size:18px;font-weight:800;color:#fff;font-variant-numeric:tabular-nums;line-height:1.1;flex-shrink:0}
+  .iq-hud-end{padding:6px 16px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.06);color:#fff;font-size:13px;font-weight:600;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;flex-shrink:0}
+  .iq-hud-end:hover{background:rgba(255,255,255,.12)}
+  .iq-hud-stage-row{display:flex;min-width:0}
+  .iq-hud-stage{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:5px 12px;border-radius:16px;background:rgba(184,150,11,.2);border:1px solid rgba(184,150,11,.4)}
+  .iq-hud-stage-dot{width:7px;height:7px;border-radius:50%;background:#b8960b;flex-shrink:0}
+  .iq-hud-stage-label{font-size:12px;font-weight:700;color:#b8960b;line-height:1.35;word-break:break-word}
+  @media(max-width:480px){.iq-hud{padding:10px 14px}.iq-hud-timer{font-size:16px}.iq-hud-end{padding:6px 12px}}
+  @media(max-width:360px){.iq-hud{padding:10px 12px;gap:6px}}
   .iq-audio-btn{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.06);color:#fff;cursor:pointer;transition:all .15s}
   .iq-audio-btn:hover{background:rgba(255,255,255,.14)}
   .iq-audio-btn:disabled{opacity:.4;cursor:not-allowed}
@@ -602,6 +658,36 @@ function RatingWidget({ busy, onRate }) {
   );
 }
 
+// Voice Phase 2: consent modal shown on first mic use per session. Recorded as
+// consent_type="voice_recording", copy_version="v0-draft".
+// [PENDING LEGAL REVIEW] — the copy below is a draft only. Final wording is signed
+// off by Legal outside this sprint; copy_version pins exactly what was shown.
+function VoiceConsentModal({ onAccept, onDecline, busy }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(11,22,40,.55)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={onDecline}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, maxWidth: 440, width: "100%", overflow: "hidden", fontFamily: IQ.sans, boxShadow: "0 20px 60px rgba(11,22,40,.35)", animation: "iqFade .25s ease" }}>
+        <div style={{ background: IQ.navy, padding: "18px 24px", display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ color: IQ.teal, display: "inline-flex" }}><IconMic size={20} /></span>
+          <div style={{ color: "#fff", fontWeight: 800, fontSize: 16 }}>Use your voice to answer</div>
+        </div>
+        <div style={{ padding: "20px 24px" }}>
+          {/* [PENDING LEGAL REVIEW] — draft consent copy, do not ship without legal sign-off. */}
+          <p style={{ fontSize: 14, color: T.text, lineHeight: 1.65, margin: 0 }}>
+            InterviewIQ will convert your spoken answer to text. Your audio is transcribed and
+            immediately discarded — it is never stored. Only the text of your answer is saved,
+            exactly as if you had typed it.
+          </p>
+          <div style={{ fontSize: 12, color: T.subtle, marginTop: 10 }}>You can still type instead at any time. (Draft notice — pending legal review.)</div>
+          <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+            <button onClick={onAccept} disabled={busy} className="vbtn" style={{ opacity: busy ? 0.6 : 1 }}>Allow & record</button>
+            <button onClick={onDecline} disabled={busy} className="vbtn" style={{ background: "#fff", color: IQ.navy, border: "1.5px solid " + T.border }}>Not now</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initialState, initialMessages, startedAt, onEnd, onRestart }) {
   // INT-06: on resume we hydrate from server history; on a fresh start we seed with the greeting.
   const [messages, setMessages] = useState(
@@ -616,6 +702,20 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  // Voice Phase 2: spoken-answer (STT) state — BEHAVIOURAL round only.
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [recSeconds, setRecSeconds] = useState(0);
+  const [voiceConsented, setVoiceConsented] = useState(false);   // per session
+  const [showVoiceConsent, setShowVoiceConsent] = useState(false);
+  const [consentBusy, setConsentBusy] = useState(false);
+  const [sttToast, setSttToast] = useState(null);
+  const mediaRecorderRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const recTimerRef = useRef(null);
+  const recChunksRef = useRef([]);
+  const toastTimerRef = useRef(null);
+  const MAX_REC_SECONDS = 180;   // 3 min hard cap, auto-stop
   // INT-06: timer remaining is derived from the persisted start time so a refresh
   // resumes the same countdown instead of restarting it.
   const [secondsLeft, setSecondsLeft] = useState(() => {
@@ -715,6 +815,122 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   };
   const replay = () => { if (latestAudioUrl) playAudio(latestAudioUrl, true); };
 
+  // ── Voice Phase 2: record → transcribe → drop editable text into the input ──
+  const sttAvailable = !!sstate?.stt_available;
+  const isBehavioural = (sstate?.current_stage || "") === "BEHAVIOURAL";
+
+  const showToast = (msg) => {
+    setSttToast(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setSttToast(null), 4000);
+  };
+
+  const stopMediaStream = () => {
+    const s = mediaStreamRef.current;
+    if (s) { try { s.getTracks().forEach(t => t.stop()); } catch { /* noop */ } mediaStreamRef.current = null; }
+  };
+
+  const clearRecTimer = () => { if (recTimerRef.current) { clearInterval(recTimerRef.current); recTimerRef.current = null; } };
+
+  // Actually acquire the mic and start capturing (consent already handled).
+  const beginRecording = async () => {
+    if (recording || transcribing) return;
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      showToast("Voice input unavailable — please type your answer"); return;
+    }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      // Permission denied or no device → fall back to typing, zero degradation.
+      showToast("Voice input unavailable — please type your answer"); return;
+    }
+    mediaStreamRef.current = stream;
+    let mr;
+    try { mr = new MediaRecorder(stream); }
+    catch { stopMediaStream(); showToast("Voice input unavailable — please type your answer"); return; }
+    recChunksRef.current = [];
+    mr.ondataavailable = (e) => { if (e.data && e.data.size) recChunksRef.current.push(e.data); };
+    mr.onstop = () => finishRecording(mr.mimeType);
+    mediaRecorderRef.current = mr;
+    try { mr.start(); }
+    catch { stopMediaStream(); showToast("Voice input unavailable — please type your answer"); return; }
+    setRecording(true); setRecSeconds(0);
+    recTimerRef.current = setInterval(() => setRecSeconds(s => {
+      const next = s + 1;
+      if (next >= MAX_REC_SECONDS) stopRecording();   // auto-stop at the cap
+      return next;
+    }), 1000);
+  };
+
+  const stopRecording = () => {
+    clearRecTimer();
+    const mr = mediaRecorderRef.current;
+    if (mr && mr.state !== "inactive") { try { mr.stop(); } catch { /* noop */ } }   // fires onstop → finishRecording
+    setRecording(false);
+  };
+
+  // Called from MediaRecorder.onstop: bundle chunks, upload, insert transcript.
+  const finishRecording = async (mimeType) => {
+    stopMediaStream();
+    const chunks = recChunksRef.current; recChunksRef.current = [];
+    if (!chunks.length) { showToast("Voice input unavailable — please type your answer"); return; }
+    const type = mimeType || "audio/webm";
+    const blob = new Blob(chunks, { type });
+    const ext = type.includes("ogg") ? "ogg" : type.includes("mp4") ? "mp4" : type.includes("wav") ? "wav" : "webm";
+    setTranscribing(true);
+    try {
+      const res = await sttTranscribe(sessionId, blob, `answer.${ext}`);
+      if (res && res.transcript) {
+        // Insert into the editable input — the learner reviews and presses Send.
+        setInput(prev => ((prev ? prev.trimEnd() + " " : "") + res.transcript).slice(0, 4000));
+        setTimeout(() => inputRef.current?.focus(), 50);
+      } else {
+        showToast("Voice input unavailable — please type your answer");
+      }
+    } catch {
+      showToast("Voice input unavailable — please type your answer");
+    } finally { setTranscribing(false); }
+  };
+
+  // Mic button: toggle stop while recording; otherwise gate on consent then record.
+  const onMicClick = () => {
+    if (recording) { stopRecording(); return; }
+    if (transcribing) return;
+    if (!voiceConsented) { setShowVoiceConsent(true); return; }
+    beginRecording();
+  };
+
+  const acceptVoiceConsent = async () => {
+    setConsentBusy(true);
+    try { await recordConsent({ consent_type: "voice_recording", copy_version: CONSENT_COPY_VERSION, session_id: sessionId }); }
+    catch { /* non-blocking: the server-side gate is authoritative */ }
+    setConsentBusy(false);
+    setVoiceConsented(true);
+    setShowVoiceConsent(false);
+    beginRecording();
+  };
+
+  const declineVoiceConsent = () => { setShowVoiceConsent(false); };
+
+  // Cleanup: stop any in-flight recording/stream/timers when leaving the interview.
+  useEffect(() => () => {
+    clearRecTimer();
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    const mr = mediaRecorderRef.current;
+    if (mr && mr.state !== "inactive") { try { mr.stop(); } catch { /* noop */ } }
+    stopMediaStream();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Diagnostics (dev only): surface stt_available once per state change so a
+  // missing mic is instantly attributable — e.g. `undefined` means the client is
+  // talking to a backend without the flags, `false` means a flag is off.
+  useEffect(() => {
+    if (import.meta.env?.DEV && sstate) {
+      console.debug("[voice] stt_available =", sstate.stt_available, "| stage =", sstate.current_stage);
+    }
+  }, [sstate]);
+
   const send = async () => {
     const textVal = input.trim(); if (!textVal || loading || ended || awaitingRating) return;
     setMessages(m => [...m, { role: "user", content: textVal }]); setInput(""); setLoading(true); setError(null);
@@ -762,30 +978,35 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
 
   return (
     <div style={{ fontFamily: T.font, margin: "-24px -28px", display: "flex", flexDirection: "column", height: "calc(100vh - 70px)", minHeight: 500 }}>
-      <div style={{ background: T.navy, padding: "10px 24px", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div>
-            <div style={{ color: "#fff", fontWeight: 800, fontSize: 15 }}>InterviewIQ</div>
-            <div style={{ color: "rgba(255,255,255,.35)", fontSize: 11 }}>{config.role} — {config.company || "General"}</div>
+      {/* Interview HUD — responsive header (replaces the legacy fixed-row header
+          that clipped its title on narrow viewports). Wraps and truncates; no
+          fixed heights; safe padding down to 360px. */}
+      <div className="iq-hud">
+        <div className="iq-hud-bar">
+          <div className="iq-hud-brand">
+            <div className="iq-hud-title">InterviewIQ</div>
+            <div className="iq-hud-sub">{config.role}{config.company ? ` — ${config.company}` : " — General"}</div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 14px", borderRadius: 20, background: "rgba(184,150,11,.2)", border: "1px solid rgba(184,150,11,.4)" }}>
-            <div style={{ width: 7, height: 7, borderRadius: "50%", background: T.gold }} />
-            <span style={{ fontSize: 12, fontWeight: 700, color: T.gold }}>{stageLabel}</span>
+          <div className="iq-hud-right">
+            {latestAudioUrl && (
+              <div className="iq-hud-audio">
+                <button className="iq-audio-btn" onClick={toggleMute} title={muted ? "Unmute interviewer voice" : "Mute interviewer voice"} aria-label={muted ? "Unmute interviewer voice" : "Mute interviewer voice"} style={muted ? {} : { color: IQ.teal }}>
+                  {muted ? <IconSpeakerOff /> : <IconSpeaker />}
+                </button>
+                <button className="iq-audio-btn" onClick={replay} disabled={!latestAudioUrl} title="Replay question" aria-label="Replay question">
+                  <IconReplay />
+                </button>
+              </div>
+            )}
+            <span className="iq-hud-timer" style={{ color: secondsLeft <= 60 ? "#ff6b6b" : secondsLeft <= 180 ? T.gold : "#fff" }}>{mmss(secondsLeft)}</span>
+            <button className="iq-hud-end" onClick={handleEndClick}>End</button>
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          {latestAudioUrl && (
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <button className="iq-audio-btn" onClick={toggleMute} title={muted ? "Unmute interviewer voice" : "Mute interviewer voice"} aria-label={muted ? "Unmute interviewer voice" : "Mute interviewer voice"} style={muted ? {} : { color: IQ.teal }}>
-                {muted ? <IconSpeakerOff /> : <IconSpeaker />}
-              </button>
-              <button className="iq-audio-btn" onClick={replay} disabled={!latestAudioUrl} title="Replay question" aria-label="Replay question">
-                <IconReplay />
-              </button>
-            </div>
-          )}
-          <span style={{ fontSize: 18, fontWeight: 800, color: secondsLeft <= 60 ? "#ff6b6b" : secondsLeft <= 180 ? T.gold : "#fff", fontVariantNumeric: "tabular-nums" }}>{mmss(secondsLeft)}</span>
-          <button onClick={handleEndClick} style={{ padding: "6px 16px", borderRadius: 8, border: "1px solid rgba(255,255,255,.15)", background: "rgba(255,255,255,.06)", cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#fff", fontFamily: T.font }}>End</button>
+        <div className="iq-hud-stage-row">
+          <span className="iq-hud-stage">
+            <span className="iq-hud-stage-dot" />
+            <span className="iq-hud-stage-label">{stageLabel}</span>
+          </span>
         </div>
       </div>
 
@@ -812,11 +1033,57 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
 
       <div style={{ background: T.white, borderTop: "1px solid " + T.border, padding: "14px 28px", flexShrink: 0 }}>
         <div style={{ maxWidth: 700, margin: "0 auto", display: "flex", gap: 10, alignItems: "flex-end" }}>
-          <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value.slice(0, 4000))} onKeyDown={handleKey} rows={1} maxLength={4000} placeholder={awaitingRating ? "Rate your confidence above to continue" : ended ? "Interview ended" : reverseMode ? "Ask your question…" : "Type your answer…"} disabled={inputDisabled} className="vi" style={{ flex: 1, resize: "none", minHeight: 44, maxHeight: 140, borderRadius: 10 }} />
+          <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value.slice(0, 4000))} onKeyDown={handleKey} rows={1} maxLength={4000} placeholder={awaitingRating ? "Rate your confidence above to continue" : ended ? "Interview ended" : reverseMode ? "Ask your question…" : transcribing ? "Transcribing your answer…" : recording ? "Listening… tap the square to stop" : "Type your answer…"} disabled={inputDisabled} className="vi" style={{ flex: 1, resize: "none", minHeight: 44, maxHeight: 140, borderRadius: 10 }} />
+          {/* Voice Phase 2: mic. Shown whenever STT is available so learners
+              discover speaking exists; ACTIVE only in the BEHAVIOURAL round.
+              Hidden during REVERSE (the learner asks the questions there).
+              Locked elsewhere: faint line tokens (no orange), a tooltip, and a
+              tap-toast — it uses aria-disabled (not the native disabled attr) so
+              the tooltip actually shows on hover and taps still explain it. */}
+          {sttAvailable && !reverseMode && (
+            isBehavioural ? (
+              <button
+                onClick={onMicClick}
+                disabled={(inputDisabled || transcribing) && !recording}
+                className={"iq-mic-btn" + (recording ? " iq-mic-recording" : "")}
+                title={recording ? "Stop recording" : "Record your answer"}
+                aria-label={recording ? "Stop recording" : "Record your answer"}
+              >
+                {recording ? <IconStop /> : <IconMic />}
+              </button>
+            ) : (
+              <button
+                onClick={() => showToast("Voice answers unlock in the Behavioural round")}
+                aria-disabled={true}
+                className="iq-mic-btn iq-mic-locked"
+                title="Voice answers unlock in the Behavioural round"
+                aria-label="Voice answers unlock in the Behavioural round"
+              >
+                <IconMic />
+              </button>
+            )
+          )}
           <button onClick={send} disabled={inputDisabled || !input.trim()} className="mba-btn-primary" style={{ padding: "10px 22px", fontSize: 14, opacity: inputDisabled || !input.trim() ? 0.5 : 1 }}>Send</button>
         </div>
-        <div style={{ fontSize: 11, color: T.subtle, marginTop: 6, maxWidth: 700, margin: "6px auto 0" }}>{awaitingRating ? "Tap 1–5 or press a number key to rate your confidence." : "Enter to send — Shift+Enter for new line"}</div>
+        {/* Voice Phase 2: live recording timer (DM Mono) / transcribing shimmer / fallback toast. */}
+        {(recording || transcribing || sttToast) ? (
+          <div style={{ maxWidth: 700, margin: "8px auto 0", display: "flex", alignItems: "center", gap: 10, minHeight: 18 }}>
+            {recording && (
+              <>
+                <span style={{ width: 9, height: 9, borderRadius: "50%", background: IQ.orange, animation: "iqRecDot 1.1s ease-in-out infinite", flexShrink: 0 }} />
+                <span style={{ fontFamily: IQ.mono, fontSize: 13, color: IQ.orange, fontVariantNumeric: "tabular-nums" }}>{mmss(recSeconds)}</span>
+                <span style={{ fontSize: 12, color: T.muted }}>Recording — tap the square to stop (auto-stops at 3:00)</span>
+              </>
+            )}
+            {transcribing && !recording && <span className="iq-shimmer-text" style={{ fontSize: 13, fontWeight: 700 }}>Transcribing…</span>}
+            {sttToast && !recording && !transcribing && <span style={{ fontSize: 12, color: IQ.orange, fontWeight: 600 }}>{sttToast}</span>}
+          </div>
+        ) : (
+          <div style={{ fontSize: 11, color: T.subtle, marginTop: 6, maxWidth: 700, margin: "6px auto 0" }}>{awaitingRating ? "Tap 1–5 or press a number key to rate your confidence." : sttAvailable && isBehavioural ? "Type your answer, or tap the mic to speak it." : "Enter to send — Shift+Enter for new line"}</div>
+        )}
       </div>
+
+      {showVoiceConsent && <VoiceConsentModal onAccept={acceptVoiceConsent} onDecline={declineVoiceConsent} busy={consentBusy} />}
     </div>
   );
 }

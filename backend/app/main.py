@@ -4,7 +4,7 @@ import re
 import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from fastapi import FastAPI, Depends, HTTPException, Query, Header
+from fastapi import FastAPI, Depends, HTTPException, Query, Header, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,9 +20,10 @@ from .auth import current_user
 from . import stages
 from . import compliance
 from . import tts
+from . import stt
 from .schemas import (
     StartSessionRequest, StartSessionResponse,
-    TurnRequest, TurnResponse,
+    TurnRequest, TurnResponse, STTResponse,
     RatingRequest, RatingResponse, SessionState,
     SessionMessagesResponse,
     EndRequest, DebriefResponse,
@@ -77,6 +78,14 @@ log = logging.getLogger(__name__)
 
 
 app = FastAPI(title="InterviewIQ API", version="2.1.0")
+
+# Voice config visibility — one line at startup so a misconfigured flag (feature
+# built but not enabled, or a voice mismatch) is obvious in ten seconds.
+log.info(
+    "Voice: TTS=%s STT=%s VOICE=%s model=%s speakers=%s/%s",
+    settings.TTS_ENABLED, settings.STT_ENABLED, settings.VOICE_ENABLED,
+    settings.TTS_MODEL, settings.TTS_VOICE_FEMALE, settings.TTS_VOICE_MALE,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -234,6 +243,9 @@ def _build_state(row: dict, *, stale: bool = False) -> SessionState:
         status=row.get("status"),
         started_at=row.get("started_at"),
         stale=stale,
+        # Voice Phase 2: spoken input exists only when both flags are on. The
+        # frontend gates the mic further (BEHAVIOURAL stage + consent).
+        stt_available=bool(settings.STT_ENABLED and settings.VOICE_ENABLED),
     )
 
 
@@ -302,20 +314,11 @@ async def start_session(
 ):
     _check_rate_limit(db, user_id)
 
-    # INT-07: consent gate. Voice mode requires an active consent row; while
-    # VOICE_ENABLED is false this is a no-op (gate always passes). Built now so the
-    # enforcement path exists the moment voice ships.
-    if settings.VOICE_ENABLED:
-        has_consent = db.execute(
-            text("""
-                SELECT 1 FROM vyom_consents
-                WHERE user_id = :u AND consent_type = 'voice_recording'
-                LIMIT 1
-            """),
-            {"u": user_id},
-        ).first() is not None
-        if not compliance.consent_gate_ok(settings.VOICE_ENABLED, has_consent):
-            raise HTTPException(403, "Voice consent is required before starting a voice session.")
+    # Voice Phase 2 (Decision 1 — consent at point of capture): starting a session
+    # never requires voice consent, even when VOICE_ENABLED is true. Typed-only
+    # learners must be able to start normally. Voice-recording consent is enforced
+    # exactly where audio is captured — the first-mic-use modal (frontend) and the
+    # /session/stt consent gate (server-side 403). See VOICE_PHASE2_REPORT.md §6.
 
     ctx = {}
     try:
@@ -464,7 +467,10 @@ async def start_session(
         "last_answer_id": None,
         "answer_count": 0,
     })
-    return StartSessionResponse(session_id=session_id, greeting=greeting, state=state, audio_url=audio_url)
+    return StartSessionResponse(
+        session_id=session_id, greeting=greeting, state=state, audio_url=audio_url,
+        stt_available=bool(settings.STT_ENABLED and settings.VOICE_ENABLED),
+    )
 
 
 @app.post("/session/turn", response_model=TurnResponse)
@@ -629,6 +635,75 @@ def session_audio(
         media_type="audio/mpeg",
         headers={"Cache-Control": "private, max-age=86400"},
     )
+
+
+def _has_voice_consent(db: Session, user_id: str) -> bool:
+    """True if the user has a voice_recording consent row (INT-07 consent ledger).
+
+    Same query shape as the start_session voice gate — reused, not rebuilt.
+    """
+    return db.execute(
+        text("""
+            SELECT 1 FROM vyom_consents
+            WHERE user_id = :u AND consent_type = 'voice_recording'
+            LIMIT 1
+        """),
+        {"u": user_id},
+    ).first() is not None
+
+
+@app.post("/session/stt", response_model=STTResponse)
+async def session_stt(
+    session_id: str = Form(...),
+    audio: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user_id: str = Depends(current_user),
+):
+    """Voice Phase 2: transcribe a spoken BEHAVIOURAL answer to text.
+
+    This does NOT submit the turn — it returns { transcript } for the learner to
+    review/edit before pressing Send. Raw audio is transcribed in-memory and
+    discarded immediately; it never touches disk or DB (DPDPA: text-only surface).
+
+    Gates (all must pass): STT_ENABLED + VOICE_ENABLED flags, session ownership,
+    current_stage == BEHAVIOURAL, a voice_recording consent row, and the 10 MB /
+    per-session cost caps. On any transcription failure we return {transcript: null}
+    so the learner simply types — never a dead end.
+    """
+    # Feature + consent-machinery gates. 404 (not 403) when the feature is off so we
+    # don't advertise a disabled endpoint.
+    if not (settings.STT_ENABLED and settings.VOICE_ENABLED):
+        raise HTTPException(404, "Not found")
+
+    session_row = _load_session(db, session_id, user_id)
+
+    if (session_row.get("current_stage") or "") != "BEHAVIOURAL":
+        raise HTTPException(409, "Voice input is only available in the behavioural round.")
+
+    if not compliance.consent_gate_ok(settings.VOICE_ENABLED, _has_voice_consent(db, user_id)):
+        raise HTTPException(403, "Voice consent is required before using voice input.")
+
+    # Cost guard: cap vendor calls at the behavioural question count + retries.
+    level = session_row.get("level", "")
+    cap = stages.stage_total(level, "BEHAVIOURAL") + settings.STT_RETRY_ALLOWANCE
+    if stt.stt_cap_reached(session_id, cap):
+        log.info("STT cap reached for session; asking learner to type")
+        raise HTTPException(429, "Voice input limit reached for this round — please type your answer.")
+
+    # Read at most cap+1 bytes so an oversized upload is rejected without ever
+    # buffering the whole thing. read(n) returns <= n bytes (all of a small file).
+    limit = settings.STT_MAX_UPLOAD_BYTES
+    audio_bytes = await audio.read(limit + 1)
+    if len(audio_bytes) > limit:
+        raise HTTPException(413, "Recording is too large. Please keep answers under a few minutes.")
+    if not audio_bytes:
+        return STTResponse(transcript=None)
+
+    # Count the vendor attempt against the cap, then transcribe. Audio is not
+    # retained beyond this call.
+    stt.note_stt_call(session_id)
+    transcript = await stt.transcribe(audio_bytes, audio.content_type)
+    return STTResponse(transcript=transcript)
 
 
 @app.post("/session/turn/rating", response_model=RatingResponse)

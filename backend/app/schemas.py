@@ -23,6 +23,10 @@ class SessionState(BaseModel):
     status: Optional[str] = None            # active | completed | abandoned
     started_at: Optional[datetime] = None
     stale: bool = False                     # active but idle > 30 min
+    # Voice Phase 2: whether spoken-answer input is available at all (STT_ENABLED
+    # AND VOICE_ENABLED). The frontend still shows the mic only in the BEHAVIOURAL
+    # round; consent is collected on first mic use. False when either flag is off.
+    stt_available: bool = False
 
 
 class SessionMessagesResponse(BaseModel):
@@ -54,6 +58,10 @@ class StartSessionResponse(BaseModel):
     state: SessionState
     # Voice Phase 1: relative URL to spoken greeting audio; null when TTS is off/failed.
     audio_url: Optional[str] = None
+    # Voice Phase 2: mirror of state.stt_available at the top level so a client that
+    # keeps only the session id (not the whole state) can decide to show the mic
+    # without a second /state fetch. Source of truth is still state.stt_available.
+    stt_available: bool = False
 
 
 class TurnRequest(BaseModel):
@@ -72,6 +80,16 @@ class TurnResponse(BaseModel):
     state: SessionState
     # Voice Phase 1: relative URL to spoken question audio; null when TTS off/failed.
     audio_url: Optional[str] = None
+
+
+class STTResponse(BaseModel):
+    """Voice Phase 2: the transcript of a spoken behavioural answer.
+
+    This does NOT submit the turn — the learner reviews/edits the transcript and
+    presses Send as normal. `transcript` is None when transcription was
+    unavailable or empty, so the client falls back to typing.
+    """
+    transcript: Optional[str] = None
 
 
 class RatingRequest(BaseModel):

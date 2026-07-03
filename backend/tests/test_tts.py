@@ -57,22 +57,22 @@ def test_markdown_stripped():
 # ── Cache-key stability ─────────────────────────────────────────────────────
 
 def test_cache_key_stable_and_deterministic():
-    a = t.cache_key("Tell me about yourself.", "anushka")
-    b = t.cache_key("Tell me about yourself.", "anushka")
+    a = t.cache_key("Tell me about yourself.", "ritu")
+    b = t.cache_key("Tell me about yourself.", "ritu")
     assert a == b
     assert len(a) == 64 and all(c in "0123456789abcdef" for c in a)
 
 
 def test_cache_key_varies_by_speaker_and_text():
-    base = t.cache_key("Tell me about yourself.", "anushka")
-    assert base != t.cache_key("Tell me about yourself.", "abhilash")   # speaker matters
-    assert base != t.cache_key("Tell me about your projects.", "anushka")  # text matters
+    base = t.cache_key("Tell me about yourself.", "ritu")
+    assert base != t.cache_key("Tell me about yourself.", "shubh")   # speaker matters
+    assert base != t.cache_key("Tell me about your projects.", "ritu")  # text matters
 
 
 def test_cache_key_ignores_markdown_noise():
     # Two inputs that preprocess to the same speech share a cache entry.
-    plain = t.cache_key("Explain your EMI strategy.", "anushka")
-    marked = t.cache_key("Explain your **EMI** strategy.", "anushka")
+    plain = t.cache_key("Explain your EMI strategy.", "ritu")
+    marked = t.cache_key("Explain your **EMI** strategy.", "ritu")
     assert plain == marked
 
 
@@ -82,7 +82,7 @@ def test_synthesize_none_without_api_key():
     old = t.settings.SARVAM_API_KEY
     t.settings.SARVAM_API_KEY = ""
     try:
-        assert asyncio.run(t.synthesize("hello", "anushka")) is None
+        assert asyncio.run(t.synthesize("hello", "ritu")) is None
     finally:
         t.settings.SARVAM_API_KEY = old
 
@@ -94,7 +94,7 @@ def test_get_audio_hash_none_when_synth_fails(monkeypatch=None):
     orig = t.synthesize
     t.synthesize = _fail
     try:
-        res = asyncio.run(t.get_audio_hash("sess-fail", "a unique never-cached prompt", "anushka"))
+        res = asyncio.run(t.get_audio_hash("sess-fail", "a unique never-cached prompt", "ritu"))
         assert res is None
     finally:
         t.synthesize = orig
@@ -105,7 +105,7 @@ def test_cost_guard_blocks_after_cap():
     sid = "sess-capped"
     t._session_synth_counts[sid] = t._tts_cap()
     try:
-        res = asyncio.run(t.get_audio_hash(sid, "brand new uncached question xyz", "anushka"))
+        res = asyncio.run(t.get_audio_hash(sid, "brand new uncached question xyz", "ritu"))
         assert res is None
     finally:
         t._session_synth_counts.pop(sid, None)
@@ -123,8 +123,8 @@ def test_cache_hit_does_not_recall_vendor():
     sid = "sess-cache"
     t._session_synth_counts.pop(sid, None)
     try:
-        k1 = asyncio.run(t.get_audio_hash(sid, "a fresh cacheable question 42", "anushka"))
-        k2 = asyncio.run(t.get_audio_hash(sid, "a fresh cacheable question 42", "anushka"))
+        k1 = asyncio.run(t.get_audio_hash(sid, "a fresh cacheable question 42", "ritu"))
+        k2 = asyncio.run(t.get_audio_hash(sid, "a fresh cacheable question 42", "ritu"))
         assert k1 == k2 and k1 is not None
         assert calls["n"] == 1                       # vendor hit only once
         assert t._session_synth_counts[sid] == 1     # counter incremented once
@@ -136,6 +136,45 @@ def test_cache_hit_does_not_recall_vendor():
         except Exception:
             pass
         t._session_synth_counts.pop(sid, None)
+
+
+# ── Bulbul v3 upgrade: payload params + cache-key versioning ────────────────
+
+def test_v3_payload_params():
+    p = t.build_payload("Explain FOIR to me.", "ritu")
+    assert p["model"] == "bulbul:v3"
+    assert p["speaker"] == "ritu"
+    assert p["output_audio_codec"] == "mp3"
+    assert p["speech_sample_rate"] == 44100
+    assert p["temperature"] == 0.4
+    assert p["pace"] == 1.0
+    # v3 does NOT accept pitch/loudness — they must never be sent.
+    assert "pitch" not in p and "loudness" not in p
+
+
+def test_dict_id_only_when_configured():
+    # Absent by default.
+    assert "dict_id" not in t.build_payload("hi", "ritu")
+    old = t.settings.TTS_DICT_ID
+    t.settings.TTS_DICT_ID = "bfsi-terms-v1"
+    try:
+        assert t.build_payload("hi", "ritu")["dict_id"] == "bfsi-terms-v1"
+    finally:
+        t.settings.TTS_DICT_ID = old
+
+
+def test_cache_key_varies_by_model_and_sample_rate():
+    # A model/sample-rate change MUST change the key so stale v2 audio can't serve.
+    base = t.cache_key("Tell me about yourself.", "ritu")
+    old_model, old_sr = t.settings.TTS_MODEL, t.settings.TTS_SAMPLE_RATE
+    try:
+        t.settings.TTS_MODEL = "bulbul:v2"
+        assert t.cache_key("Tell me about yourself.", "ritu") != base   # model matters
+        t.settings.TTS_MODEL = old_model
+        t.settings.TTS_SAMPLE_RATE = 22050
+        assert t.cache_key("Tell me about yourself.", "ritu") != base   # sample rate matters
+    finally:
+        t.settings.TTS_MODEL, t.settings.TTS_SAMPLE_RATE = old_model, old_sr
 
 
 if __name__ == "__main__":
