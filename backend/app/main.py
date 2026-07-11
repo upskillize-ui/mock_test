@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from fastapi import FastAPI, Depends, HTTPException, Query, Header, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -22,6 +22,7 @@ from . import compliance
 from . import tts
 from . import stt
 from . import delivery
+from . import dev_auth
 from .schemas import (
     StartSessionRequest, StartSessionResponse,
     TurnRequest, TurnResponse, STTResponse,
@@ -117,6 +118,36 @@ async def security_headers(request, call_next):
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 if STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+
+
+def register_dev_login(app_) -> bool:
+    """DEV ONLY — mount GET /dev/login when APP_ENV == 'development'.
+
+    Outside development the route is NOT registered at all (so it 404s — see the
+    "dev" prefix in the SPA catch-all), and in production it is never created. When
+    enabled, opening http://localhost:8000/dev/login in ANY browser mints a 30-day
+    dev token, writes it to localStorage for the frontend origin, and redirects there
+    already logged in — eliminating the copy-paste / wrong-tab / stale-token failure
+    modes entirely. NEVER expose this in production.
+    """
+    if settings.APP_ENV != "development":
+        return False
+
+    log.warning("DEV LOGIN ENABLED — development only: GET /dev/login mints a 30-day token")
+
+    @app_.get("/dev/login")
+    def dev_login():
+        redirect = settings.ALLOWED_ORIGINS[0] if settings.ALLOWED_ORIGINS else "http://localhost:5173"
+        token, _ = dev_auth.build_dev_token(
+            settings.JWT_SECRET, days=30,
+            audience=settings.JWT_AUDIENCE, issuer=settings.JWT_ISSUER,
+        )
+        return HTMLResponse(dev_auth.dev_login_html(token, redirect))
+
+    return True
+
+
+register_dev_login(app)
 
 
 def _check_rate_limit(db: Session, user_id: str) -> None:
@@ -1446,7 +1477,7 @@ def spa_root():
 @app.get("/{path:path}")
 def spa_catch_all(path: str):
     api_prefixes = ("session", "alumni", "user", "health", "assets", "docs", "openapi.json",
-                    "consent", "me", "admin")
+                    "consent", "me", "admin", "dev")
     if path.startswith(api_prefixes):
         raise HTTPException(404, "Not found")
     index = STATIC_DIR / "index.html"

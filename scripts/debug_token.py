@@ -58,7 +58,9 @@ def main() -> int:
     if not script_secret:
         print("FAIL: no JWT_SECRET in backend/.env — cannot sign.")
         return 1
-    token, payload = mdt.build_dev_token(env, script_secret)
+    token, payload = mdt.build_dev_token(
+        script_secret, audience=env.get("JWT_AUDIENCE", ""), issuer=env.get("JWT_ISSUER", "")
+    )
     print(f"  claims: {sorted(payload.keys())}")
 
     print("\n=== 3. Decode with auth.py's exact kwargs (direct jose, precise error) ===")

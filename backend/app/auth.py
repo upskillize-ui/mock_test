@@ -9,27 +9,27 @@ from .config import settings
 log = logging.getLogger(__name__)
 
 
-def _log_rejection(reason: str, token: str = "") -> None:
-    """Dev-only diagnostic: say WHY a token was rejected, at INFO, in non-prod.
+def _reject(reason: str, token: str = "", *, generic: str = "Invalid or expired token") -> HTTPException:
+    """Build the 401 for a rejected token.
 
-    Never logs the token in full — at most its first 12 chars (enough to correlate
-    with what the client sent, not enough to reuse). Silent in production so we don't
-    leak auth internals or token fragments into prod logs.
+    In non-production we (a) log the SPECIFIC reason at INFO (token truncated to its
+    first 12 chars — never logged in full) and (b) put that reason in the response
+    `detail`, so the frontend banner can show "Please log in again (token expired)".
+    Production returns only the generic message and logs nothing token-specific.
     """
-    if settings.APP_ENV == "production":
-        return
-    prefix = (token or "")[:12]
-    log.info("auth: token rejected — %s (token[:12]=%r)", reason, prefix)
+    if settings.APP_ENV != "production":
+        log.info("auth: token rejected — %s (token[:12]=%r)", reason, (token or "")[:12])
+        detail = reason
+    else:
+        detail = generic
+    return HTTPException(
+        status.HTTP_401_UNAUTHORIZED, detail, headers={"WWW-Authenticate": "Bearer"}
+    )
 
 
 def current_user(authorization: str | None = Header(default=None)) -> str:
     if not authorization or not authorization.startswith("Bearer "):
-        _log_rejection("missing or non-Bearer Authorization header")
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            "Authentication required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise _reject("missing or non-Bearer Authorization header", generic="Authentication required")
 
     token = authorization.removeprefix("Bearer ").strip()
     try:
@@ -43,48 +43,24 @@ def current_user(authorization: str | None = Header(default=None)) -> str:
             kwargs["issuer"] = settings.JWT_ISSUER
         payload = jwt.decode(token, settings.JWT_SECRET, **kwargs)
     except ExpiredSignatureError:
-        _log_rejection("expired (exp is in the past)", token)
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            "Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise _reject("token expired (exp is in the past)", token)
     except JWTClaimsError as e:
         # Audience/issuer mismatch, or a required claim failed validation.
-        _log_rejection(f"claim validation failed: {e}", token)
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            "Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise _reject(f"claim validation failed: {e}", token)
     except JWTError as e:
-        # Signature mismatch (wrong secret), unexpected alg, missing required claim,
-        # or a malformed/unparseable token — the message says which.
-        _log_rejection(f"decode failed: {e}", token)
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            "Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        # Signature mismatch (wrong secret — or the token was minted for a DIFFERENT
+        # backend), unexpected alg, or a malformed/unparseable token.
+        raise _reject(f"decode failed: {e}", token)
 
     # Enforce our declared intent that exp is mandatory. jose's options={"require":
     # ["exp"]} is a silent no-op in this version (a token with no exp otherwise
     # validates and never expires), so we check explicitly.
     if "exp" not in payload:
-        _log_rejection("missing required 'exp' claim (token would never expire)", token)
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            "Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise _reject("missing required 'exp' claim (token would never expire)", token)
 
     user_id = payload.get("sub") or payload.get("user_id") or payload.get("id")
     if not user_id:
-        _log_rejection("no user identifier (sub/user_id/id all absent)", token)
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            "Token missing user identifier",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise _reject("no user identifier (sub/user_id/id all absent)", token,
+                      generic="Token missing user identifier")
 
     return str(user_id)

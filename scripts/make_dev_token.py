@@ -1,27 +1,27 @@
 """Generate a local dev JWT so the app treats you as a logged-in test user.
 
-Stdlib only (no pip install needed). Signs an HS256 token with the JWT_SECRET
-from backend/.env — the SAME secret the backend verifies with (app/auth.py).
+Signs an HS256 token with the JWT_SECRET from backend/.env — the SAME secret the
+backend verifies with (app/auth.py) — using the SHARED builder in app/dev_auth.py,
+so the tool can never drift from what the backend mints/verifies.
 
 Usage (from the repo root or anywhere):
     python scripts/make_dev_token.py
     python scripts/make_dev_token.py --sub my-id --name "Asha K" --email asha@test.local --days 30
 
-Then paste the printed localStorage command into your browser console (F12) on
-the running frontend tab, and reload.
+Then paste the printed localStorage command into your browser console (F12) on the
+running frontend tab, and reload. (Or, even simpler in development, just open
+http://localhost:8000/dev/login — no paste needed.)
 """
 import argparse
-import base64
-import hashlib
-import hmac
-import json
 import sys
-import time
 from pathlib import Path
 
 # backend/.env lives one level up from scripts/ then into backend/.
-ENV_PATH = Path(__file__).resolve().parent.parent / "backend" / ".env"
-FRONTEND_TOKEN_KEY = "upskillize_token"  # App.jsx reads this localStorage key.
+BACKEND = Path(__file__).resolve().parent.parent / "backend"
+ENV_PATH = BACKEND / ".env"
+sys.path.insert(0, str(BACKEND))  # so we can import the shared app.dev_auth builder
+
+from app.dev_auth import build_dev_token, FRONTEND_TOKEN_KEY  # noqa: E402
 
 
 def load_env(path: Path) -> dict:
@@ -35,46 +35,6 @@ def load_env(path: Path) -> dict:
         key, val = line.split("=", 1)
         env[key.strip()] = val.strip().strip('"').strip("'")
     return env
-
-
-def b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
-def make_token(secret: str, payload: dict) -> str:
-    header = {"alg": "HS256", "typ": "JWT"}
-    seg = lambda obj: b64url(json.dumps(obj, separators=(",", ":")).encode("utf-8"))
-    signing_input = f"{seg(header)}.{seg(payload)}".encode("ascii")
-    sig = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
-    return f"{signing_input.decode('ascii')}.{b64url(sig)}"
-
-
-def build_payload(env: dict, sub: str, name: str, email: str, days: int) -> dict:
-    """The EXACT claim set this script mints. Shared with scripts/debug_token.py so
-    the diagnostic validates the identical payload the tool produces."""
-    now = int(time.time())
-    payload = {
-        "sub": sub,
-        "user_id": sub,
-        "full_name": name,
-        "name": name,
-        "email": email,
-        "iat": now,
-        "exp": now + days * 86400,
-    }
-    # If the backend enforces audience/issuer, mirror them so the token validates.
-    if env.get("JWT_AUDIENCE"):
-        payload["aud"] = env["JWT_AUDIENCE"]
-    if env.get("JWT_ISSUER"):
-        payload["iss"] = env["JWT_ISSUER"]
-    return payload
-
-
-def build_dev_token(env: dict, secret: str, sub="dev-user-1",
-                    name="Dev Tester", email="dev@upskillize.local", days=7):
-    """Build (token, payload) using this script's exact signing + claim logic."""
-    payload = build_payload(env, sub, name, email, days)
-    return make_token(secret, payload), payload
 
 
 def main() -> int:
@@ -98,8 +58,9 @@ def main() -> int:
         print("ERROR: this script only signs HS256 tokens.", file=sys.stderr)
         return 1
 
-    token, payload = build_dev_token(
-        env, secret, sub=args.sub, name=args.name, email=args.email, days=args.days
+    token, _ = build_dev_token(
+        secret, sub=args.sub, name=args.name, email=args.email, days=args.days,
+        audience=env.get("JWT_AUDIENCE", ""), issuer=env.get("JWT_ISSUER", ""),
     )
 
     print("\n=== InterviewIQ dev token ===")
@@ -109,6 +70,7 @@ def main() -> int:
     print("To log in, open the frontend (http://localhost:5173), press F12,")
     print("open the Console tab, paste this line, press Enter, then reload:\n")
     print(f'localStorage.setItem("{FRONTEND_TOKEN_KEY}", "{token}"); location.reload();\n')
+    print("Or simplest (development): just open http://localhost:8000/dev/login\n")
     return 0
 
 

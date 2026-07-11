@@ -21,7 +21,9 @@ async function api(path, opts = {}) {
     let serverMsg = "";
     try { const j = await res.json(); serverMsg = j.detail || j.message || ""; }
     catch { try { serverMsg = (await res.text()).slice(0, 200); } catch { /* noop */ } }
-    if (res.status === 401) throw new Error("Please log in again to continue.");
+    // In dev, append the backend's specific reason (auth.py exposes it in `detail`)
+    // so "Please log in again" becomes e.g. "Please log in again (token expired)".
+    if (res.status === 401) throw new Error("Please log in again to continue." + (import.meta.env?.DEV && serverMsg ? ` (${serverMsg})` : ""));
     if (res.status === 429) throw new Error(serverMsg || "Daily limit reached. Try again tomorrow.");
     if (res.status >= 500) throw new Error("InterviewIQ is having a hiccup. Please try again.");
     throw new Error(serverMsg || `Request failed (${res.status}).`);
