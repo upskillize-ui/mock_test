@@ -21,6 +21,7 @@ from . import stages
 from . import compliance
 from . import tts
 from . import stt
+from . import delivery
 from .schemas import (
     StartSessionRequest, StartSessionResponse,
     TurnRequest, TurnResponse, STTResponse,
@@ -175,6 +176,52 @@ def _load_messages(db: Session, session_id: str) -> list[dict]:
         {"s": session_id},
     ).mappings().all()
     return [{"role": r["role"], "content": r["content"]} for r in rows]
+
+
+def _load_debrief_messages(db: Session, session_id: str) -> tuple[list[dict], set[int]]:
+    """INT-11: transcript for the debrief with each learner answer prefixed by a
+    stable `[answer #<id>]` tag, so the scoring call can echo that answer_id back in
+    perAnswerScores and we join on it (instead of a fragile positional zip).
+
+    Returns (messages, valid_answer_ids) where valid_answer_ids is the set of real
+    user-message ids — used to reject any answerId the model might hallucinate.
+    """
+    rows = db.execute(
+        text("SELECT id, role, content FROM vyom_messages WHERE session_id=:s ORDER BY id ASC"),
+        {"s": session_id},
+    ).mappings().all()
+    messages: list[dict] = []
+    valid_answer_ids: set[int] = set()
+    for r in rows:
+        content = r["content"]
+        if r["role"] == "user":
+            valid_answer_ids.add(int(r["id"]))
+            content = f"[answer #{r['id']}] {content}"
+        messages.append({"role": r["role"], "content": content})
+    return messages, valid_answer_ids
+
+
+def _delivery_profile(db: Session, session_id: str) -> dict:
+    """Phase 3 Part D: aggregate the stored per-answer delivery metrics for a
+    session into the readout Delivery Profile (or a 'not enough voice data' notice).
+    Reads only the additive delivery_metrics column; typed answers have none.
+
+    When the feature is off we skip the query entirely (so the readout never depends
+    on migration 004), and any DB error degrades to an empty profile rather than
+    breaking the billed debrief."""
+    if not settings.DELIVERY_METRICS_ENABLED:
+        return delivery.aggregate([])
+    try:
+        rows = db.execute(
+            text("SELECT delivery_metrics FROM vyom_messages "
+                 "WHERE session_id=:s AND role='user' AND delivery_metrics IS NOT NULL ORDER BY id ASC"),
+            {"s": session_id},
+        ).mappings().all()
+    except Exception as e:
+        log.warning("delivery profile query skipped: %s", type(e).__name__)
+        return delivery.aggregate([])
+    spoken = [_as_obj(r["delivery_metrics"], None) for r in rows]
+    return delivery.aggregate([m for m in spoken if isinstance(m, dict)])
 
 
 def _save_message(db: Session, session_id: str, role: str, content: str) -> None:
@@ -506,20 +553,45 @@ async def session_turn(
     if answer_count >= settings.MAX_ANSWERS_PER_SESSION:
         raise HTTPException(409, "You've reached the maximum number of answers for one session.")
 
-    # Persist the answer and capture its id (used later as the rating target).
-    res = db.execute(
-        text("INSERT INTO vyom_messages (session_id, role, content) VALUES (:s, 'user', :c)"),
-        {"s": body.session_id, "c": body.message.strip()},
-    )
+    # Phase 3 Part C: a spoken answer carries delivery metrics echoed from
+    # /session/stt. Re-validate the client payload and store it on the answer's row
+    # (typed answers stay NULL). Informational only — never affects scoring.
+    dm = delivery.sanitize(body.delivery_metrics) if settings.DELIVERY_METRICS_ENABLED else None
+
+    # Persist the answer and capture its id (used later as the rating target). Only a
+    # spoken answer with metrics touches the additive delivery_metrics column, so the
+    # common path (typed answers / feature off) never depends on migration 004.
+    if dm:
+        res = db.execute(
+            text("INSERT INTO vyom_messages (session_id, role, content, delivery_metrics) "
+                 "VALUES (:s, 'user', :c, :dm)"),
+            {"s": body.session_id, "c": body.message.strip(), "dm": json.dumps(dm)},
+        )
+    else:
+        res = db.execute(
+            text("INSERT INTO vyom_messages (session_id, role, content) VALUES (:s, 'user', :c)"),
+            {"s": body.session_id, "c": body.message.strip()},
+        )
     db.commit()
     answer_id = int(res.lastrowid)
-    round_index_after = round_index + 1
+
+    # FIX 1/2: only a *substantive* answer earns a confidence rating and spends a
+    # planned question slot. A non-answer ("I don't know" / "skip" / a bare
+    # clarification request) is caught here by the cheap deterministic guard —
+    # before any LLM judgement — so we never show a rating widget for it, and it
+    # does not consume one of the round's questions (the interviewer steps down /
+    # re-asks on the same topic instead). WARMUP and REVERSE are unaffected: they
+    # are never rating-gated, so consumes_question_slot() returns True for them.
+    substantive = not stages.is_non_substantive(body.message)
+    round_index_after = (
+        round_index + 1 if stages.consumes_question_slot(st, substantive) else round_index
+    )
 
     cfg = _session_to_cfg(session_row)
     alumni_intel = fetch_alumni_intel(db, cfg["company"], cfg["role"])
     system_prompt = build_system_prompt(cfg, alumni_intel)
     messages = _load_messages(db, body.session_id)
-    directive = stage_turn_directive(cfg, st, round_index_after)
+    directive = stage_turn_directive(cfg, st, round_index_after, substantive=substantive)
 
     reply = await call_claude(
         system=system_prompt,
@@ -535,11 +607,17 @@ async def session_turn(
         # Not rating-gated; advance straight to READOUT when the round completes.
         new_stage, new_round = stages.advance_after_reverse(round_index_after, level)
         new_awaiting, new_last = 0, None
-    elif stages.is_rating_gated(st):
-        # DOMAIN/BEHAVIOURAL/CASE: hold here until the learner submits a confidence
-        # rating (INT-01); advancement happens in /session/turn/rating.
+    elif stages.should_await_rating(st, substantive):
+        # DOMAIN/BEHAVIOURAL/CASE substantive answer: hold here until the learner
+        # submits a confidence rating (INT-01); advancement happens in /turn/rating.
         new_stage, new_round = st, round_index_after
         new_awaiting, new_last = 1, answer_id
+    elif stages.is_rating_gated(st):
+        # Rating-gated stage but a non-substantive answer (FIX 1): no rating widget,
+        # and the slot was not consumed (round_index_after == round_index), so the
+        # interviewer re-asks / steps down on the same topic. Stay in the stage.
+        new_stage, new_round = st, round_index_after
+        new_awaiting, new_last = 0, None
     else:
         # WARMUP: not rating-gated (product) — advance straight to the next question.
         new_stage, new_round = stages.advance_after_rating(st, round_index_after, level)
@@ -656,19 +734,21 @@ def _has_voice_consent(db: Session, user_id: str) -> bool:
 async def session_stt(
     session_id: str = Form(...),
     audio: UploadFile = File(...),
+    duration_seconds: float = Form(0.0),
     db: Session = Depends(get_db),
     user_id: str = Depends(current_user),
 ):
-    """Voice Phase 2: transcribe a spoken BEHAVIOURAL answer to text.
+    """Voice Phase 3: transcribe a spoken answer to text (ALL answering rounds).
 
     This does NOT submit the turn — it returns { transcript } for the learner to
     review/edit before pressing Send. Raw audio is transcribed in-memory and
     discarded immediately; it never touches disk or DB (DPDPA: text-only surface).
 
     Gates (all must pass): STT_ENABLED + VOICE_ENABLED flags, session ownership,
-    current_stage == BEHAVIOURAL, a voice_recording consent row, and the 10 MB /
-    per-session cost caps. On any transcription failure we return {transcript: null}
-    so the learner simply types — never a dead end.
+    a voice_recording consent row, and the 10 MB / per-session cost caps. Phase 3
+    Part B drops the BEHAVIOURAL-only restriction — voice input is available in every
+    answering round (Warm-up, Domain, Behavioural, Case, Reverse). On any
+    transcription failure we return {transcript: null} so the learner simply types.
     """
     # Feature + consent-machinery gates. 404 (not 403) when the feature is off so we
     # don't advertise a disabled endpoint.
@@ -677,18 +757,15 @@ async def session_stt(
 
     session_row = _load_session(db, session_id, user_id)
 
-    if (session_row.get("current_stage") or "") != "BEHAVIOURAL":
-        raise HTTPException(409, "Voice input is only available in the behavioural round.")
-
+    # Phase 3 Part B: no stage restriction — the mic works in every answering round.
     if not compliance.consent_gate_ok(settings.VOICE_ENABLED, _has_voice_consent(db, user_id)):
         raise HTTPException(403, "Voice consent is required before using voice input.")
 
-    # Cost guard: cap vendor calls at the behavioural question count + retries.
-    level = session_row.get("level", "")
-    cap = stages.stage_total(level, "BEHAVIOURAL") + settings.STT_RETRY_ALLOWANCE
+    # Cost guard: cap vendor calls per session (Phase 3: answer cap + 5, mirroring TTS).
+    cap = settings.MAX_ANSWERS_PER_SESSION + 5
     if stt.stt_cap_reached(session_id, cap):
         log.info("STT cap reached for session; asking learner to type")
-        raise HTTPException(429, "Voice input limit reached for this round — please type your answer.")
+        raise HTTPException(429, "Voice input limit reached for this session — please type your answer.")
 
     # Read at most cap+1 bytes so an oversized upload is rejected without ever
     # buffering the whole thing. read(n) returns <= n bytes (all of a small file).
@@ -702,8 +779,28 @@ async def session_stt(
     # Count the vendor attempt against the cap, then transcribe. Audio is not
     # retained beyond this call.
     stt.note_stt_call(session_id)
-    transcript = await stt.transcribe(audio_bytes, audio.content_type)
-    return STTResponse(transcript=transcript)
+    result = await stt.transcribe_full(
+        audio_bytes, audio.content_type, want_timestamps=settings.STT_WITH_TIMESTAMPS
+    )
+    if result is None:
+        return STTResponse(transcript=None, delivery_metrics=None)
+
+    transcript = result.get("transcript")
+
+    # Phase 3 Part C: compute-and-discard delivery metrics from the transcript +
+    # recording duration (+ vendor timestamps/confidence if present). The audio is
+    # already gone; only these derived numbers survive. Never blocks the turn — any
+    # failure just yields null metrics and the learner proceeds normally.
+    metrics = None
+    if settings.DELIVERY_METRICS_ENABLED and transcript:
+        try:
+            metrics = delivery.compute(
+                transcript, duration_seconds, result.get("timestamps"), result.get("confidence")
+            )
+        except Exception as e:
+            log.warning("delivery metrics compute failed: %s", type(e).__name__)
+            metrics = None
+    return STTResponse(transcript=transcript, delivery_metrics=metrics)
 
 
 @app.post("/session/turn/rating", response_model=RatingResponse)
@@ -777,6 +874,10 @@ async def end_session(
     session_row = _load_session(db, body.session_id, user_id)
     cfg = _session_to_cfg(session_row)
 
+    # Phase 3 Part D: the Delivery Profile is recomputed from stored per-answer
+    # metrics on every /session/end (cheap; independent of the billed debrief).
+    delivery_profile = _delivery_profile(db, body.session_id)
+
     # Idempotency + cost guard: if a debrief already exists, return it instead of
     # re-running the (billed) Sonnet debrief on every /session/end call.
     existing = db.execute(
@@ -800,10 +901,12 @@ async def end_session(
                 plan=d.get("plan", []),
                 next_focus=d.get("nextFocus", ""),
                 calibration=_as_obj(existing.get("calibration"), {}),
+                delivery=delivery_profile,
             )
 
     system_prompt = build_system_prompt(cfg, "")
-    messages = _load_messages(db, body.session_id)
+    # INT-11: tag each answer with its answer_id so perAnswerScores can echo it.
+    messages, valid_answer_ids = _load_debrief_messages(db, body.session_id)
     messages.append({"role": "user", "content": DEBRIEF_INSTRUCTION})
 
     raw = await call_claude(
@@ -827,21 +930,37 @@ async def end_session(
         log.error("Debrief JSON parse error: %s (len=%d)", e, len(raw))
         raise HTTPException(502, "Debrief generation failed")
 
-    # INT-03: derive readiness bands from the raw (internal) percentages.
+    # INT-11: the model's per-answer scores now echo answerId — the join key for
+    # both calibration and band math.
+    per_scores = debrief.get("perAnswerScores", []) or []
+    sub_stages = stages.substantive_stages(per_scores, valid_answer_ids)
+
+    # INT-03: derive readiness bands from the raw (internal) percentages. INT-11:
+    # zero any scored round the join says had no substantive answer, so a round of
+    # pure "don't know"s can never surface a positive band.
     overall_pct = int(debrief.get("overall", 0))
     overall_band = stages.band_for(overall_pct)
-    round_bands = stages.round_bands_from_scores(debrief.get("roundScores", {}) or {})
+    round_bands = stages.round_bands_from_scores(
+        stages.gate_round_scores(debrief.get("roundScores", {}) or {}, sub_stages)
+    )
 
-    # INT-02: calibrate learner confidence ratings against the model's per-answer
-    # quality scores. Both lists are in answer order, so we zip by position.
+    # INT-02 + INT-11: calibrate learner confidence ratings against the model's
+    # per-answer quality scores, JOINED BY answer_id (not positional zip). A rating
+    # exists only for a substantive DOMAIN/BEHAVIOURAL/CASE answer; we look up that
+    # answer's score by its id, so dropping a mid-list non-answer never misaligns the
+    # surviving pairs.
     rating_rows = db.execute(
-        text("SELECT rating FROM vyom_answer_ratings WHERE session_id=:s ORDER BY answer_id ASC"),
+        text("SELECT answer_id, rating FROM vyom_answer_ratings WHERE session_id=:s ORDER BY answer_id ASC"),
         {"s": body.session_id},
-    ).fetchall()
-    rating_vals = [r.rating for r in rating_rows]
-    per_scores = debrief.get("perAnswerScores", []) or []
-    score_vals = [s.get("score") for s in per_scores if isinstance(s, dict)]
-    calibration = stages.calibration_profile(list(zip(rating_vals, score_vals)))
+    ).mappings().all()
+    ratings = [(int(r["answer_id"]), r["rating"]) for r in rating_rows]
+    pairs = stages.calibration_pairs(ratings, per_scores, valid_answer_ids)
+    if ratings and not pairs:
+        # Ratings exist but nothing joined — the scoring call didn't echo usable
+        # answer_ids. Log (no content) so a prompt/model regression is visible; the
+        # profile degrades to insufficient_data rather than mispairing.
+        log.warning("calibration: %d ratings but 0 joined perAnswerScores by answer_id", len(ratings))
+    calibration = stages.calibration_profile(pairs)
 
     db.execute(
         text("""
@@ -892,6 +1011,7 @@ async def end_session(
         plan=debrief.get("plan", []),
         next_focus=debrief.get("nextFocus", ""),
         calibration=calibration,
+        delivery=delivery_profile,
     )
 
 
@@ -1158,7 +1278,7 @@ def export_my_data(
     messages, ratings, debriefs = [], [], []
     if session_ids:
         messages = db.execute(
-            text("SELECT id, session_id, role, content, created_at "
+            text("SELECT id, session_id, role, content, delivery_metrics, created_at "
                  "FROM vyom_messages WHERE session_id IN :ids ORDER BY id ASC"),
             {"ids": tuple(session_ids)},
         ).mappings().all()

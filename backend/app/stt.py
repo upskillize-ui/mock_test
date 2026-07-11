@@ -54,11 +54,14 @@ def stt_cap_reached(session_id: str, cap: int) -> bool:
     return stt_calls_used(session_id) >= cap
 
 
-async def transcribe(audio_bytes: bytes, mime: str | None) -> str | None:
-    """Send audio to Sarvam Saarika and return the transcript text, or None on ANY
-    failure. Never raises, never logs the API key, the audio, or the transcript.
+async def _request(audio_bytes: bytes, mime: str | None, want_timestamps: bool) -> dict | None:
+    """POST audio to Saarika and return the parsed JSON body, or None on ANY
+    failure. Never raises, never logs the key/audio/transcript.
 
     The audio bytes are used only for this request and are not retained here.
+    `want_timestamps` asks the vendor for word/segment timestamps (Phase 3 Part C —
+    same call, no extra cost); older models may return a single whole-utterance
+    segment, which the delivery layer treats as "no usable pauses".
     """
     if not settings.SARVAM_API_KEY:
         log.warning("STT requested but SARVAM_API_KEY is not set")
@@ -68,19 +71,19 @@ async def transcribe(audio_bytes: bytes, mime: str | None) -> str | None:
 
     # Sarvam accepts a multipart upload. Language "unknown" asks Saarika to
     # auto-detect (Hinglish / en-IN / regional); ops can pin en-IN via config.
-    filename = "answer.webm"
-    ct = mime or "application/octet-stream"
-    files = {"file": (filename, audio_bytes, ct)}
+    files = {"file": ("answer.webm", audio_bytes, mime or "application/octet-stream")}
     data = {"model": settings.STT_MODEL}
     if settings.STT_LANGUAGE:
         data["language_code"] = settings.STT_LANGUAGE
+    if want_timestamps:
+        data["with_timestamps"] = "true"
     headers = {"api-subscription-key": settings.SARVAM_API_KEY}
 
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             r = await client.post(_SARVAM_URL, headers=headers, files=files, data=data)
     except httpx.RequestError as e:
-        log.warning("STT request failed: %s", type(e).__name__)
+        log.warning("STT request failed: %s: %s", type(e).__name__, e)
         return None
 
     if r.status_code != 200:
@@ -89,12 +92,14 @@ async def transcribe(audio_bytes: bytes, mime: str | None) -> str | None:
         return None
 
     try:
-        body = r.json()
+        return r.json()
     except Exception as e:
         log.warning("STT decode failed: %s", type(e).__name__)
         return None
 
-    # Saarika returns the text under "transcript"; be defensive about the key.
+
+def _extract_transcript(body: dict) -> str | None:
+    """Pull the transcript text out of a Saarika response body (defensive on key)."""
     transcript = body.get("transcript")
     if transcript is None:
         transcript = body.get("text")
@@ -102,3 +107,37 @@ async def transcribe(audio_bytes: bytes, mime: str | None) -> str | None:
         return None
     transcript = transcript.strip()
     return transcript or None
+
+
+async def transcribe(audio_bytes: bytes, mime: str | None) -> str | None:
+    """Transcript text only, or None on any failure (backward-compatible)."""
+    body = await _request(audio_bytes, mime, want_timestamps=False)
+    if body is None:
+        return None
+    return _extract_transcript(body)
+
+
+async def transcribe_full(
+    audio_bytes: bytes, mime: str | None, want_timestamps: bool = True
+) -> dict | None:
+    """Phase 3 Part C: transcript PLUS the raw signals delivery scoring needs.
+
+    Returns {"transcript": str, "timestamps": dict|None, "confidence": float|None}
+    or None if there is no usable transcript. `timestamps` is Saarika's
+    {words, start_time_seconds, end_time_seconds} block when present; `confidence`
+    is the vendor articulation score if the model returns one (Saarika currently
+    does not, so it is typically None). Audio is not retained beyond this call.
+    """
+    body = await _request(audio_bytes, mime, want_timestamps=want_timestamps)
+    if body is None:
+        return None
+    transcript = _extract_transcript(body)
+    if transcript is None:
+        return None
+    ts = body.get("timestamps")
+    if not isinstance(ts, dict):
+        ts = None
+    conf = body.get("confidence")
+    if not isinstance(conf, (int, float)):
+        conf = None
+    return {"transcript": transcript, "timestamps": ts, "confidence": conf}

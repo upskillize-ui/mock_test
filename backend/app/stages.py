@@ -12,6 +12,8 @@ question. REVERSE flips the flow: the learner asks the interviewer questions
 (not rated). READOUT is terminal input-wise; the debrief is at /session/end.
 """
 
+import re
+
 from .config import settings
 
 # Ordered, answerable stages (excludes SETUP/READOUT/DONE which take no /turn answer).
@@ -99,6 +101,77 @@ def is_rating_gated(stage: str) -> bool:
     """True if a learner answer in this stage must be followed by a confidence
     rating before the interview can proceed. WARMUP is not gated (INT-01 exemption)."""
     return stage in RATING_STAGES
+
+
+# ── Substantive-answer gate (generalises the WARMUP rating exemption) ─────────
+# We only ask a learner to rate their confidence, and only "spend" a question
+# slot, on a *substantive* answer. A non-answer ("I don't know" / "skip" / a bare
+# clarification request / a couple of characters) is not something worth rating,
+# and it must not consume one of the round's planned questions.
+
+MIN_SUBSTANTIVE_CHARS = 15
+
+# Obvious non-answers. Anchored so we only fire on a message that is *entirely* a
+# non-answer, not one that merely contains the phrase ("I don't know why, but the
+# reason we chose Kafka was ..." is a real answer and must still be rated).
+_NONANSWER_RX = re.compile(
+    r"^\s*(i\s*(really\s*|honestly\s*)?(don'?t|do\s*not|dont)\s*know"
+    r"|no\s*idea|not\s*sure|no\s*clue|dunno|idk"
+    r"|skip(\s*this)?|pass|next(\s*question)?|move\s*on"
+    r"|can'?t\s*answer|cannot\s*answer|i\s*give\s*up|no\s*comment)"
+    r"[\s.!?]*$",
+    re.IGNORECASE,
+)
+# Pure clarification requests — the learner asked us something instead of answering.
+_CLARIFY_RX = re.compile(
+    r"^\s*(what\s*do\s*you\s*mean"
+    r"|(can|could)\s*you\s*(please\s*)?(repeat|rephrase|clarify|explain)"
+    r"|come\s*again|sorry\s*,?\s*what|pardon|i\s*didn'?t\s*(get|understand))"
+    # allow a short trailing tail ("...repeat that?", "...clarify the question please")
+    # but not a whole sentence, so a genuine answer that clarifies-then-answers still rates.
+    r"(\s+\w+){0,3}[\s.?!]*$",
+    re.IGNORECASE,
+)
+# Meaningful characters = letters/digits (Latin + Devanagari for Hinglish typed in
+# Hindi script); punctuation and whitespace don't count toward "did they say anything".
+_NONMEANINGFUL_RX = re.compile(r"[^0-9a-zऀ-ॿ]")
+
+
+def is_non_substantive(text: str) -> bool:
+    """Cheap, deterministic guard — True when an answer is an obvious non-answer.
+
+    Runs BEFORE any LLM judgement so we never burn a confidence-rating prompt on a
+    "don't know" / "skip" / bare clarification, even if the scoring model would
+    later misjudge it as substantive. Deliberately conservative: it only fires on
+    clear non-answers, so genuine (even terse) answers still get rated, and the
+    debrief scoring call's `substantive` flag catches the subtler cases.
+    """
+    if not text:
+        return True
+    stripped = text.strip()
+    if _NONMEANINGFUL_RX.sub("", stripped.lower()).__len__() < MIN_SUBSTANTIVE_CHARS:
+        return True
+    return bool(_NONANSWER_RX.match(stripped) or _CLARIFY_RX.match(stripped))
+
+
+def should_await_rating(stage: str, is_substantive: bool) -> bool:
+    """True iff a just-submitted answer in `stage` must be rated before proceeding.
+
+    Generalises the WARMUP exemption: rating-gated stages only (DOMAIN/BEHAVIOURAL/
+    CASE), and only for substantive answers (FIX 1 — rate only substantive answers).
+    """
+    return is_rating_gated(stage) and is_substantive
+
+
+def consumes_question_slot(stage: str, is_substantive: bool) -> bool:
+    """FIX 2 — a non-substantive answer in a scored, rating-gated stage does NOT
+    consume a planned question slot: the interviewer steps down / re-asks on the
+    same topic instead, so 'a round of 4' still means 4 substantive questions.
+    Every other turn (WARMUP, REVERSE, and all substantive answers) advances normally.
+    """
+    if is_rating_gated(stage) and not is_substantive:
+        return False
+    return True
 
 
 def stage_label(stage: str, round_index: int, level: str, awaiting_rating: bool = False) -> str:
@@ -190,6 +263,97 @@ def _categorize(rating: int, score_1_5: float) -> str:
     if delta < 0:
         return "under_confident"
     return "well_calibrated"
+
+
+def _coerce_int(v):
+    """Best-effort int (the model may echo an id as a string or a float)."""
+    if isinstance(v, bool):
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _scores_by_answer_id(per_answer_scores: list, valid_answer_ids=None) -> dict:
+    """INT-11: index the model's per-answer scores by the answer_id they echo.
+
+    Only entries whose echoed answerId is a real answer (present in
+    valid_answer_ids, when provided) are kept, so a hallucinated / duplicated id
+    can't inject a bogus pair. Later entries win on a duplicate id.
+    """
+    out = {}
+    for e in per_answer_scores or []:
+        if not isinstance(e, dict):
+            continue
+        aid = _coerce_int(e.get("answerId"))
+        if aid is None:
+            continue
+        if valid_answer_ids is not None and aid not in valid_answer_ids:
+            continue
+        out[aid] = e
+    return out
+
+
+def calibration_pairs(ratings: list, per_answer_scores: list, valid_answer_ids=None) -> list:
+    """INT-11: join learner confidence ratings to model quality scores BY answer_id.
+
+    ratings: ordered list of (answer_id, rating) — rating may be None ("prefer not
+    to say"). per_answer_scores: the model's perAnswerScores, each echoing answerId.
+
+    Returns ordered (rating, score) pairs for the answers that have BOTH a rating and
+    a substantive score entry. Because the pairing is by id (not position), a
+    non-substantive answer dropped from the middle of the list — or an extra/missing
+    entry from the model — can never shift the remaining pairs onto the wrong answer.
+    """
+    by_id = _scores_by_answer_id(per_answer_scores, valid_answer_ids)
+    pairs = []
+    for answer_id, rating in ratings:
+        e = by_id.get(_coerce_int(answer_id))
+        if e is None:
+            continue
+        if e.get("substantive", True) is False:
+            continue
+        pairs.append((rating, e.get("score")))
+    return pairs
+
+
+def substantive_stages(per_answer_scores: list, valid_answer_ids=None) -> set:
+    """INT-11: the set of stage names (e.g. {"DOMAIN", "CASE"}) that have at least
+    one substantive answer, determined by the answer_id join. Used to gate round
+    bands so a round in which every answer was a non-answer can't show a positive band.
+    """
+    by_id = _scores_by_answer_id(per_answer_scores, valid_answer_ids)
+    out = set()
+    for e in by_id.values():
+        if e.get("substantive", True) is False:
+            continue
+        stage = str(e.get("stage", "")).strip().upper()
+        if stage:
+            out.add(stage)
+    return out
+
+
+def gate_round_scores(round_scores: dict, sub_stages: set) -> dict:
+    """INT-11: zero any *scored* round (warmup/domain/behavioural/case) that the join
+    says has no substantive answers, so band math never rewards a round of pure
+    non-answers. REVERSE (and any non-answer round) is left untouched — it has no
+    per-answer scores to join against and is scored separately.
+    """
+    scored_round_to_stage = {
+        "warmup": "WARMUP", "domain": "DOMAIN",
+        "behavioural": "BEHAVIOURAL", "case": "CASE",
+    }
+    if not isinstance(round_scores, dict):
+        return {}
+    out = {}
+    for key, val in round_scores.items():
+        stage = scored_round_to_stage.get(str(key).strip().lower())
+        if stage is not None and stage not in sub_stages:
+            out[key] = 0
+        else:
+            out[key] = val
+    return out
 
 
 def calibration_profile(pairs: list[tuple]) -> dict:

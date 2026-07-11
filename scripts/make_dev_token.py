@@ -49,6 +49,34 @@ def make_token(secret: str, payload: dict) -> str:
     return f"{signing_input.decode('ascii')}.{b64url(sig)}"
 
 
+def build_payload(env: dict, sub: str, name: str, email: str, days: int) -> dict:
+    """The EXACT claim set this script mints. Shared with scripts/debug_token.py so
+    the diagnostic validates the identical payload the tool produces."""
+    now = int(time.time())
+    payload = {
+        "sub": sub,
+        "user_id": sub,
+        "full_name": name,
+        "name": name,
+        "email": email,
+        "iat": now,
+        "exp": now + days * 86400,
+    }
+    # If the backend enforces audience/issuer, mirror them so the token validates.
+    if env.get("JWT_AUDIENCE"):
+        payload["aud"] = env["JWT_AUDIENCE"]
+    if env.get("JWT_ISSUER"):
+        payload["iss"] = env["JWT_ISSUER"]
+    return payload
+
+
+def build_dev_token(env: dict, secret: str, sub="dev-user-1",
+                    name="Dev Tester", email="dev@upskillize.local", days=7):
+    """Build (token, payload) using this script's exact signing + claim logic."""
+    payload = build_payload(env, sub, name, email, days)
+    return make_token(secret, payload), payload
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Generate a local dev JWT for InterviewIQ.")
     ap.add_argument("--sub", default="dev-user-1", help="user id (goes in 'sub')")
@@ -70,23 +98,9 @@ def main() -> int:
         print("ERROR: this script only signs HS256 tokens.", file=sys.stderr)
         return 1
 
-    now = int(time.time())
-    payload = {
-        "sub": args.sub,
-        "user_id": args.sub,
-        "full_name": args.name,
-        "name": args.name,
-        "email": args.email,
-        "iat": now,
-        "exp": now + args.days * 86400,
-    }
-    # If the backend enforces audience/issuer, mirror them so the token validates.
-    if env.get("JWT_AUDIENCE"):
-        payload["aud"] = env["JWT_AUDIENCE"]
-    if env.get("JWT_ISSUER"):
-        payload["iss"] = env["JWT_ISSUER"]
-
-    token = make_token(secret, payload)
+    token, payload = build_dev_token(
+        env, secret, sub=args.sub, name=args.name, email=args.email, days=args.days
+    )
 
     print("\n=== InterviewIQ dev token ===")
     print(f"user:  {args.sub}  ({args.email})")

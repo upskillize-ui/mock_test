@@ -96,6 +96,12 @@ class Settings:
     STT_MAX_UPLOAD_BYTES: int = int(os.getenv("STT_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
     # Extra STT attempts allowed beyond the behavioural question count (retries).
     STT_RETRY_ALLOWANCE: int = int(os.getenv("STT_RETRY_ALLOWANCE", "3"))
+    # Voice Phase 3: ask Saarika for word/segment timestamps (same call, no extra
+    # cost) so delivery scoring can flag long mid-answer pauses. Off = pauses null.
+    STT_WITH_TIMESTAMPS: bool = _env_bool("STT_WITH_TIMESTAMPS", "true")
+    # Voice Phase 3: compute-and-discard delivery metrics (wpm/fillers/pauses) for
+    # spoken answers. OFF by default; independent of STT so it can be piloted alone.
+    DELIVERY_METRICS_ENABLED: bool = _env_bool("DELIVERY_METRICS_ENABLED")
 
     RESUME_HOST_ALLOWLIST: list[str] = [
         h.strip().lower()

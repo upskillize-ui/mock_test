@@ -134,6 +134,14 @@ def _fake_transcribe(text="the transcribed answer"):
     return _f
 
 
+def _fake_transcribe_full(text="the transcribed answer"):
+    async def _f(audio_bytes, mime, want_timestamps=True):
+        if text is None:
+            return None
+        return {"transcript": text, "timestamps": None, "confidence": None}
+    return _f
+
+
 def test_endpoint_404_when_feature_off():
     def go():
         client = _client(_session_row())
@@ -146,15 +154,22 @@ def test_endpoint_404_when_feature_off():
         _cleanup()
 
 
-def test_endpoint_rejects_outside_behavioural():
+def test_endpoint_accepted_in_all_answering_rounds():
+    # Phase 3 Part B: the BEHAVIOURAL-only restriction is gone — STT is accepted in
+    # every answering round (Warm-up, Domain, Case, Reverse), not a 409.
+    orig = s.transcribe_full
+    s.transcribe_full = _fake_transcribe_full("domain voice answer")
     def go():
-        client = _client(_session_row(stage="DOMAIN"))
-        r = _post(client)
-        assert r.status_code == 409, r.text
-        assert "behavioural" in r.text.lower()
+        for stage in ("WARMUP", "DOMAIN", "CASE", "REVERSE"):
+            client = _client(_session_row(stage=stage))
+            r = _post(client)
+            assert r.status_code == 200, f"{stage}: {r.text}"
+            assert r.json()["transcript"] == "domain voice answer"
+            _cleanup()
     try:
         _with_flags(True, True, go)
     finally:
+        s.transcribe_full = orig
         _cleanup()
 
 
@@ -191,8 +206,8 @@ def test_endpoint_size_cap():
 
 def test_endpoint_cost_cap_429():
     def go():
-        # Fresher behavioural=3, +3 retries -> cap 6. Pre-fill to the cap.
-        s._session_stt_counts["sid-1"] = 6
+        # Phase 3: cap is MAX_ANSWERS_PER_SESSION + 5. Pre-fill to the cap.
+        s._session_stt_counts["sid-1"] = s.settings.MAX_ANSWERS_PER_SESSION + 5
         client = _client(_session_row(level="Fresher"))
         r = _post(client)
         assert r.status_code == 429, r.text
@@ -203,8 +218,8 @@ def test_endpoint_cost_cap_429():
 
 
 def test_endpoint_happy_path_returns_transcript():
-    orig = s.transcribe
-    s.transcribe = _fake_transcribe("my behavioural answer")
+    orig = s.transcribe_full
+    s.transcribe_full = _fake_transcribe_full("my behavioural answer")
     def go():
         client = _client(_session_row())
         r = _post(client)
@@ -213,23 +228,23 @@ def test_endpoint_happy_path_returns_transcript():
     try:
         _with_flags(True, True, go)
     finally:
-        s.transcribe = orig
+        s.transcribe_full = orig
         _cleanup()
 
 
 def test_endpoint_graceful_null_on_transcribe_failure():
-    orig = s.transcribe
-    s.transcribe = _fake_transcribe(None)   # vendor failed -> None, never a dead end
+    orig = s.transcribe_full
+    s.transcribe_full = _fake_transcribe_full(None)   # vendor failed -> None, never a dead end
     def go():
         client = _client(_session_row())
         r = _post(client)
         assert r.status_code == 200, r.text
         assert r.json()["transcript"] is None
+        assert r.json()["delivery_metrics"] is None
     try:
-        s.transcribe = _fake_transcribe(None)
         _with_flags(True, True, go)
     finally:
-        s.transcribe = orig
+        s.transcribe_full = orig
         _cleanup()
 
 

@@ -27,7 +27,10 @@ from .config import settings
 
 log = logging.getLogger(__name__)
 
-_TIMEOUT = httpx.Timeout(connect=3.0, read=5.0, write=3.0, pool=3.0)
+# v3 synthesis of a full sentence routinely takes several seconds; the old 5s read
+# ceiling timed out on essentially every call (RequestError -> None -> "silent TTS").
+# Give the vendor room; the caller still degrades to text-only if it genuinely stalls.
+_TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=5.0)
 _SARVAM_URL = "https://api.sarvam.ai/text-to-speech"
 # Sarvam Bulbul caps request text length; keep a safe margin under the limit.
 _MAX_TTS_CHARS = 1400
@@ -190,12 +193,24 @@ async def synthesize(text: str, speaker: str) -> bytes | None:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             r = await client.post(_SARVAM_URL, headers=headers, json=payload)
     except httpx.RequestError as e:
-        log.warning("TTS request failed: %s", type(e).__name__)
+        # Phase 3 Part A: surface the concrete failure (name + message) so a
+        # deterministic all-calls-fail (e.g. read timeout) is diagnosable. The
+        # exception text never contains the API key.
+        log.warning("TTS request failed: %s: %s", type(e).__name__, e)
         return None
 
     if r.status_code != 200:
-        # Status only — the body can echo request text; never log it.
-        log.warning("TTS vendor error status=%s", r.status_code)
+        # Phase 3 Part A: log the vendor's error BODY (truncated), not just the
+        # status — a 4xx from Sarvam explains exactly what v3 rejected (bad speaker,
+        # unknown field, quota). The body is our own model-generated question text +
+        # the vendor's error message, never the API key; the global PII filter still
+        # scrubs any stray contact detail from the log line.
+        body = ""
+        try:
+            body = r.text[:800]
+        except Exception:
+            pass
+        log.warning("TTS vendor error status=%s body=%s", r.status_code, body)
         return None
 
     try:

@@ -178,11 +178,12 @@ Student context (MOST IMPORTANT):
 Pacing:
 - ONE question at a time. Never compound multiple questions.
 - 1-3 sentences for questions, 2-4 for acknowledgments.
-- If silent or "I don't know": ONE gentle nudge, then rephrase or move on. Never lecture.
+- On a non-answer ("I don't know" / "skip" / a bare clarification request): do NOT drop the topic. Step the difficulty DOWN and offer ONE more fundamental, role-specific question on the SAME theme. NEVER pivot to biography, background, or generic small-talk to fill the gap. Allow only ONE such clarifier per question; if they still cannot engage, acknowledge kindly and move to the next planned question. Never lecture.
 - Weak answer → probing follow-up before moving on.
 - Strong answer → go deeper, raise the difficulty.
 
 Relevance:
+- Once past the warm-up, EVERY question must be deep, role-specific and scenario-based — testing the craft of the role. Never biographical or generic rapport in the domain/case rounds.
 - Follow-ups MUST build on the candidate's previous answer.
 - Stay on a topic 2-3 turns, then transition cleanly ("Good. Let's switch gears to...").
 - Never repeat a question.
@@ -224,26 +225,54 @@ def _ask_line(stage: str, plan: dict, role: str) -> str:
     if stage == "WARMUP":
         return "one light warm-up / rapport question"
     if stage == "DOMAIN":
-        return (f"one role-specific {role} domain question that probes real depth "
-                "(concepts, trade-offs, numbers)")
+        return (f"one DEEP, role-specific {role} domain question — concrete and "
+                "scenario-based, probing real depth (concepts, trade-offs, numbers, "
+                "decisions they'd make). It must NOT be biographical, generic, or rapport "
+                "small-talk — past the warm-up, every question tests the craft of the role")
     if stage == "BEHAVIOURAL":
         return "one STAR-style behavioural question about a real situation from their experience"
     if stage == "CASE":
         if plan.get("case_variant") == "long":
-            return ("one longer, multi-part case / scenario that requires structured "
-                    "reasoning out loud")
-        return "one short, focused case / scenario they can reason through in 2-3 minutes"
+            return ("one longer, multi-part case / scenario for the role that requires "
+                    "structured reasoning out loud — role-specific and realistic, never "
+                    "biographical or generic")
+        return ("one short, focused, role-specific case / scenario they can reason through "
+                "in 2-3 minutes — never biographical or generic small-talk")
     return "one relevant question"
 
 
-def stage_turn_directive(cfg: dict, current_stage: str, round_index_after: int) -> str:
+def stage_turn_directive(
+    cfg: dict, current_stage: str, round_index_after: int, substantive: bool = True
+) -> str:
     """Per-turn instruction (a small, un-cached system block) that keeps the
-    interviewer aligned with the server-authoritative stage machine (INT-04)."""
+    interviewer aligned with the server-authoritative stage machine (INT-04).
+
+    `substantive=False` means the learner's last answer was a non-answer in a scored,
+    rating-gated round. Per FIX 2 we do NOT advance to a new question — the interviewer
+    steps difficulty DOWN on the SAME topic (one clarifier only), never pivoting to
+    biography or small-talk. The stage machine has held round_index, so this turn does
+    not consume a planned question slot."""
     level = cfg.get("level", "")
     plan = stages.stage_plan(level)
     totals = plan["totals"]
     role = cfg.get("role") or "the target role"
     name = cfg.get("name") or "the candidate"
+
+    # FIX 2 — non-answer recovery in a scored, rating-gated round (DOMAIN/BEHAVIOURAL/
+    # CASE). WARMUP/REVERSE never reach here as non-substantive (they aren't gated).
+    if not substantive and stages.is_rating_gated(current_stage):
+        label = stages.STAGE_LABELS.get(current_stage, current_stage.title())
+        return (
+            f"STAGE DIRECTIVE — {label.upper()} ROUND, non-answer recovery: the candidate "
+            "did not substantively answer (said they don't know, asked to skip, or only "
+            "asked for clarification). Give ONE brief, encouraging line, then step the "
+            "difficulty DOWN and ask a MORE FUNDAMENTAL question on the SAME topic/theme — "
+            f"still a real, role-specific {role} question. Do NOT move to a new topic, and "
+            "NEVER pivot to biography, background, or small-talk to fill the gap. This is the "
+            "ONE allowed clarifier for this question: if they still cannot engage after it, "
+            "acknowledge kindly and move on to the next planned question. Ask exactly ONE "
+            "question. Do not announce the round name."
+        )
 
     if current_stage == "REVERSE":
         if round_index_after < totals["REVERSE"]:
@@ -343,7 +372,7 @@ Respond with ONLY a valid JSON object (no preamble, no markdown fences, no comme
     "reverse": <integer 0-100>
   },
   "perAnswerScores": [
-    {"stage": "WARMUP|DOMAIN|BEHAVIOURAL|CASE", "score": <integer 1-5>}
+    {"answerId": <integer>, "stage": "WARMUP|DOMAIN|BEHAVIOURAL|CASE", "score": <integer 1-5>, "substantive": <true|false>}
   ],
   "reverseRound": [
     {"question": "<the question the candidate asked you>", "score": <integer 0-10>, "note": "<why>"}
@@ -351,12 +380,15 @@ Respond with ONLY a valid JSON object (no preamble, no markdown fences, no comme
 }
 
 CRITICAL for perAnswerScores (used for confidence calibration — get this exact):
+- Every candidate turn in the transcript begins with a tag like "[answer #1234] ". For each entry, set "answerId" to that EXACT integer (1234) — copy it from the tag on the answer you are scoring. This id is how the answer is matched to the candidate's confidence rating, so it must be exact. Do NOT invent ids and do NOT reuse one id for two entries.
 - Include ONE entry for EACH scored answer the candidate gave, in the SAME ORDER they were answered.
 - Only WARMUP, DOMAIN, BEHAVIOURAL and CASE answers count — do NOT include reverse-round questions here.
 - "score" is that single answer's quality on a 1-5 scale (1 = very weak, 5 = excellent).
+- "substantive" is true when the candidate genuinely attempted the question, false when the turn was a NON-ANSWER — an "I don't know" / "skip" / "no idea", a blank or near-blank reply, or a pure clarification request ("what do you mean?") — OR when what they were responding to was itself a clarifier / rapport / small-talk turn rather than a real scored interview question. When in doubt, mark true.
+- A non-substantive (substantive:false) answer must NOT be counted against the candidate: still list it (with its honest low score) but EXCLUDE it from the round's aggregate — see roundScores.
 - If the candidate gave N scored answers, perAnswerScores MUST have exactly N entries in order.
 
-roundScores: 0-100 quality for each round the candidate reached (omit or 0 a round they never reached).
+roundScores: 0-100 quality for each round the candidate reached, computed ONLY over that round's SUBSTANTIVE answers (ignore substantive:false turns entirely — do not let a "don't know" drag a round down). Omit or 0 a round they never reached, or a round in which every answer was non-substantive.
 reverseRound: score the questions the CANDIDATE asked you in the reverse round on structure, curiosity and role-appropriateness (0-10 each). Empty list if they asked none.
 
 Be specific and kind. Never harsh, never mocking. If the interview was very short or incomplete, reflect that honestly in scores and keep the report concise."""

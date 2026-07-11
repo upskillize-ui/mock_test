@@ -92,6 +92,122 @@ def test_calibration_numbers_and_tie_break():
     assert s.calibration_profile([(5, 1), (1, 5)])["profile"] == "over_confident"
 
 
+# ── FIX 1: rate only substantive answers ────────────────────────────────────
+
+def test_is_non_substantive_catches_non_answers():
+    # Obvious non-answers (also under the 15-meaningful-char floor).
+    for t in ["I don't know", "dont know", "no idea", "skip", "pass",
+              "next question", "idk", "not sure", "  ", "??", "..."]:
+        assert s.is_non_substantive(t) is True, t
+    # Pure clarification requests.
+    for t in ["what do you mean?", "can you repeat that?", "could you rephrase",
+              "sorry, what?", "pardon"]:
+        assert s.is_non_substantive(t) is True, t
+    # Too few meaningful characters even if punctuation-padded.
+    assert s.is_non_substantive("a, b. c!") is True
+
+
+def test_is_non_substantive_allows_real_answers():
+    # A phrase that merely CONTAINS "I don't know" but is a real answer must pass.
+    assert s.is_non_substantive(
+        "I don't know the exact number, but we cut p99 latency by roughly 40% with caching"
+    ) is False
+    # A genuine (even terse) answer over the meaningful-char floor.
+    assert s.is_non_substantive("I used Redis to cache the hot keys") is False
+    assert s.is_non_substantive(
+        "Maine team ko lead kiya jab deadline miss ho rahi thi, so I restructured the sprint"
+    ) is False
+
+
+def test_should_await_rating_only_for_substantive():
+    # Substantive answer in a rating-gated stage -> rate it.
+    assert s.should_await_rating("DOMAIN", is_substantive=True) is True
+    assert s.should_await_rating("BEHAVIOURAL", is_substantive=True) is True
+    # Non-substantive answer -> no rating (generalises the WARMUP exemption).
+    assert s.should_await_rating("DOMAIN", is_substantive=False) is False
+    # WARMUP is never rating-gated regardless.
+    assert s.should_await_rating("WARMUP", is_substantive=True) is False
+    assert s.should_await_rating("REVERSE", is_substantive=True) is False
+
+
+def test_do_not_know_in_domain_shows_no_rating_widget():
+    # End-to-end of the pure decision: a "do not know" answer in DOMAIN is
+    # non-substantive -> no rating is awaited -> next_action stays "answer"
+    # (the frontend renders the rating widget only when next_action == "rating").
+    substantive = not s.is_non_substantive("I do not know")
+    awaiting = s.should_await_rating("DOMAIN", substantive)
+    assert awaiting is False
+    assert s.next_action("DOMAIN", awaiting) == "answer"
+
+
+# ── FIX 2: non-answers do not consume a planned question slot ────────────────
+
+def test_consumes_question_slot():
+    # Substantive answers always consume a slot.
+    assert s.consumes_question_slot("DOMAIN", is_substantive=True) is True
+    assert s.consumes_question_slot("CASE", is_substantive=True) is True
+    # A non-substantive answer in a rating-gated stage does NOT consume a slot
+    # (a round of 4 stays 4 substantive questions; the interviewer re-asks).
+    assert s.consumes_question_slot("DOMAIN", is_substantive=False) is False
+    assert s.consumes_question_slot("CASE", is_substantive=False) is False
+    # WARMUP / REVERSE advance regardless (never rating-gated).
+    assert s.consumes_question_slot("WARMUP", is_substantive=False) is True
+    assert s.consumes_question_slot("REVERSE", is_substantive=False) is True
+
+
+# ── INT-11: answer_id join key through the scoring pipeline ──────────────────
+
+def test_calibration_pairs_join_by_answer_id_drops_midlist_nonsubstantive():
+    # All three DOMAIN/BEHAVIOURAL/CASE answers were rated (ids 10, 11, 12).
+    ratings = [(10, 5), (11, 4), (12, 1)]
+    # The model scored them OUT OF ORDER (to prove it's a join, not a positional zip),
+    # and flagged the MIDDLE answer (id 11) non-substantive — it must drop out.
+    per = [
+        {"answerId": 12, "stage": "CASE", "score": 5, "substantive": True},
+        {"answerId": 10, "stage": "DOMAIN", "score": 2, "substantive": True},
+        {"answerId": 11, "stage": "BEHAVIOURAL", "score": 3, "substantive": False},
+    ]
+    pairs = s.calibration_pairs(ratings, per, valid_answer_ids={10, 11, 12})
+    # id 11 dropped; crucially id 12's rating (1) stays paired with id 12's score (5),
+    # NOT shifted onto the gap. A naive positional zip would have mispaired here.
+    assert pairs == [(5, 2), (1, 5)]
+    assert s.calibration_profile(pairs)["rated_count"] == 2
+
+
+def test_calibration_pairs_ignore_hallucinated_and_coerce_ids():
+    ratings = [(10, 5), (12, 3)]
+    per = [
+        {"answerId": "10", "stage": "DOMAIN", "score": 4, "substantive": True},  # string id coerced
+        {"answerId": 999, "stage": "DOMAIN", "score": 5, "substantive": True},   # not a real answer id
+        {"answerId": 12, "stage": "CASE", "score": 2},                            # no 'substantive' -> defaults true
+    ]
+    pairs = s.calibration_pairs(ratings, per, valid_answer_ids={10, 12})
+    assert pairs == [(5, 4), (3, 2)]  # 999 rejected by the valid-id gate
+
+
+def test_calibration_pairs_no_ids_degrades_to_empty_not_mispair():
+    # If the scoring call fails to echo answerId at all, we get NO join — an empty
+    # pairing (insufficient_data) rather than a silently mispaired one.
+    ratings = [(10, 5), (11, 4)]
+    per = [{"stage": "DOMAIN", "score": 3, "substantive": True}]
+    assert s.calibration_pairs(ratings, per, valid_answer_ids={10, 11}) == []
+    assert s.calibration_profile([])["profile"] == "insufficient_data"
+
+
+def test_substantive_stages_and_gate_round_scores():
+    per = [
+        {"answerId": 10, "stage": "DOMAIN", "score": 4, "substantive": True},
+        {"answerId": 11, "stage": "CASE", "score": 2, "substantive": False},  # CASE only non-substantive
+        {"answerId": 12, "stage": "WARMUP", "score": 3, "substantive": True},
+    ]
+    subs = s.substantive_stages(per, valid_answer_ids={10, 11, 12})
+    assert subs == {"DOMAIN", "WARMUP"}
+    gated = s.gate_round_scores({"warmup": 80, "domain": 70, "case": 65, "reverse": 90}, subs)
+    # CASE zeroed (no substantive answer); REVERSE untouched (not a per-answer round).
+    assert gated == {"warmup": 80, "domain": 70, "case": 0, "reverse": 90}
+    assert s.round_bands_from_scores(gated)["case"] == "Not Ready"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

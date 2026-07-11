@@ -72,6 +72,10 @@ class TurnRequest(BaseModel):
     stage: Optional[str] = Field(None, max_length=20)
     # Voice Phase 1: TTS voice preference for this turn's spoken question.
     voice: Literal["female", "male"] = "female"
+    # Voice Phase 3: delivery metrics for a SPOKEN answer, echoed back from the
+    # /session/stt response so they persist on this answer's message row. Absent for
+    # typed answers. Server re-validates the shape; informational only (not scored).
+    delivery_metrics: Optional[dict] = None
 
 
 class TurnResponse(BaseModel):
@@ -90,6 +94,10 @@ class STTResponse(BaseModel):
     unavailable or empty, so the client falls back to typing.
     """
     transcript: Optional[str] = None
+    # Voice Phase 3: delivery metrics computed from this recording (wpm/fillers/
+    # pauses), or null if unavailable. The client echoes this back on /session/turn
+    # so it lands on the answer's message row. Audio itself is already discarded.
+    delivery_metrics: Optional[dict] = None
 
 
 class RatingRequest(BaseModel):
@@ -123,6 +131,10 @@ class DebriefResponse(BaseModel):
     next_focus: str
     # INT-02: calibration profile block.
     calibration: dict
+    # Voice Phase 3 (Part D): aggregated Delivery Profile from spoken answers.
+    # {enough_data: false, message} when < 3 spoken answers. Informational — it does
+    # NOT affect overall_band in v1.
+    delivery: dict = {}
 
 
 class AlumniQuestionSubmit(BaseModel):

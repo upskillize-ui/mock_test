@@ -42,7 +42,7 @@ async function fetchAudioObjectUrl(path) {
 }
 
 const startSession = (c) => api("/session/start", { method: "POST", body: JSON.stringify(c) });
-const sendTurn = (sid, msg, stage, voice) => api("/session/turn", { method: "POST", body: JSON.stringify({ session_id: sid, message: msg, stage, voice }) });
+const sendTurn = (sid, msg, stage, voice, deliveryMetrics) => api("/session/turn", { method: "POST", body: JSON.stringify({ session_id: sid, message: msg, stage, voice, delivery_metrics: deliveryMetrics || null }) });
 const submitRating = (sid, answerId, rating) => api("/session/turn/rating", { method: "POST", body: JSON.stringify({ session_id: sid, answer_id: answerId, rating }) });
 const fetchSessionState = (sid) => api(`/session/${encodeURIComponent(sid)}/state`);
 const fetchSessionMessages = (sid) => api(`/session/${encodeURIComponent(sid)}/messages`);
@@ -56,17 +56,19 @@ const fetchStats = () => api("/user/stats");
 // Multipart: we must NOT set Content-Type ourselves (the browser adds the boundary),
 // and we send only the auth header. On any non-OK we throw so the caller falls back
 // to typing. The endpoint transcribes-and-discards; raw audio is never stored.
-async function sttTranscribe(sessionId, blob, filename = "answer.webm") {
+async function sttTranscribe(sessionId, blob, filename = "answer.webm", durationSeconds = 0) {
   const fd = new FormData();
   fd.append("session_id", sessionId);
   fd.append("audio", blob, filename);
+  // Voice Phase 3: recording duration drives wpm; the audio itself is still discarded.
+  fd.append("duration_seconds", String(Math.max(0, Math.round(durationSeconds * 10) / 10)));
   const res = await fetch(API_URL + "/session/stt", { method: "POST", headers: { ...authHeaders() }, body: fd });
   if (!res.ok) {
     let msg = "";
     try { const j = await res.json(); msg = j.detail || ""; } catch { /* noop */ }
     throw new Error(msg || `stt failed (${res.status})`);
   }
-  return res.json();   // { transcript: string | null }
+  return res.json();   // { transcript: string | null, delivery_metrics: object | null }
 }
 // INT-07 DPDPA data rights + consent.
 const recordConsent = (payload) => api("/consent", { method: "POST", body: JSON.stringify(payload) });
@@ -714,6 +716,9 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   const mediaStreamRef = useRef(null);
   const recTimerRef = useRef(null);
   const recChunksRef = useRef([]);
+  const recStartRef = useRef(0);                 // Phase 3: precise recording duration
+  const pendingDeliveryRef = useRef(null);       // Phase 3: metrics awaiting the next Send
+  const answeredByVoiceRef = useRef(false);      // Phase 3: TYPED vs SPOKEN meta
   const toastTimerRef = useRef(null);
   const MAX_REC_SECONDS = 180;   // 3 min hard cap, auto-stop
   // INT-06: timer remaining is derived from the persisted start time so a refresh
@@ -815,9 +820,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   };
   const replay = () => { if (latestAudioUrl) playAudio(latestAudioUrl, true); };
 
-  // ── Voice Phase 2: record → transcribe → drop editable text into the input ──
+  // ── Voice Phase 2/3: record → transcribe → drop editable text into the input ──
   const sttAvailable = !!sstate?.stt_available;
-  const isBehavioural = (sstate?.current_stage || "") === "BEHAVIOURAL";
+  // Phase 3 Part B: voice works in EVERY answering round (Warm-up, Domain,
+  // Behavioural, Case, Reverse) — i.e. whenever the learner can submit an answer.
+  const canAnswer = !ended && !awaitingRating && (nextAction === "answer" || nextAction === "reverse_question");
 
   const showToast = (msg) => {
     setSttToast(msg);
@@ -855,6 +862,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
     mediaRecorderRef.current = mr;
     try { mr.start(); }
     catch { stopMediaStream(); showToast("Voice input unavailable — please type your answer"); return; }
+    recStartRef.current = Date.now();
     setRecording(true); setRecSeconds(0);
     recTimerRef.current = setInterval(() => setRecSeconds(s => {
       const next = s + 1;
@@ -878,12 +886,16 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
     const type = mimeType || "audio/webm";
     const blob = new Blob(chunks, { type });
     const ext = type.includes("ogg") ? "ogg" : type.includes("mp4") ? "mp4" : type.includes("wav") ? "wav" : "webm";
+    const durationSeconds = recStartRef.current ? (Date.now() - recStartRef.current) / 1000 : 0;
     setTranscribing(true);
     try {
-      const res = await sttTranscribe(sessionId, blob, `answer.${ext}`);
+      const res = await sttTranscribe(sessionId, blob, `answer.${ext}`, durationSeconds);
       if (res && res.transcript) {
         // Insert into the editable input — the learner reviews and presses Send.
         setInput(prev => ((prev ? prev.trimEnd() + " " : "") + res.transcript).slice(0, 4000));
+        // Phase 3: mark this answer as SPOKEN and stash its delivery metrics for Send.
+        answeredByVoiceRef.current = true;
+        pendingDeliveryRef.current = res.delivery_metrics || null;
         setTimeout(() => inputRef.current?.focus(), 50);
       } else {
         showToast("Voice input unavailable — please type your answer");
@@ -933,9 +945,14 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
 
   const send = async () => {
     const textVal = input.trim(); if (!textVal || loading || ended || awaitingRating) return;
-    setMessages(m => [...m, { role: "user", content: textVal }]); setInput(""); setLoading(true); setError(null);
+    // Phase 3: this answer is SPOKEN if it came from the mic, else TYPED. Consume the
+    // pending metrics/flag so a later typed answer doesn't inherit them.
+    const spoken = answeredByVoiceRef.current;
+    const metrics = pendingDeliveryRef.current;
+    answeredByVoiceRef.current = false; pendingDeliveryRef.current = null;
+    setMessages(m => [...m, { role: "user", content: textVal, meta: spoken ? "SPOKEN" : "TYPED" }]); setInput(""); setLoading(true); setError(null);
     try {
-      const res = await sendTurn(sessionId, textVal, sstate?.current_stage, config.voice || "female");
+      const res = await sendTurn(sessionId, textVal, sstate?.current_stage, config.voice || "female", spoken ? metrics : null);
       setMessages(m => [...m, { role: "assistant", content: res.reply, audio_url: res.audio_url }]);
       setSstate(res.state);
     } catch (e) {
@@ -967,6 +984,15 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   const handleKey = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } };
   const mmss = (s) => Math.floor(Math.max(0, s) / 60) + ":" + String(Math.max(0, s) % 60).padStart(2, "0");
   const stageLabel = sstate?.stage_label || "Warm-up";
+
+  // Phase 3 Part E: minimal live voice-state chip driven by ACTUAL events.
+  // LISTENING while recording, THINKING while transcribing/scoring, SPEAKING while
+  // the interviewer's audio plays, otherwise nothing. (The full orb/waveform lands
+  // in the dual-theme redesign — this is the plain-text placeholder.)
+  const voiceChip = recording ? { label: "Listening", color: IQ.orange }
+    : (transcribing || loading) ? { label: "Thinking", color: IQ.navy }
+    : audioPlaying ? { label: "Speaking", color: IQ.teal }
+    : null;
 
   const handleEndClick = async () => {
     setEnded(true);
@@ -1007,6 +1033,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
             <span className="iq-hud-stage-dot" />
             <span className="iq-hud-stage-label">{stageLabel}</span>
           </span>
+          {voiceChip && (
+            <span aria-live="polite" style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 10, padding: "2px 10px", borderRadius: 999, background: "rgba(255,255,255,0.10)", fontFamily: IQ.mono, fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", color: "#fff" }}>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: voiceChip.color, animation: "iqRecDot 1.1s ease-in-out infinite", flexShrink: 0 }} />
+              {voiceChip.label}
+            </span>
+          )}
         </div>
       </div>
 
@@ -1015,7 +1047,10 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
           {messages.map((m, i) => { const isV = m.role === "assistant"; const speaking = isV && i === lastAssistantIdx && audioPlaying; return (
             <div key={i} style={{ display: "flex", gap: 10, flexDirection: isV ? "row" : "row-reverse", alignItems: "flex-start", animation: "iqFade .3s ease" }}>
               <div className={speaking ? "iq-avatar-speaking" : ""} style={{ width: 32, height: 32, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: isV ? T.navy : T.border, color: isV ? "#fff" : T.navy, fontWeight: 800, fontSize: 11 }}>{isV ? "IQ" : (config.name?.[0]?.toUpperCase() || "Y")}</div>
-              <div style={{ padding: "12px 16px", borderRadius: isV ? "2px 12px 12px 12px" : "12px 2px 12px 12px", maxWidth: "78%", fontSize: 14, lineHeight: 1.65, background: isV ? T.white : T.navy, color: isV ? T.text : "#fff", border: isV ? "1px solid " + T.border : "none", fontFamily: T.font }}>{isV ? renderMd(m.content) : m.content}</div>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: isV ? "flex-start" : "flex-end", maxWidth: "78%" }}>
+                <div style={{ padding: "12px 16px", borderRadius: isV ? "2px 12px 12px 12px" : "12px 2px 12px 12px", fontSize: 14, lineHeight: 1.65, background: isV ? T.white : T.navy, color: isV ? T.text : "#fff", border: isV ? "1px solid " + T.border : "none", fontFamily: T.font }}>{isV ? renderMd(m.content) : m.content}</div>
+                {!isV && m.meta && <span style={{ fontSize: 10, color: T.subtle, marginTop: 3, fontFamily: IQ.mono, letterSpacing: "0.05em" }}>{m.meta === "SPOKEN" ? "Spoken" : "Typed"}</span>}
+              </div>
             </div>); })}
           {loading && <div style={{ display: "flex", gap: 10 }}><div style={{ width: 32, height: 32, borderRadius: "50%", background: T.navy, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ color: "#fff", fontWeight: 800, fontSize: 11 }}>IQ</span></div><div style={{ padding: "14px 18px", borderRadius: "2px 12px 12px 12px", background: T.white, border: "1px solid " + T.border }}><div style={{ display: "flex", gap: 5 }}>{[0,1,2].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: T.subtle, animation: "iqPulse 1.2s ease-in-out infinite", animationDelay: i * 0.15 + "s" }} />)}</div></div></div>}
           {needsTap && latestAudioUrl && !muted && (
@@ -1034,34 +1069,19 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
       <div style={{ background: T.white, borderTop: "1px solid " + T.border, padding: "14px 28px", flexShrink: 0 }}>
         <div style={{ maxWidth: 700, margin: "0 auto", display: "flex", gap: 10, alignItems: "flex-end" }}>
           <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value.slice(0, 4000))} onKeyDown={handleKey} rows={1} maxLength={4000} placeholder={awaitingRating ? "Rate your confidence above to continue" : ended ? "Interview ended" : reverseMode ? "Ask your question…" : transcribing ? "Transcribing your answer…" : recording ? "Listening… tap the square to stop" : "Type your answer…"} disabled={inputDisabled} className="vi" style={{ flex: 1, resize: "none", minHeight: 44, maxHeight: 140, borderRadius: 10 }} />
-          {/* Voice Phase 2: mic. Shown whenever STT is available so learners
-              discover speaking exists; ACTIVE only in the BEHAVIOURAL round.
-              Hidden during REVERSE (the learner asks the questions there).
-              Locked elsewhere: faint line tokens (no orange), a tooltip, and a
-              tap-toast — it uses aria-disabled (not the native disabled attr) so
-              the tooltip actually shows on hover and taps still explain it. */}
-          {sttAvailable && !reverseMode && (
-            isBehavioural ? (
-              <button
-                onClick={onMicClick}
-                disabled={(inputDisabled || transcribing) && !recording}
-                className={"iq-mic-btn" + (recording ? " iq-mic-recording" : "")}
-                title={recording ? "Stop recording" : "Record your answer"}
-                aria-label={recording ? "Stop recording" : "Record your answer"}
-              >
-                {recording ? <IconStop /> : <IconMic />}
-              </button>
-            ) : (
-              <button
-                onClick={() => showToast("Voice answers unlock in the Behavioural round")}
-                aria-disabled={true}
-                className="iq-mic-btn iq-mic-locked"
-                title="Voice answers unlock in the Behavioural round"
-                aria-label="Voice answers unlock in the Behavioural round"
-              >
-                <IconMic />
-              </button>
-            )
+          {/* Voice Phase 3 Part B: mic is ACTIVE in every answering round (Warm-up,
+              Domain, Behavioural, Case, and Reverse) whenever STT is available and
+              the learner can answer. No more Behavioural-only lock. */}
+          {sttAvailable && canAnswer && (
+            <button
+              onClick={onMicClick}
+              disabled={(inputDisabled || transcribing) && !recording}
+              className={"iq-mic-btn" + (recording ? " iq-mic-recording" : "")}
+              title={recording ? "Stop recording" : "Record your answer"}
+              aria-label={recording ? "Stop recording" : "Record your answer"}
+            >
+              {recording ? <IconStop /> : <IconMic />}
+            </button>
           )}
           <button onClick={send} disabled={inputDisabled || !input.trim()} className="mba-btn-primary" style={{ padding: "10px 22px", fontSize: 14, opacity: inputDisabled || !input.trim() ? 0.5 : 1 }}>Send</button>
         </div>
@@ -1079,7 +1099,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
             {sttToast && !recording && !transcribing && <span style={{ fontSize: 12, color: IQ.orange, fontWeight: 600 }}>{sttToast}</span>}
           </div>
         ) : (
-          <div style={{ fontSize: 11, color: T.subtle, marginTop: 6, maxWidth: 700, margin: "6px auto 0" }}>{awaitingRating ? "Tap 1–5 or press a number key to rate your confidence." : sttAvailable && isBehavioural ? "Type your answer, or tap the mic to speak it." : "Enter to send — Shift+Enter for new line"}</div>
+          <div style={{ fontSize: 11, color: T.subtle, marginTop: 6, maxWidth: 700, margin: "6px auto 0" }}>{awaitingRating ? "Tap 1–5 or press a number key to rate your confidence." : sttAvailable && canAnswer ? "Type your answer, or tap the mic to speak it." : "Enter to send — Shift+Enter for new line"}</div>
         )}
       </div>
 
@@ -1122,6 +1142,44 @@ function CalibrationBlock({ cal }) {
             )}
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+// Voice Phase 3 Part D: Delivery Profile — informational, NOT counted in the band.
+// Colors follow the locked band semantics via BAND_STYLE (gold Offer-Ready, teal
+// Interview-Ready, navy Building, orange Not Ready). < 3 spoken answers → a nudge.
+function DeliveryBlock({ delivery }) {
+  if (!delivery || Object.keys(delivery).length === 0) return null;
+  if (!delivery.enough_data) {
+    return (
+      <div className="vc" style={{ marginBottom: 16 }}>
+        <div className="vc-h"><span className="vc-t">Delivery Profile</span></div>
+        <div className="vc-b"><div style={{ fontSize: 13, color: T.muted, fontFamily: IQ.sans }}>{delivery.message || "Not enough voice data — try answering aloud next session."}</div></div>
+      </div>
+    );
+  }
+  const bs = BAND_STYLE[delivery.delivery_band] || BAND_STYLE["Not Ready"];
+  const metric = (label, val, suffix) => (
+    <div className="mba-metric"><div className="mba-metric-label">{label}</div><div className="mba-metric-value" style={{ fontFamily: IQ.mono }}>{val ?? "—"}{suffix ? <span style={{ fontSize: 12, fontWeight: 400, color: T.subtle, fontFamily: IQ.sans }}>{suffix}</span> : null}</div></div>
+  );
+  return (
+    <div className="vc" style={{ marginBottom: 16 }}>
+      <div className="vc-h" style={{ display: "flex", alignItems: "center" }}>
+        <span className="vc-t">Delivery Profile</span>
+        <span style={{ marginLeft: "auto", padding: "3px 12px", borderRadius: 8, background: bs.bg, color: bs.fg, fontFamily: IQ.display, fontWeight: 700, fontSize: 13 }}>{delivery.delivery_band}</span>
+      </div>
+      <div className="vc-b">
+        <div className="mba-grid-3" style={{ marginBottom: 14 }}>
+          {metric("Avg Pace", delivery.avg_wpm, " wpm")}
+          {metric("Fillers / min", delivery.filler_per_min, "")}
+          {metric("Spoken Answers", delivery.spoken_answers, "")}
+        </div>
+        <div style={{ fontSize: 13, lineHeight: 1.6, color: T.text, fontFamily: IQ.sans, marginBottom: 6 }}>{delivery.pace_verdict}</div>
+        <div style={{ fontSize: 13, lineHeight: 1.6, color: T.text, fontFamily: IQ.sans, marginBottom: 6 }}>{delivery.filler_note}</div>
+        <div style={{ fontSize: 13, lineHeight: 1.6, color: T.text, fontFamily: IQ.sans, marginBottom: 10 }}>{delivery.pause_note}</div>
+        <div style={{ fontSize: 11, color: T.subtle, fontStyle: "italic" }}>{delivery.note}</div>
       </div>
     </div>
   );
@@ -1177,6 +1235,8 @@ function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
       </div>
 
       <CalibrationBlock cal={cal} />
+
+      <DeliveryBlock delivery={d.delivery || {}} />
 
       <div className="mba-grid-3" style={{ marginBottom: 16 }}>{Object.entries(ss).map(([k, v]) => {
         const co = v >= 7 ? T.green : v >= 5 ? T.gold : T.red;
