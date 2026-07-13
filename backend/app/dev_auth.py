@@ -61,29 +61,21 @@ def build_dev_token(secret: str, sub: str = "dev-user-1", name: str = "Dev Teste
     return make_token(secret, payload), payload
 
 
-# The localStorage key App.jsx reads the token from.
+# The localStorage key the frontend reads the token from. The token must be stored
+# under the FRONTEND origin, so the frontend's dev receiver (main.jsx) writes this key.
 FRONTEND_TOKEN_KEY = "upskillize_token"
 
+# The URL-fragment name the token is handed off in (kept in sync with main.jsx).
+DEV_TOKEN_FRAGMENT = "dev_token"
 
-def dev_login_html(token: str, redirect_url: str) -> str:
-    """A tiny page that stores the token in localStorage FOR THE FRONTEND ORIGIN it
-    redirects to, then navigates there — so opening it in ANY browser lands logged in,
-    with no copy-paste and no wrong-tab/stale-token class of error.
 
-    The token is embedded as a JSON string literal (json.dumps) so it is safely quoted
-    inside the inline script. redirect_url is the trusted first ALLOWED_ORIGINS entry.
+def dev_login_redirect_url(frontend_origin: str, token: str) -> str:
+    """Build the cross-origin handoff URL: {frontend}/#dev_token=<jwt>.
+
+    localStorage is PER-ORIGIN — a token written on the backend origin (localhost:8000)
+    is invisible to the frontend origin (localhost:5173). So /dev/login 302-redirects
+    to the frontend with the token in a URL FRAGMENT, and a dev-only receiver in the
+    frontend entry (main.jsx) stores it under FRONTEND_TOKEN_KEY on its OWN origin,
+    strips the fragment, and reloads. Fragments are never sent to servers or logged.
     """
-    tok = json.dumps(token)
-    dest = json.dumps(redirect_url)
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        "<title>InterviewIQ dev login</title></head><body "
-        "style=\"font-family:system-ui;background:#0B1628;color:#fff;"
-        "display:flex;align-items:center;justify-content:center;height:100vh;margin:0\">"
-        "<div style='text-align:center'><div style='font-weight:800;font-size:18px'>"
-        "Signing you in…</div><div style='opacity:.6;font-size:13px;margin-top:6px'>"
-        "Dev auto-login — redirecting to the app.</div></div>"
-        "<script>try{localStorage.setItem(" + json.dumps(FRONTEND_TOKEN_KEY) + "," + tok + ");}"
-        "catch(e){}window.location=" + dest + ";</script>"
-        "</body></html>"
-    )
+    return frontend_origin.rstrip("/") + "/#" + DEV_TOKEN_FRAGMENT + "=" + token

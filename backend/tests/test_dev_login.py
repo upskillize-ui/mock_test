@@ -51,12 +51,14 @@ def test_minted_dev_token_validates_through_real_verifier():
     assert current_user("Bearer " + token) == "dev-user-1"
 
 
-def test_dev_login_html_wires_localstorage_and_redirect():
-    html = dev_auth.dev_login_html("header.payload.sig", "http://localhost:5173")
-    assert "localStorage.setItem" in html
-    assert "upskillize_token" in html
-    assert "header.payload.sig" in html
-    assert "http://localhost:5173" in html
+def test_dev_login_redirect_url_hands_token_to_frontend_origin():
+    # Cross-origin handoff: the token rides in a URL fragment to the FRONTEND origin,
+    # where localStorage is actually readable by the app.
+    url = dev_auth.dev_login_redirect_url("http://localhost:5173", "eyJ.abc.sig")
+    assert url == "http://localhost:5173/#dev_token=eyJ.abc.sig"
+    # trailing slash on the origin is normalized (no double slash)
+    assert dev_auth.dev_login_redirect_url("http://localhost:5173/", "T") == \
+        "http://localhost:5173/#dev_token=T"
 
 
 if __name__ == "__main__":

@@ -69,9 +69,21 @@ async def _request(audio_bytes: bytes, mime: str | None, want_timestamps: bool) 
     if not audio_bytes:
         return None
 
+    # Chrome/Firefox MediaRecorder report the content-type WITH a codec parameter
+    # (e.g. "audio/webm;codecs=opus"). Sarvam's allowed-types check is an EXACT string
+    # match and rejects the parameterized form with 400 "Invalid file type", even
+    # though it accepts the bare "audio/webm". Strip to the base MIME type; the bytes
+    # are unchanged. (Firefox "audio/ogg;codecs=opus" -> "audio/ogg", also accepted.)
+    base_mime = (mime or "").split(";")[0].strip().lower() or "application/octet-stream"
+    ext = {
+        "audio/webm": "webm", "video/webm": "webm", "audio/ogg": "ogg",
+        "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav",
+        "audio/mp4": "mp4", "audio/x-m4a": "m4a", "audio/mpeg": "mp3",
+        "audio/aac": "aac", "audio/flac": "flac",
+    }.get(base_mime, "webm")
     # Sarvam accepts a multipart upload. Language "unknown" asks Saarika to
     # auto-detect (Hinglish / en-IN / regional); ops can pin en-IN via config.
-    files = {"file": ("answer.webm", audio_bytes, mime or "application/octet-stream")}
+    files = {"file": (f"answer.{ext}", audio_bytes, base_mime)}
     data = {"model": settings.STT_MODEL}
     if settings.STT_LANGUAGE:
         data["language_code"] = settings.STT_LANGUAGE
@@ -87,8 +99,15 @@ async def _request(audio_bytes: bytes, mime: str | None, want_timestamps: bool) 
         return None
 
     if r.status_code != 200:
-        # Status only — the body can echo the transcript; never log it.
-        log.warning("STT vendor error status=%s", r.status_code)
+        # Log the vendor's ERROR body (truncated) — an error body is a diagnostic
+        # message (e.g. "Invalid file type: …"), not a transcript, so it's safe and
+        # is exactly what pins format/field problems. The API key is never in it.
+        body = ""
+        try:
+            body = r.text[:500]
+        except Exception:
+            pass
+        log.warning("STT vendor error status=%s body=%s", r.status_code, body)
         return None
 
     try:

@@ -102,6 +102,23 @@ const VOICE_KEY = "interviewiq_voice";   // "female" | "male"
 const getVoicePref = () => { try { return localStorage.getItem(VOICE_KEY) === "male" ? "male" : "female"; } catch { return "female"; } };
 const getMutePref = () => { try { return localStorage.getItem(MUTE_KEY) === "1"; } catch { return false; } };
 
+// ── Voice Stage prefs (persisted; all default ON, and only ever apply when voice
+// is actually available — with voice off the session renders exactly as before).
+const STAGE_KEY = "interviewiq_voice_stage";
+const AUTOLISTEN_KEY = "interviewiq_autolisten";
+const CAPTIONS_KEY = "interviewiq_captions";
+const getFlagPref = (key, dflt = true) => {
+  try { const v = localStorage.getItem(key); return v === null ? dflt : v === "1"; }
+  catch { return dflt; }
+};
+const setFlagPref = (key, on) => { try { localStorage.setItem(key, on ? "1" : "0"); } catch { /* noop */ } };
+// Web Audio tuning for the learner strip (real mic input, not a fake animation).
+const WAVE_BARS = 28;              // bars in the live waveform
+const SILENCE_RMS = 0.018;         // below this counts as silence
+const SILENCE_HOLD_MS = 2500;      // 2.5s trailing silence -> auto-stop (auto-listen only)
+const AUTO_LISTEN_GRACE_MS = 600;  // grace beat before the mic opens
+const REVIEW_AUTOSEND_S = 6;       // visible countdown before an untouched transcript sends
+
 // One shared <audio> element across screens so the iOS unlock (done on the Start
 // button gesture) carries over to programmatic playback in the interview.
 let _player = null;
@@ -134,6 +151,19 @@ const IconMic = ({ size = 18 }) => (
 );
 const IconStop = ({ size = 18 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+);
+// Voice Stage icons.
+const IconKeyboard = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="20" height="12" rx="2" /><line x1="6" y1="10" x2="6" y2="10" /><line x1="10" y1="10" x2="10" y2="10" /><line x1="14" y1="10" x2="14" y2="10" /><line x1="18" y1="10" x2="18" y2="10" /><line x1="8" y1="14" x2="16" y2="14" /></svg>
+);
+const IconSliders = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" /><line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" /><line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" /><line x1="1" y1="14" x2="7" y2="14" /><line x1="9" y1="8" x2="15" y2="8" /><line x1="17" y1="16" x2="23" y2="16" /></svg>
+);
+const IconClose = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+);
+const IconTranscript = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /><line x1="7" y1="8" x2="17" y2="8" /><line x1="7" y1="12" x2="13" y2="12" /></svg>
 );
 
 // ── Theme ─────────────────────────────────────────────────────────────────
@@ -321,6 +351,106 @@ const CSS = `
   .mba-pill-pass{background:#edf7ed;color:#2d6a2d}
   .mba-pill-warn{background:#fdf8ed;color:#7a5e00}
   .mba-pill-fail{background:#fdf1f0;color:#c0392b}
+
+  /* ── VOICE STAGE ────────────────────────────────────────────────────────
+     Call-like presentation over the SAME state machine. Everything is built on
+     the brand tokens (teal = IQ speaking/intelligence, orange = recording only,
+     gold = progress/rating) so the dual-theme reskin swaps colour without
+     relayout. All animation is transform/opacity only; every loop is under 2s. */
+  @keyframes iqOrbBreathe { 0%,100%{transform:scale(1)} 50%{transform:scale(1.045)} }
+  @keyframes iqOrbBreatheFast { 0%,100%{transform:scale(1)} 50%{transform:scale(1.09)} }
+  @keyframes iqAurora { to { transform: rotate(360deg); } }
+  @keyframes iqAuroraRev { to { transform: rotate(-360deg); } }
+  @keyframes iqHalo { 0%,100%{opacity:.30;transform:scale(1)} 50%{opacity:.60;transform:scale(1.12)} }
+  @keyframes iqBar { 0%,100%{transform:scaleY(.28)} 50%{transform:scaleY(1)} }
+  @keyframes iqSweep { 0%{transform:translateX(-120%)} 100%{transform:translateX(120%)} }
+  @keyframes iqRise { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+
+  .iq-stage{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:#0B1628;padding:24px 20px;overflow:hidden;position:relative;min-height:0}
+  .iq-orb-wrap{position:relative;width:180px;height:180px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .iq-orb-halo{position:absolute;inset:-22%;border-radius:50%;background:radial-gradient(circle,rgba(0,196,160,.42) 0%,rgba(0,196,160,0) 68%);animation:iqHalo 3.2s ease-in-out infinite;will-change:transform,opacity}
+  .iq-orb{position:relative;width:132px;height:132px;border-radius:50%;overflow:hidden;background:#0B1628;box-shadow:inset 0 0 34px rgba(0,196,160,.30),0 0 26px rgba(0,196,160,.20);animation:iqOrbBreathe 3.4s ease-in-out infinite;will-change:transform}
+  .iq-orb-core{position:absolute;inset:0;border-radius:50%;background:radial-gradient(circle at 34% 30%,rgba(0,196,160,.30) 0%,rgba(11,22,40,.96) 68%)}
+  .iq-orb-aurora{position:absolute;inset:-32%;border-radius:50%;background:conic-gradient(from 0deg,rgba(0,196,160,0) 0deg,rgba(0,196,160,.55) 70deg,rgba(200,153,42,.30) 150deg,rgba(0,196,160,0) 230deg,rgba(0,196,160,.42) 320deg,rgba(0,196,160,0) 360deg);filter:blur(9px);opacity:.75;animation:iqAurora 12s linear infinite;will-change:transform}
+  .iq-orb-ring{position:absolute;border-radius:50%;border:1.6px solid rgba(0,196,160,.36);will-change:transform}
+  .iq-orb-ring1{inset:4%;animation:iqAurora 9s linear infinite}
+  .iq-orb-ring2{inset:15%;border-color:rgba(0,196,160,.20);border-style:dashed;animation:iqAuroraRev 14s linear infinite}
+  /* SPEAKING: faster pulse + stronger teal glow (bars render below the orb). */
+  .iq-orb-speaking .iq-orb{animation:iqOrbBreatheFast 1.5s ease-in-out infinite;box-shadow:inset 0 0 40px rgba(0,196,160,.5),0 0 46px rgba(0,196,160,.42)}
+  .iq-orb-speaking .iq-orb-aurora{opacity:1;animation-duration:5s}
+  .iq-orb-speaking .iq-orb-halo{animation-duration:1.5s;opacity:.7}
+  /* THINKING: slow shimmer sweep across the orb. */
+  .iq-orb-thinking .iq-orb-aurora{opacity:.4;animation-duration:18s}
+  .iq-orb-sweep{position:absolute;top:0;bottom:0;width:46%;background:linear-gradient(90deg,rgba(255,255,255,0),rgba(255,255,255,.16),rgba(255,255,255,0));animation:iqSweep 1.9s ease-in-out infinite;will-change:transform}
+  /* LISTENING: the orb recedes (learner has the floor) — orange lives ONLY on the
+     learner strip, never on the orb. */
+  .iq-orb-listening .iq-orb{animation-duration:4.4s;box-shadow:inset 0 0 26px rgba(0,196,160,.16),0 0 14px rgba(0,196,160,.10)}
+  .iq-orb-listening .iq-orb-aurora{opacity:.35}
+  .iq-orb-listening .iq-orb-halo{opacity:.18;animation:none}
+
+  /* Speaking waveform bars (decorative, under the orb) */
+  .iq-wavebars{display:flex;align-items:flex-end;justify-content:center;gap:4px;height:26px}
+  .iq-wavebar{width:3px;height:100%;border-radius:2px;background:#00C4A0;transform-origin:center bottom;animation:iqBar 1.1s ease-in-out infinite;will-change:transform}
+  /* Live mic waveform (heights are set inline from the real AnalyserNode) */
+  .iq-livewave{display:flex;align-items:center;justify-content:center;gap:3px;height:34px}
+  .iq-livebar{width:3px;min-height:3px;border-radius:2px;background:#E8521A;transition:height .06s linear}
+
+  .iq-stage-label{font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.55)}
+  .iq-caption{max-width:640px;text-align:center;color:rgba(255,255,255,.92);font-size:15px;line-height:1.5;font-family:'Plus Jakarta Sans',sans-serif;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;animation:iqRise .3s ease}
+
+  /* Learner strip (bottom) */
+  .iq-strip{flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:10px;padding:16px 20px 20px;background:#0B1628;border-top:1px solid rgba(255,255,255,.07)}
+  .iq-micpill{display:inline-flex;align-items:center;gap:10px;padding:10px 20px;border-radius:999px;border:1.5px solid rgba(255,255,255,.18);background:rgba(255,255,255,.05);color:#fff;font-family:'Plus Jakarta Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;transition:all .18s}
+  .iq-micpill:hover{background:rgba(255,255,255,.11);border-color:rgba(255,255,255,.3)}
+  .iq-micpill:focus-visible{outline:2px solid #00C4A0;outline-offset:2px}
+  .iq-micpill:disabled{opacity:.45;cursor:not-allowed}
+  .iq-micpill-live{border-color:#E8521A;background:rgba(232,82,26,.14);color:#fff;animation:iqMicPulse 1.4s ease-in-out infinite}
+  .iq-ghostbtn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.05);color:rgba(255,255,255,.85);font-size:12px;font-weight:600;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;transition:all .15s}
+  .iq-ghostbtn:hover{background:rgba(255,255,255,.12);color:#fff}
+  .iq-ghostbtn:focus-visible{outline:2px solid #00C4A0;outline-offset:2px}
+
+  /* Review card ("here's what I heard") */
+  .iq-review{width:100%;max-width:620px;background:#fff;border:1.5px solid #e8e9f0;border-radius:12px;padding:14px 16px;animation:iqRise .25s ease}
+  .iq-review-h{font-size:12px;font-weight:800;color:#0B1628;letter-spacing:.02em;margin-bottom:8px}
+  .iq-review-t{width:100%;border:1.5px solid #e8e9f0;border-radius:8px;padding:10px 12px;font-size:14px;line-height:1.55;font-family:'Plus Jakarta Sans',sans-serif;resize:none;outline:none;box-sizing:border-box;min-height:72px;max-height:160px}
+  .iq-review-t:focus{border-color:#0B1628;box-shadow:0 0 0 3px rgba(11,22,40,.06)}
+  .iq-countbar{height:3px;border-radius:2px;background:#e8e9f0;overflow:hidden;margin-top:10px}
+  .iq-countbar-fill{height:100%;background:#C8992A;transition:width 1s linear}
+
+  /* Transcript drawer: side sheet >=760px, bottom sheet below. */
+  .iq-drawer-back{position:fixed;inset:0;background:rgba(11,22,40,.5);z-index:60;animation:iqFade .2s ease}
+  .iq-drawer{position:fixed;top:0;right:0;bottom:0;width:min(420px,88vw);background:#f7f8fc;z-index:61;display:flex;flex-direction:column;box-shadow:-8px 0 30px rgba(0,0,0,.22);animation:iqDrawerIn .24s ease}
+  @keyframes iqDrawerIn { from{transform:translateX(24px);opacity:0} to{transform:translateX(0);opacity:1} }
+  @keyframes iqSheetIn { from{transform:translateY(24px);opacity:0} to{transform:translateY(0);opacity:1} }
+  .iq-drawer-h{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid #e8e9f0;background:#fff;flex-shrink:0}
+  .iq-drawer-b{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+  @media(max-width:760px){
+    .iq-drawer{top:auto;left:0;right:0;bottom:0;width:auto;height:72vh;border-radius:16px 16px 0 0;box-shadow:0 -8px 30px rgba(0,0,0,.22);animation:iqSheetIn .24s ease}
+  }
+  @media(max-width:420px){ .iq-orb-wrap{width:150px;height:150px} .iq-orb{width:110px;height:110px} .iq-stage{gap:14px;padding:18px 14px} }
+
+  /* Settings menu (header) */
+  .iq-menu{position:absolute;top:calc(100% + 8px);right:0;min-width:240px;background:#fff;border:1px solid #e8e9f0;border-radius:12px;box-shadow:0 12px 34px rgba(11,22,40,.20);z-index:80;padding:8px;animation:iqRise .18s ease}
+  .iq-menu-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 10px;border-radius:8px;font-size:13px;color:#1a1a1a;font-family:'Plus Jakarta Sans',sans-serif}
+  .iq-menu-row:hover{background:#f7f8fc}
+  .iq-menu-sep{height:1px;background:#e8e9f0;margin:6px 4px}
+  .iq-switch{width:40px;height:22px;border-radius:999px;border:none;background:#e8e9f0;position:relative;cursor:pointer;flex-shrink:0;transition:background .18s}
+  .iq-switch:focus-visible{outline:2px solid #0B1628;outline-offset:2px}
+  .iq-switch-on{background:#00C4A0}
+  .iq-switch-knob{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .18s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+  .iq-switch-on .iq-switch-knob{transform:translateX(18px)}
+
+  /* Accessibility: collapse the orb to a static, state-coloured ring. Labels
+     always persist, so state is never conveyed by colour/motion alone. */
+  @media (prefers-reduced-motion: reduce) {
+    .iq-orb,.iq-orb-aurora,.iq-orb-ring,.iq-orb-halo,.iq-orb-sweep,.iq-wavebar,.iq-micpill-live{animation:none!important}
+    .iq-orb-aurora,.iq-orb-sweep{display:none}
+    .iq-orb{box-shadow:none;border:3px solid #00C4A0}
+    .iq-orb-speaking .iq-orb{border-color:#00C4A0}
+    .iq-orb-thinking .iq-orb{border-color:#C8992A}
+    .iq-orb-listening .iq-orb{border-color:#E8521A}
+    .iq-wavebar{transform:scaleY(.6)}
+  }
 `;
 
 function Tip({ children, style = {} }) {
@@ -692,6 +822,159 @@ function VoiceConsentModal({ onAccept, onDecline, busy }) {
   );
 }
 
+// ── VOICE STAGE components ───────────────────────────────────────────────────
+// A presentation layer over the SAME state machine — no stage/rating/consent/
+// scoring logic lives here. Colour never carries meaning alone: every state also
+// shows a persistent text label (and reduced-motion collapses the orb to a ring).
+
+const ORB_LABEL = { speaking: "Speaking", thinking: "Thinking", listening: "Listening", idle: "Ready" };
+
+function VoiceOrb({ state }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+      <div className={"iq-orb-wrap iq-orb-" + state}>
+        <div className="iq-orb-halo" />
+        <div className="iq-orb">
+          <div className="iq-orb-core" />
+          <div className="iq-orb-aurora" />
+          <div className="iq-orb-ring iq-orb-ring1" />
+          <div className="iq-orb-ring iq-orb-ring2" />
+          {state === "thinking" && <div className="iq-orb-sweep" />}
+        </div>
+      </div>
+      {state === "speaking" && (
+        <div className="iq-wavebars" aria-hidden="true">
+          {[0, 1, 2, 3, 4, 5, 6].map(i => (
+            <span key={i} className="iq-wavebar"
+              style={{ animationDelay: (i * 0.09) + "s", height: (12 + (i % 3) * 6) + "px" }} />
+          ))}
+        </div>
+      )}
+      <div className="iq-stage-label" role="status" aria-live="polite">{ORB_LABEL[state]}</div>
+    </div>
+  );
+}
+
+// Real mic input — heights come from the Web Audio AnalyserNode, not an animation.
+function LiveWave({ levels }) {
+  return (
+    <div className="iq-livewave" aria-hidden="true">
+      {levels.map((v, i) => (
+        <span key={i} className="iq-livebar"
+          style={{ height: Math.max(3, Math.min(34, Math.round(v * 170))) + "px" }} />
+      ))}
+    </div>
+  );
+}
+
+// Review stays mandatory (our STT design): the transcript is never sent unseen.
+// The countdown only automates the *untouched* case, and is cancelable.
+function ReviewCard({ text, onChange, secsLeft, onSend, onPause }) {
+  const pct = secsLeft == null ? 0 : (secsLeft / REVIEW_AUTOSEND_S) * 100;
+  return (
+    <div className="iq-review">
+      <div className="iq-review-h">Here&apos;s what I heard — edit if needed</div>
+      <textarea className="iq-review-t" value={text} autoFocus
+        onChange={e => { onPause(); onChange(e.target.value.slice(0, 4000)); }}
+        onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(); } }}
+        aria-label="Review your transcribed answer" />
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+        <button onClick={onSend} className="mba-btn-primary" style={{ padding: "9px 20px", fontSize: 13 }}>Send</button>
+        <button onClick={onPause} className="vchip" style={{ padding: "8px 14px", fontSize: 12 }}>Edit</button>
+        <span style={{ marginLeft: "auto", fontFamily: IQ.mono, fontSize: 12, color: secsLeft != null ? IQ.gold : T.subtle }}>
+          {secsLeft != null ? `Sending in ${secsLeft}s` : "Auto-send paused"}
+        </span>
+      </div>
+      {secsLeft != null && <div className="iq-countbar"><div className="iq-countbar-fill" style={{ width: pct + "%" }} /></div>}
+    </div>
+  );
+}
+
+function TranscriptDrawer({ open, onClose, messages, name }) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+  return (
+    <>
+      <div className="iq-drawer-back" onClick={onClose} />
+      <aside className="iq-drawer" role="dialog" aria-label="Conversation transcript">
+        <div className="iq-drawer-h">
+          <span style={{ fontSize: 14, fontWeight: 800, color: T.navy }}>Transcript</span>
+          <button onClick={onClose} aria-label="Close transcript" className="iq-audio-btn"
+            style={{ background: T.bg, border: "1px solid " + T.border, color: T.navy }}><IconClose /></button>
+        </div>
+        <div className="iq-drawer-b">
+          {messages.length === 0 && <div style={{ fontSize: 13, color: T.muted }}>The conversation will appear here.</div>}
+          {messages.map((m, i) => {
+            const isV = m.role === "assistant";
+            return (
+              <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: isV ? "flex-start" : "flex-end" }}>
+                <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", color: T.subtle, marginBottom: 3 }}>
+                  {isV ? "InterviewIQ" : (name || "You")}
+                </span>
+                <div style={{ padding: "10px 13px", borderRadius: isV ? "2px 10px 10px 10px" : "10px 2px 10px 10px", maxWidth: "92%", fontSize: 13, lineHeight: 1.6, background: isV ? T.white : T.navy, color: isV ? T.text : "#fff", border: isV ? "1px solid " + T.border : "none" }}>
+                  {isV ? renderMd(m.content) : m.content}
+                </div>
+                {!isV && m.meta && (
+                  <span style={{ fontSize: 10, color: T.subtle, marginTop: 3, fontFamily: IQ.mono }}>
+                    {m.meta === "SPOKEN" ? "Spoken" : "Typed"}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </aside>
+    </>
+  );
+}
+
+function Switch({ on, onChange, label }) {
+  return (
+    <button role="switch" aria-checked={on} aria-label={label} onClick={() => onChange(!on)}
+      className={"iq-switch" + (on ? " iq-switch-on" : "")}>
+      <span className="iq-switch-knob" />
+    </button>
+  );
+}
+
+function StageSettingsMenu({ onClose, voiceStage, setVoiceStage, autoListen, setAutoListen,
+                            captions, setCaptions, voice, setVoice }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const dim = { opacity: voiceStage ? 1 : 0.45 };
+  return (
+    <>
+      <div style={{ position: "fixed", inset: 0, zIndex: 70 }} onClick={onClose} />
+      <div className="iq-menu" role="menu">
+        <div className="iq-menu-row"><span>Voice mode</span>
+          <Switch on={voiceStage} onChange={setVoiceStage} label="Voice mode" /></div>
+        <div className="iq-menu-row" style={dim}><span>Auto-listen</span>
+          <Switch on={autoListen} onChange={setAutoListen} label="Auto-listen" /></div>
+        <div className="iq-menu-row" style={dim}><span>Captions</span>
+          <Switch on={captions} onChange={setCaptions} label="Captions" /></div>
+        <div className="iq-menu-sep" />
+        <div className="iq-menu-row"><span>Interviewer voice</span>
+          <div style={{ display: "flex", gap: 6 }}>
+            {["female", "male"].map(v => (
+              <button key={v} onClick={() => setVoice(v)}
+                className={"vchip" + (voice === v ? " vchip-on" : "")}
+                style={{ padding: "5px 12px", fontSize: 12 }}>{v === "female" ? "Female" : "Male"}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initialState, initialMessages, startedAt, onEnd, onRestart }) {
   // INT-06: on resume we hydrate from server history; on a fresh start we seed with the greeting.
   const [messages, setMessages] = useState(
@@ -723,6 +1006,43 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   const answeredByVoiceRef = useRef(false);      // Phase 3: TYPED vs SPOKEN meta
   const toastTimerRef = useRef(null);
   const MAX_REC_SECONDS = 180;   // 3 min hard cap, auto-stop
+
+  // ── Voice Stage: presentation state only (the state machine is untouched) ──
+  const [voiceStage, setVoiceStageState] = useState(() => getFlagPref(STAGE_KEY, true));
+  const [autoListen, setAutoListenState] = useState(() => getFlagPref(AUTOLISTEN_KEY, true));
+  const [captions, setCaptionsState] = useState(() => getFlagPref(CAPTIONS_KEY, true));
+  const [voicePref, setVoicePrefState] = useState(() => config.voice || getVoicePref());
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [typedInVoice, setTypedInVoice] = useState(false);   // typed fallback inside voice mode
+  const [review, setReview] = useState(null);                // { text } once a transcript lands
+  const [reviewSecs, setReviewSecs] = useState(null);        // auto-send countdown (null = paused)
+  const [levels, setLevels] = useState(() => new Array(WAVE_BARS).fill(0));
+  const [graceMs, setGraceMs] = useState(0);                 // auto-listen grace beat
+  const setVoiceStage = (v) => { setVoiceStageState(v); setFlagPref(STAGE_KEY, v); };
+  const setAutoListen = (v) => { setAutoListenState(v); setFlagPref(AUTOLISTEN_KEY, v); };
+  const setCaptions = (v) => { setCaptionsState(v); setFlagPref(CAPTIONS_KEY, v); };
+  const setVoicePref = (v) => { setVoicePrefState(v); try { localStorage.setItem(VOICE_KEY, v); } catch { /* noop */ } };
+
+  // Web Audio (real mic level: live waveform + trailing-silence auto-stop).
+  const audioCtxRef = useRef(null);
+  const analyserRef = useRef(null);
+  const rafRef = useRef(null);
+  const silenceStartRef = useRef(0);
+  const spokeRef = useRef(false);      // only arm silence-stop once they've actually spoken
+  const graceRafRef = useRef(null);
+  const reviewTimerRef = useRef(null);
+  const reviewTextRef = useRef("");
+  // Refs mirror state for the <audio> 'ended' handler and the rAF loop, which would
+  // otherwise close over stale values.
+  const autoListenRef = useRef(autoListen);
+  const voiceModeRef = useRef(false);
+  const canAnswerRef = useRef(false);
+  const consentRef = useRef(false);
+  const recordingRef = useRef(false);
+  const transcribingRef = useRef(false);
+  const typedInVoiceRef = useRef(false);
+  const reviewOpenRef = useRef(false);
   // INT-06: timer remaining is derived from the persisted start time so a refresh
   // resumes the same countdown instead of restarting it.
   const [secondsLeft, setSecondsLeft] = useState(() => {
@@ -756,15 +1076,17 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
     const p = player(); if (!p) return;
     const onPlay = () => { setAudioPlaying(true); setNeedsTap(false); };
     const onStop = () => setAudioPlaying(false);
+    // Two-way flow: when IQ finishes speaking, hand the floor to the learner.
+    const onEnded = () => { setAudioPlaying(false); maybeAutoListenRef.current?.(); };
     p.addEventListener("play", onPlay);
     p.addEventListener("playing", onPlay);
-    p.addEventListener("ended", onStop);
+    p.addEventListener("ended", onEnded);
     p.addEventListener("pause", onStop);
     p.addEventListener("error", onStop);
     return () => {
       p.removeEventListener("play", onPlay);
       p.removeEventListener("playing", onPlay);
-      p.removeEventListener("ended", onStop);
+      p.removeEventListener("ended", onEnded);
       p.removeEventListener("pause", onStop);
       p.removeEventListener("error", onStop);
       try { p.pause(); } catch { /* noop */ }   // stop audio when leaving the interview
@@ -828,6 +1150,42 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   // Behavioural, Case, Reverse) — i.e. whenever the learner can submit an answer.
   const canAnswer = !ended && !awaitingRating && (nextAction === "answer" || nextAction === "reverse_question");
 
+  // Voice Stage: a presentation mode over the same state machine. Only ever active
+  // when voice is available; switch it off and the session renders exactly as today.
+  const voiceMode = sttAvailable && voiceStage;
+  const orbState = recording ? "listening"
+    : (transcribing || loading) ? "thinking"
+    : audioPlaying ? "speaking" : "idle";
+  const lastAssistantText = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "assistant") return messages[i].content;
+    return "";
+  })();
+
+  // Mirror state into refs — the <audio> 'ended' handler and the rAF meter loop are
+  // registered once and would otherwise close over stale values.
+  useEffect(() => { autoListenRef.current = autoListen; }, [autoListen]);
+  useEffect(() => { voiceModeRef.current = voiceMode; }, [voiceMode]);
+  useEffect(() => { canAnswerRef.current = canAnswer; }, [canAnswer]);
+  useEffect(() => { consentRef.current = voiceConsented; }, [voiceConsented]);
+  useEffect(() => { recordingRef.current = recording; }, [recording]);
+  useEffect(() => { transcribingRef.current = transcribing; }, [transcribing]);
+  useEffect(() => { typedInVoiceRef.current = typedInVoice; }, [typedInVoice]);
+  useEffect(() => { reviewOpenRef.current = !!review; reviewTextRef.current = review?.text || ""; }, [review]);
+  // The transcript drawer auto-opens at the rating widget and the readout.
+  useEffect(() => {
+    if (voiceMode && (awaitingRating || nextAction === "readout")) setDrawerOpen(true);
+  }, [voiceMode, awaitingRating, nextAction]);
+
+  // Leaving voice mode with a transcript still in the review card must not lose it —
+  // carry it into the classic composer instead.
+  useEffect(() => {
+    if (voiceMode || !review) return;
+    const pending = review.text;
+    if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null; }
+    setReview(null); setReviewSecs(null);
+    setInput(prev => ((prev ? prev.trimEnd() + " " : "") + pending).slice(0, 4000));
+  }, [voiceMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const showToast = (msg) => {
     setSttToast(msg);
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -841,30 +1199,122 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
 
   const clearRecTimer = () => { if (recTimerRef.current) { clearInterval(recTimerRef.current); recTimerRef.current = null; } };
 
+  // Graceful fallback (unchanged contract): toast +, on the stage, swap straight to
+  // the typed composer so a voice failure is never a dead end.
+  const voiceFallback = () => {
+    showToast("Voice input unavailable — please type your answer");
+    if (voiceModeRef.current) setTypedInVoice(true);
+  };
+
+  // ── Web Audio meter: the REAL mic level drives the live waveform and the
+  // trailing-silence auto-stop. If Web Audio is unavailable the recording still
+  // works — only the waveform/silence-stop degrade.
+  const teardownMeter = () => {
+    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+    analyserRef.current = null;
+    const ctx = audioCtxRef.current;
+    if (ctx) { try { ctx.close(); } catch { /* noop */ } audioCtxRef.current = null; }
+    silenceStartRef.current = 0; spokeRef.current = false;
+    setLevels(new Array(WAVE_BARS).fill(0));
+  };
+
+  const startMeter = (stream) => {
+    const AC = typeof window !== "undefined" && (window.AudioContext || window.webkitAudioContext);
+    if (!AC) return;
+    let an;
+    try {
+      const ctx = new AC();
+      audioCtxRef.current = ctx;
+      const src = ctx.createMediaStreamSource(stream);
+      an = ctx.createAnalyser();
+      an.fftSize = 512;
+      an.smoothingTimeConstant = 0.8;
+      src.connect(an);
+      analyserRef.current = an;
+    } catch { teardownMeter(); return; }
+    const buf = new Uint8Array(an.fftSize);
+    let frame = 0;
+    const tick = () => {
+      const a = analyserRef.current;
+      if (!a || !recordingRef.current) return;
+      a.getByteTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+      const rms = Math.sqrt(sum / buf.length);
+      // Throttle React updates to ~20fps; the rAF itself stays at display rate.
+      if (frame++ % 3 === 0) setLevels(prev => { const next = prev.slice(1); next.push(rms); return next; });
+      if (rms > SILENCE_RMS * 1.6) spokeRef.current = true;
+      // Trailing-silence auto-stop — ONLY in auto-listen mode, and only after they
+      // have actually spoken, so the thinking pause before an answer never cuts in.
+      if (autoListenRef.current && spokeRef.current) {
+        if (rms < SILENCE_RMS) {
+          if (!silenceStartRef.current) silenceStartRef.current = performance.now();
+          else if (performance.now() - silenceStartRef.current >= SILENCE_HOLD_MS) { stopRecording(); return; }
+        } else silenceStartRef.current = 0;
+      }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+  };
+
+  // ── Auto-listen: a short grace beat after IQ stops speaking, then the mic opens.
+  // Instantly cancelable (tap the pill or press Esc).
+  const clearGrace = () => {
+    if (graceRafRef.current) { cancelAnimationFrame(graceRafRef.current); graceRafRef.current = null; }
+    setGraceMs(0);
+  };
+  const startGrace = () => {
+    clearGrace();
+    const started = performance.now();
+    setGraceMs(AUTO_LISTEN_GRACE_MS);
+    const step = () => {
+      const left = AUTO_LISTEN_GRACE_MS - (performance.now() - started);
+      if (left <= 0) { graceRafRef.current = null; setGraceMs(0); beginRecording(); return; }
+      setGraceMs(left);
+      graceRafRef.current = requestAnimationFrame(step);
+    };
+    graceRafRef.current = requestAnimationFrame(step);
+  };
+  const maybeAutoListen = () => {
+    if (!voiceModeRef.current || !autoListenRef.current) return;
+    if (!consentRef.current) return;      // consent stays explicit — never implied
+    if (!canAnswerRef.current) return;    // e.g. a confidence rating is due first
+    if (recordingRef.current || transcribingRef.current) return;
+    if (typedInVoiceRef.current || reviewOpenRef.current) return;
+    startGrace();
+  };
+  // The <audio> 'ended' listener is registered ONCE on mount, so it must not capture
+  // a first-render closure (that would carry a stale sstate and post the wrong stage).
+  // Route it through a ref that always points at this render's implementation.
+  const maybeAutoListenRef = useRef(null);
+  useEffect(() => { maybeAutoListenRef.current = maybeAutoListen; });
+
   // Actually acquire the mic and start capturing (consent already handled).
   const beginRecording = async () => {
     if (recording || transcribing) return;
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-      showToast("Voice input unavailable — please type your answer"); return;
+      voiceFallback(); return;
     }
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
       // Permission denied or no device → fall back to typing, zero degradation.
-      showToast("Voice input unavailable — please type your answer"); return;
+      voiceFallback(); return;
     }
     mediaStreamRef.current = stream;
     let mr;
-    try { mr = new MediaRecorder(stream); }
-    catch { stopMediaStream(); showToast("Voice input unavailable — please type your answer"); return; }
+    try { mr = new MediaRecorder(stream); }   // mimeType left to the browser (the STT fix handles it)
+    catch { stopMediaStream(); voiceFallback(); return; }
     recChunksRef.current = [];
     mr.ondataavailable = (e) => { if (e.data && e.data.size) recChunksRef.current.push(e.data); };
     mr.onstop = () => finishRecording(mr.mimeType);
     mediaRecorderRef.current = mr;
     try { mr.start(); }
-    catch { stopMediaStream(); showToast("Voice input unavailable — please type your answer"); return; }
+    catch { stopMediaStream(); voiceFallback(); return; }
     recStartRef.current = Date.now();
+    recordingRef.current = true;   // set before the meter loop reads it
+    startMeter(stream);
     setRecording(true); setRecSeconds(0);
     recTimerRef.current = setInterval(() => setRecSeconds(s => {
       const next = s + 1;
@@ -875,6 +1325,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
 
   const stopRecording = () => {
     clearRecTimer();
+    recordingRef.current = false;   // stops the meter loop on its next frame
+    teardownMeter();
     const mr = mediaRecorderRef.current;
     if (mr && mr.state !== "inactive") { try { mr.stop(); } catch { /* noop */ } }   // fires onstop → finishRecording
     setRecording(false);
@@ -884,36 +1336,55 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   const finishRecording = async (mimeType) => {
     stopMediaStream();
     const chunks = recChunksRef.current; recChunksRef.current = [];
-    if (!chunks.length) { showToast("Voice input unavailable — please type your answer"); return; }
+    if (!chunks.length) { voiceFallback(); return; }
     const type = mimeType || "audio/webm";
     const blob = new Blob(chunks, { type });
     const ext = type.includes("ogg") ? "ogg" : type.includes("mp4") ? "mp4" : type.includes("wav") ? "wav" : "webm";
     const durationSeconds = recStartRef.current ? (Date.now() - recStartRef.current) / 1000 : 0;
-    setTranscribing(true);
+    setTranscribing(true); transcribingRef.current = true;
     try {
       const res = await sttTranscribe(sessionId, blob, `answer.${ext}`, durationSeconds);
       if (res && res.transcript) {
-        // Insert into the editable input — the learner reviews and presses Send.
-        setInput(prev => ((prev ? prev.trimEnd() + " " : "") + res.transcript).slice(0, 4000));
         // Phase 3: mark this answer as SPOKEN and stash its delivery metrics for Send.
         answeredByVoiceRef.current = true;
         pendingDeliveryRef.current = res.delivery_metrics || null;
-        setTimeout(() => inputRef.current?.focus(), 50);
+        if (voiceModeRef.current) {
+          // On the stage the transcript lands in the review card (never sent unseen).
+          setReview({ text: res.transcript.slice(0, 4000) });
+          startReviewCountdown();
+        } else {
+          // Classic mode: straight into the editable composer, exactly as before.
+          setInput(prev => ((prev ? prev.trimEnd() + " " : "") + res.transcript).slice(0, 4000));
+          setTimeout(() => inputRef.current?.focus(), 50);
+        }
       } else {
-        showToast("Voice input unavailable — please type your answer");
+        // STT returned null -> graceful fallback (toast + typed composer on the stage).
+        voiceFallback();
       }
     } catch {
-      showToast("Voice input unavailable — please type your answer");
-    } finally { setTranscribing(false); }
+      voiceFallback();
+    } finally { setTranscribing(false); transcribingRef.current = false; }
   };
 
   // Mic button: toggle stop while recording; otherwise gate on consent then record.
   const onMicClick = () => {
+    if (graceMs > 0) { clearGrace(); return; }   // instant cancel of the auto-listen beat
     if (recording) { stopRecording(); return; }
     if (transcribing) return;
     if (!voiceConsented) { setShowVoiceConsent(true); return; }
     beginRecording();
   };
+
+  // Esc: cancel the auto-listen beat, else stop an in-flight recording.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      if (graceMs > 0) { clearGrace(); return; }
+      if (recording) stopRecording();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [graceMs, recording]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const acceptVoiceConsent = async () => {
     setConsentBusy(true);
@@ -927,10 +1398,16 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
 
   const declineVoiceConsent = () => { setShowVoiceConsent(false); };
 
-  // Cleanup: stop any in-flight recording/stream/timers when leaving the interview.
+  // Cleanup: stop any in-flight recording/stream/timers/audio-graph on unmount.
   useEffect(() => () => {
     clearRecTimer();
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    if (graceRafRef.current) cancelAnimationFrame(graceRafRef.current);
+    if (reviewTimerRef.current) clearInterval(reviewTimerRef.current);
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    recordingRef.current = false;
+    const ctx = audioCtxRef.current;
+    if (ctx) { try { ctx.close(); } catch { /* noop */ } audioCtxRef.current = null; }
     const mr = mediaRecorderRef.current;
     if (mr && mr.state !== "inactive") { try { mr.stop(); } catch { /* noop */ } }
     stopMediaStream();
@@ -945,8 +1422,10 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
     }
   }, [sstate]);
 
-  const send = async () => {
-    const textVal = input.trim(); if (!textVal || loading || ended || awaitingRating) return;
+  const send = async (overrideText) => {
+    // overrideText comes from the Voice Stage review card; otherwise use the composer.
+    const textVal = (overrideText !== undefined ? overrideText : input).trim();
+    if (!textVal || loading || ended || awaitingRating) return;
     // Phase 3: this answer is SPOKEN if it came from the mic, else TYPED. Consume the
     // pending metrics/flag so a later typed answer doesn't inherit them.
     const spoken = answeredByVoiceRef.current;
@@ -954,13 +1433,43 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
     answeredByVoiceRef.current = false; pendingDeliveryRef.current = null;
     setMessages(m => [...m, { role: "user", content: textVal, meta: spoken ? "SPOKEN" : "TYPED" }]); setInput(""); setLoading(true); setError(null);
     try {
-      const res = await sendTurn(sessionId, textVal, sstate?.current_stage, config.voice || "female", spoken ? metrics : null);
+      const res = await sendTurn(sessionId, textVal, sstate?.current_stage, voicePref || "female", spoken ? metrics : null);
       setMessages(m => [...m, { role: "assistant", content: res.reply, audio_url: res.audio_url }]);
       setSstate(res.state);
     } catch (e) {
       setError(e.message);
       try { setSstate(await fetchSessionState(sessionId)); } catch { /* noop */ }
-    } finally { setLoading(false); setTimeout(() => inputRef.current?.focus(), 50); }
+    } finally {
+      setLoading(false);
+      // Refocus the composer whenever one is actually on screen (classic, or the
+      // typed fallback inside voice mode). On the pure stage there is nothing to focus.
+      if (!voiceModeRef.current || typedInVoiceRef.current) setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  };
+
+  // ── Review card: the transcript is never sent unseen. The countdown only
+  // automates the UNTOUCHED case and pauses the moment the learner edits.
+  const clearReviewTimer = () => {
+    if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null; }
+  };
+  const pauseReviewCountdown = () => { clearReviewTimer(); setReviewSecs(null); };
+  const sendReview = () => {
+    clearReviewTimer();
+    const t = (reviewTextRef.current || "").trim();
+    setReview(null); setReviewSecs(null);
+    if (t) send(t);
+  };
+  const startReviewCountdown = () => {
+    clearReviewTimer();
+    // Count down on a local, so we never call a side effect (sendReview) from inside
+    // a setState updater — StrictMode runs updaters twice and would double-send.
+    let left = REVIEW_AUTOSEND_S;
+    setReviewSecs(left);
+    reviewTimerRef.current = setInterval(() => {
+      left -= 1;
+      if (left <= 0) { clearReviewTimer(); sendReview(); return; }
+      setReviewSecs(left);
+    }, 1000);
   };
 
   const rate = async (val) => {
@@ -1015,7 +1524,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
             <div className="iq-hud-title">InterviewIQ</div>
             <div className="iq-hud-sub">{config.role}{config.company ? ` — ${config.company}` : " — General"}</div>
           </div>
-          <div className="iq-hud-right">
+          <div className="iq-hud-right" style={{ position: "relative" }}>
             {latestAudioUrl && (
               <div className="iq-hud-audio">
                 <button className="iq-audio-btn" onClick={toggleMute} title={muted ? "Unmute interviewer voice" : "Mute interviewer voice"} aria-label={muted ? "Unmute interviewer voice" : "Mute interviewer voice"} style={muted ? {} : { color: IQ.teal }}>
@@ -1026,8 +1535,29 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
                 </button>
               </div>
             )}
+            {/* Voice Stage: the transcript lives in a drawer (no chat bubbles on stage). */}
+            {voiceMode && (
+              <button className="iq-audio-btn" onClick={() => setDrawerOpen(true)} title="Open transcript" aria-label="Open transcript">
+                <IconTranscript />
+              </button>
+            )}
+            {sttAvailable && (
+              <button className="iq-audio-btn" onClick={() => setMenuOpen(o => !o)} title="Voice settings"
+                aria-label="Voice settings" aria-expanded={menuOpen} aria-haspopup="menu">
+                <IconSliders />
+              </button>
+            )}
             <span className="iq-hud-timer" style={{ color: secondsLeft <= 60 ? "#ff6b6b" : secondsLeft <= 180 ? T.gold : "#fff" }}>{mmss(secondsLeft)}</span>
             <button className="iq-hud-end" onClick={handleEndClick}>End</button>
+            {menuOpen && (
+              <StageSettingsMenu
+                onClose={() => setMenuOpen(false)}
+                voiceStage={voiceStage} setVoiceStage={setVoiceStage}
+                autoListen={autoListen} setAutoListen={setAutoListen}
+                captions={captions} setCaptions={setCaptions}
+                voice={voicePref} setVoice={setVoicePref}
+              />
+            )}
           </div>
         </div>
         <div className="iq-hud-stage-row">
@@ -1035,7 +1565,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
             <span className="iq-hud-stage-dot" />
             <span className="iq-hud-stage-label">{stageLabel}</span>
           </span>
-          {voiceChip && (
+          {/* On the stage the ORB is the state indicator, so the chip is removed there. */}
+          {!voiceMode && voiceChip && (
             <span aria-live="polite" style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 10, padding: "2px 10px", borderRadius: 999, background: "rgba(255,255,255,0.10)", fontFamily: IQ.mono, fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", color: "#fff" }}>
               <span style={{ width: 7, height: 7, borderRadius: "50%", background: voiceChip.color, animation: "iqRecDot 1.1s ease-in-out infinite", flexShrink: 0 }} />
               {voiceChip.label}
@@ -1044,6 +1575,105 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
         </div>
       </div>
 
+      {voiceMode ? (
+        <>
+          {/* ── THE STAGE ── The orb is the presence AND the state indicator. The
+              question is never a chat bubble here: it's spoken, optionally captioned,
+              and always available in the transcript drawer. */}
+          <div className="iq-stage">
+            <VoiceOrb state={orbState} />
+
+            {captions && lastAssistantText && <div className="iq-caption">{lastAssistantText}</div>}
+
+            {needsTap && latestAudioUrl && !muted && (
+              <button onClick={() => playAudio(latestAudioUrl, true)} className="iq-ghostbtn">
+                <IconSpeaker size={15} /> Tap to hear the question
+              </button>
+            )}
+
+            {reverseMode && !loading && !awaitingRating && !review && (
+              <div style={{ padding: "10px 16px", borderRadius: 10, background: "rgba(200,153,42,.14)", border: "1px solid " + IQ.gold, color: IQ.gold, fontSize: 13, fontWeight: 700, fontFamily: IQ.sans, textAlign: "center" }}>
+                Your turn to interview us. Ask us two questions.
+              </div>
+            )}
+
+            {/* Same rating component, centred on the stage (drawer peeks behind it). */}
+            {awaitingRating && !loading && <RatingWidget busy={ratingBusy} onRate={rate} />}
+
+            {review && (
+              <ReviewCard text={review.text} onChange={(t) => setReview({ text: t })}
+                secsLeft={reviewSecs} onSend={sendReview} onPause={pauseReviewCountdown} />
+            )}
+
+            {error && <div style={{ padding: "10px 14px", borderRadius: 8, background: "rgba(232,82,26,.16)", color: "#ffbda6", fontSize: 13, maxWidth: 620, textAlign: "center" }}>{error}</div>}
+
+            {secondsLeft <= 0 && (
+              <div style={{ color: "rgba(255,255,255,.85)", fontSize: 14, textAlign: "center" }}>
+                {uc > 0 ? <span style={{ fontWeight: 700 }}>Time is up. Generating your report...</span> : (
+                  <div>
+                    <div style={{ fontWeight: 700, marginBottom: 10 }}>Time is up. No answers given.</div>
+                    <button onClick={onRestart} className="iq-ghostbtn">Try Again</button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* ── LEARNER STRIP ── Real mic input drives the waveform; orange appears
+              here and nowhere else. Typed fallback is always one tap away. */}
+          <div className="iq-strip">
+            {typedInVoice ? (
+              <div style={{ width: "100%", maxWidth: 700, display: "flex", gap: 10, alignItems: "flex-end" }}>
+                <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value.slice(0, 4000))}
+                  onKeyDown={handleKey} rows={1} maxLength={4000} disabled={inputDisabled} className="vi"
+                  placeholder={awaitingRating ? "Rate your confidence to continue" : reverseMode ? "Ask your question…" : "Type your answer…"}
+                  style={{ flex: 1, resize: "none", minHeight: 44, maxHeight: 120, borderRadius: 10 }} />
+                <button onClick={() => send()} disabled={inputDisabled || !input.trim()} className="mba-btn-primary"
+                  style={{ padding: "10px 20px", fontSize: 14, opacity: inputDisabled || !input.trim() ? 0.5 : 1 }}>Send</button>
+                <button className="iq-ghostbtn" onClick={() => setTypedInVoice(false)} aria-label="Back to voice answering">
+                  <IconMic size={15} /> Voice
+                </button>
+              </div>
+            ) : recording ? (
+              <>
+                <LiveWave levels={levels} />
+                <button className="iq-micpill iq-micpill-live" onClick={stopRecording} aria-label="Stop recording">
+                  <IconStop size={16} /> Stop
+                  <span style={{ fontFamily: IQ.mono, fontVariantNumeric: "tabular-nums" }}>{mmss(recSeconds)}</span>
+                </button>
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,.45)" }}>
+                  {autoListen ? "Tap stop, or just pause — I'll pick it up." : "Tap stop when you're done."}
+                </div>
+              </>
+            ) : (
+              <>
+                <button className="iq-micpill" onClick={onMicClick}
+                  disabled={(!canAnswer || transcribing || loading || !!review) && graceMs <= 0}
+                  aria-label={graceMs > 0 ? "Cancel auto-listen" : "Record your answer"}>
+                  <IconMic size={16} />
+                  {graceMs > 0 ? `Listening in ${(graceMs / 1000).toFixed(1)}s — tap to cancel`
+                    : transcribing ? "Transcribing…"
+                    : review ? "Review your answer above"
+                    : awaitingRating ? "Rate your confidence to continue"
+                    : canAnswer ? "Tap to speak" : "Waiting…"}
+                </button>
+                {graceMs > 0 && (
+                  <div style={{ width: 150, height: 3, borderRadius: 2, background: "rgba(255,255,255,.15)", overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: ((graceMs / AUTO_LISTEN_GRACE_MS) * 100) + "%", background: IQ.teal }} />
+                  </div>
+                )}
+                {canAnswer && !review && !transcribing && (
+                  <button className="iq-ghostbtn" onClick={() => setTypedInVoice(true)} aria-label="Type your answer instead">
+                    <IconKeyboard size={15} /> Type instead
+                  </button>
+                )}
+              </>
+            )}
+            {sttToast && <div style={{ fontSize: 12, color: IQ.orange, fontWeight: 700 }}>{sttToast}</div>}
+          </div>
+        </>
+      ) : (
+        <>
       <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "20px 28px", background: T.bg }}>
         <div style={{ maxWidth: 700, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
           {messages.map((m, i) => { const isV = m.role === "assistant"; const speaking = isV && i === lastAssistantIdx && audioPlaying; return (
@@ -1085,7 +1715,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
               {recording ? <IconStop /> : <IconMic />}
             </button>
           )}
-          <button onClick={send} disabled={inputDisabled || !input.trim()} className="mba-btn-primary" style={{ padding: "10px 22px", fontSize: 14, opacity: inputDisabled || !input.trim() ? 0.5 : 1 }}>Send</button>
+          <button onClick={() => send()} disabled={inputDisabled || !input.trim()} className="mba-btn-primary" style={{ padding: "10px 22px", fontSize: 14, opacity: inputDisabled || !input.trim() ? 0.5 : 1 }}>Send</button>
         </div>
         {/* Voice Phase 2: live recording timer (DM Mono) / transcribing shimmer / fallback toast. */}
         {(recording || transcribing || sttToast) ? (
@@ -1104,6 +1734,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
           <div style={{ fontSize: 11, color: T.subtle, marginTop: 6, maxWidth: 700, margin: "6px auto 0" }}>{awaitingRating ? "Tap 1–5 or press a number key to rate your confidence." : sttAvailable && canAnswer ? "Type your answer, or tap the mic to speak it." : "Enter to send — Shift+Enter for new line"}</div>
         )}
       </div>
+        </>
+      )}
+
+      {/* The full conversation always remains one tap away, in either mode. */}
+      <TranscriptDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}
+        messages={messages} name={config.name} />
 
       {showVoiceConsent && <VoiceConsentModal onAccept={acceptVoiceConsent} onDecline={declineVoiceConsent} busy={consentBusy} />}
     </div>

@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from fastapi import FastAPI, Depends, HTTPException, Query, Header, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -97,6 +97,32 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
+# Strict CSP for the whole app. The frontend and the /dev/login page both load only
+# same-origin scripts (script-src 'self'), so this is never weakened for them.
+_STRICT_CSP = (
+    "default-src 'self'; img-src 'self' data:; "
+    "font-src 'self' data: https://fonts.gstatic.com; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "script-src 'self'; connect-src 'self'; "
+    "frame-ancestors 'none'; base-uri 'self'"
+)
+# Swagger UI (/docs) and ReDoc (/redoc) load their bundle + stylesheet (and, for
+# ReDoc, a web worker) from the jsDelivr CDN — with the strict CSP those pages render
+# blank. Relax ONLY these two paths to allow that one CDN's scripts/styles (plus the
+# ReDoc worker + doc favicons). Applied in dev AND prod because API docs are meant to
+# load them. Every other route keeps _STRICT_CSP.
+_DOCS_PATHS = frozenset({"/docs", "/redoc"})
+_DOCS_CSP = (
+    "default-src 'self'; "
+    "img-src 'self' data: https://cdn.jsdelivr.net https://fastapi.tiangolo.com; "
+    "font-src 'self' data: https://fonts.gstatic.com; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
+    "script-src 'self' https://cdn.jsdelivr.net; connect-src 'self'; "
+    "worker-src 'self' blob:; "
+    "frame-ancestors 'none'; base-uri 'self'"
+)
+
+
 @app.middleware("http")
 async def security_headers(request, call_next):
     response = await call_next(request)
@@ -104,14 +130,11 @@ async def security_headers(request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-    response.headers.setdefault(
-        "Content-Security-Policy",
-        "default-src 'self'; img-src 'self' data:; "
-        "font-src 'self' data: https://fonts.gstatic.com; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "script-src 'self'; connect-src 'self'; "
-        "frame-ancestors 'none'; base-uri 'self'",
-    )
+    if request.url.path in _DOCS_PATHS:
+        # Force (not setdefault) the docs CSP so the API-docs pages can load jsDelivr.
+        response.headers["Content-Security-Policy"] = _DOCS_CSP
+    else:
+        response.headers.setdefault("Content-Security-Policy", _STRICT_CSP)
     return response
 
 
@@ -137,12 +160,19 @@ def register_dev_login(app_) -> bool:
 
     @app_.get("/dev/login")
     def dev_login():
+        # Mint a fresh 30-day token and hand it to the FRONTEND origin via a URL
+        # fragment (localStorage is per-origin — writing it here on the backend origin
+        # would be invisible to the frontend). The frontend's dev receiver stores it.
         redirect = settings.ALLOWED_ORIGINS[0] if settings.ALLOWED_ORIGINS else "http://localhost:5173"
         token, _ = dev_auth.build_dev_token(
             settings.JWT_SECRET, days=30,
             audience=settings.JWT_AUDIENCE, issuer=settings.JWT_ISSUER,
         )
-        return HTMLResponse(dev_auth.dev_login_html(token, redirect))
+        # no-store so a browser never serves a cached redirect carrying a stale token.
+        return RedirectResponse(
+            dev_auth.dev_login_redirect_url(redirect, token),
+            status_code=302, headers={"Cache-Control": "no-store"},
+        )
 
     return True
 
