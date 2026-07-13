@@ -23,11 +23,13 @@ from . import tts
 from . import stt
 from . import delivery
 from . import dev_auth
+from . import presence
 from .schemas import (
     StartSessionRequest, StartSessionResponse,
     TurnRequest, TurnResponse, STTResponse,
     ReaskRequest, ReaskResponse,
     EditLastAnswerRequest, EditLastAnswerResponse,
+    FocusEventRequest, FocusEventResponse, WrapRequest, WrapResponse,
     RatingRequest, RatingResponse, SessionState,
     SessionMessagesResponse,
     EndRequest, DebriefResponse,
@@ -375,6 +377,9 @@ def _build_state(row: dict, *, stale: bool = False) -> SessionState:
         # Voice Phase 2: spoken input exists only when both flags are on. The
         # frontend gates the mic further (BEHAVIOURAL stage + consent).
         stt_available=bool(settings.STT_ENABLED and settings.VOICE_ENABLED),
+        # Interview Room: once wrapped early this is set, and next_action is already
+        # "readout" — so a refresh lands on the readout instead of resuming.
+        early_wrap_reason=row.get("early_wrap_reason") or None,
     )
 
 
@@ -573,6 +578,20 @@ async def start_session(
         model=settings.MODEL_INTERVIEW,
         max_tokens=500,
     )
+    # Interview Room: remember whether they JOINED with the camera on. Defensive — a
+    # missing column (migration 006 not applied) must never break starting a session;
+    # the room then simply runs without the camera-based ladder.
+    if body.camera_at_join:
+        try:
+            db.execute(
+                text("UPDATE vyom_sessions SET camera_at_join=1 WHERE id=:id"),
+                {"id": session_id},
+            )
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            log.warning("camera_at_join not stored (apply migration 006?): %s", type(e).__name__)
+
     identity, greeting = parse_kickoff(raw_kickoff)
     if identity:
         # Persist for cross-turn continuity. Defensive: if migration 005 has not been
@@ -686,7 +705,13 @@ async def session_turn(
     alumni_intel = fetch_alumni_intel(db, cfg["company"], cfg["role"])
     system_prompt = build_system_prompt(cfg, alumni_intel)
     messages = _load_messages(db, body.session_id)
-    directive = stage_turn_directive(cfg, st, round_index_after, substantive=substantive)
+    # Interview Room: if attention has drifted (or the camera went off), the interviewer
+    # raises it ONCE on this turn, in their own improvised voice. Tone only — the round
+    # plan, difficulty and rigor are untouched.
+    directive = stage_turn_directive(
+        cfg, st, round_index_after, substantive=substantive,
+        presence_note=_presence_note(db, session_row),
+    )
 
     reply = await call_claude(
         system=system_prompt,
@@ -751,6 +776,127 @@ async def session_turn(
     })
     return TurnResponse(reply=reply, answer_id=answer_id, state=state, audio_url=audio_url,
                         rating_prompt=rating_prompt, rating_audio_url=rating_audio_url)
+
+
+def _focus_counts(db: Session, session_id: str) -> dict:
+    """{event_type: count} for this session. Counts only — never media."""
+    rows = db.execute(
+        text("SELECT event_type, COUNT(*) AS n FROM vyom_focus_events "
+             "WHERE session_id=:s GROUP BY event_type"),
+        {"s": session_id},
+    ).mappings().all()
+    return {r["event_type"]: int(r["n"]) for r in rows}
+
+
+def _presence_note(db: Session, session_row: dict) -> str:
+    """The attention/camera line the interviewer should raise on the NEXT turn, in
+    persona. Returns "" when there is nothing to say — silence is the default."""
+    try:
+        counts = _focus_counts(db, session_row["id"])
+    except Exception as e:
+        # Migration 006 not applied yet -> the room simply has no ladder. Never break a turn.
+        log.warning("focus counts unavailable (apply migration 006?): %s", type(e).__name__)
+        return ""
+    camera_at_join = bool(session_row.get("camera_at_join"))
+
+    # Camera policy first — it is the more consequential ladder.
+    cam_action = presence.camera_ladder_action(counts.get("camera_off", 0), camera_at_join)
+    cam_note = presence.camera_directive(cam_action)
+    if cam_note:
+        return cam_note
+
+    attention_total = sum(
+        n for t, n in counts.items() if t in presence.ATTENTION_SIGNALS
+        and (camera_at_join or t not in presence.CAMERA_SIGNALS)
+    )
+    return presence.escalation_directive(presence.escalation_level(attention_total))
+
+
+@app.post("/session/focus-event", response_model=FocusEventResponse)
+def session_focus_event(
+    body: FocusEventRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(current_user),
+):
+    """Interview Room (Phase C/E): record ONE on-device attention/device signal.
+
+    PRIVACY: this endpoint accepts a string and nothing else. No frame, no image, no
+    landmark can reach it — the camera never leaves the browser. The schema is the
+    enforcement point, not a comment.
+
+    The server is the authority on the ladder: it re-applies the debounce (a buggy or
+    hostile client cannot spam it) and ignores camera signals entirely when the learner
+    joined camera-off.
+    """
+    session_row = _load_session(db, body.session_id, user_id)
+    camera_at_join = bool(session_row.get("camera_at_join"))
+
+    if not presence.accepts_event(body.type, camera_at_join):
+        # Unknown signal, or a camera signal from a camera-off join -> silently ignored.
+        return FocusEventResponse(recorded=False)
+
+    # Server-side debounce: one event per signal per DEBOUNCE_SECONDS.
+    last = db.execute(
+        text("SELECT TIMESTAMPDIFF(SECOND, MAX(created_at), NOW()) AS since "
+             "FROM vyom_focus_events WHERE session_id=:s AND event_type=:t"),
+        {"s": body.session_id, "t": body.type},
+    ).mappings().first()
+    if last and presence.within_debounce(last["since"]):
+        counts = _focus_counts(db, body.session_id)
+        attention = sum(n for t, n in counts.items() if t in presence.ATTENTION_SIGNALS)
+        return FocusEventResponse(
+            recorded=False,
+            attention_events=attention,
+            escalation_level=presence.escalation_level(attention),
+            device_action=presence.camera_ladder_action(counts.get("camera_off", 0), camera_at_join),
+        )
+
+    db.execute(
+        text("INSERT INTO vyom_focus_events (session_id, event_type) VALUES (:s, :t)"),
+        {"s": body.session_id, "t": body.type},
+    )
+    db.commit()
+
+    counts = _focus_counts(db, body.session_id)
+    attention = sum(n for t, n in counts.items() if t in presence.ATTENTION_SIGNALS)
+    return FocusEventResponse(
+        recorded=True,
+        attention_events=attention,
+        escalation_level=presence.escalation_level(attention),
+        device_action=presence.camera_ladder_action(counts.get("camera_off", 0), camera_at_join),
+    )
+
+
+@app.post("/session/wrap", response_model=WrapResponse)
+def session_wrap(
+    body: WrapRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(current_user),
+):
+    """Interview Room (Phase E): END the interview early, server-side and persisted.
+
+    Refreshing cannot dodge this: the stage is moved to READOUT and the reason stored.
+    Scoring is untouched — the debrief runs over the rounds actually completed. We score
+    what happened and mark what didn't. Nothing is zeroed as a punishment.
+    """
+    session_row = _load_session(db, body.session_id, user_id)
+    if (session_row.get("status") or "") != "active":
+        return WrapResponse(wrapped=False, reason=session_row.get("early_wrap_reason"))
+
+    current_stage = session_row.get("current_stage") or ""
+    new_stage, wrapped_at = stages.early_wrap_transition(current_stage)
+    reason = (body.reason or "")[:40]
+
+    db.execute(
+        text("UPDATE vyom_sessions SET current_stage=:cs, awaiting_rating=0, "
+             "last_answer_id=NULL, early_wrap_reason=:r, early_wrap_stage=:st WHERE id=:id"),
+        {"cs": new_stage, "r": reason, "st": wrapped_at, "id": body.session_id},
+    )
+    db.commit()
+    log.info("session wrapped early: reason=%s at_stage=%s", reason, wrapped_at)
+
+    row = _load_session(db, body.session_id, user_id)
+    return WrapResponse(wrapped=True, reason=reason, state=_build_state(row))
 
 
 @app.post("/session/reask", response_model=ReaskResponse)
@@ -1058,6 +1204,18 @@ async def end_session(
     # metrics on every /session/end (cheap; independent of the billed debrief).
     delivery_profile = _delivery_profile(db, body.session_id)
 
+    # Interview Room: Professional presence — counts + ONE coaching line. Camera-based
+    # lines are omitted entirely for a camera-off join (never measured, never reported,
+    # never scored). Defensive: no migration 006 -> the card is simply absent.
+    try:
+        presence_block = presence.presence_readout(
+            _focus_counts(db, body.session_id), bool(session_row.get("camera_at_join"))
+        )
+    except Exception as e:
+        log.warning("presence readout skipped (apply migration 006?): %s", type(e).__name__)
+        presence_block = {}
+    early_wrap = session_row.get("early_wrap_reason") or None
+
     # Idempotency + cost guard: if a debrief already exists, return it instead of
     # re-running the (billed) Sonnet debrief on every /session/end call.
     existing = db.execute(
@@ -1082,6 +1240,8 @@ async def end_session(
                 next_focus=d.get("nextFocus", ""),
                 calibration=_as_obj(existing.get("calibration"), {}),
                 delivery=delivery_profile,
+                professional_presence=presence_block,
+                early_wrap=early_wrap,
             )
 
     system_prompt = build_system_prompt(cfg, "")
@@ -1192,6 +1352,8 @@ async def end_session(
         next_focus=debrief.get("nextFocus", ""),
         calibration=calibration,
         delivery=delivery_profile,
+        professional_presence=presence_block,
+        early_wrap=early_wrap,
     )
 
 

@@ -27,6 +27,9 @@ class SessionState(BaseModel):
     # AND VOICE_ENABLED). The frontend still shows the mic only in the BEHAVIOURAL
     # round; consent is collected on first mic use. False when either flag is off.
     stt_available: bool = False
+    # Interview Room: set once the session has been wrapped early (server-side and
+    # persisted, so a refresh can't dodge it). The client routes straight to the readout.
+    early_wrap_reason: Optional[str] = None
 
 
 class SessionMessagesResponse(BaseModel):
@@ -50,6 +53,15 @@ class StartSessionRequest(BaseModel):
     intro: str = Field("", max_length=8000)
     # Voice Phase 1: TTS voice preference. "female" (default) | "male".
     voice: Literal["female", "male"] = "female"
+    # Interview Room: the client's roster (pickInterviewer) chose the FACE the student
+    # sees, so it also owns the NAME. The improvised persona adopts it, otherwise the
+    # portrait and the voice would introduce themselves as different people. Optional —
+    # classic mode omits it and the server draws a name as before.
+    interviewer_name: str = Field("", max_length=40)
+    # Interview Room: did they JOIN with the camera on? A camera-off join is an
+    # accessibility path — camera attention signals are disabled for the whole session
+    # and the readout omits camera-based presence lines. Never a penalty.
+    camera_at_join: bool = False
 
 
 class StartSessionResponse(BaseModel):
@@ -107,6 +119,40 @@ class ReaskResponse(BaseModel):
     """
     reply: str
     audio_url: Optional[str] = None
+
+
+class FocusEventRequest(BaseModel):
+    """Interview Room: ONE attention/device signal, derived ON-DEVICE.
+
+    Strings and timestamps only. There is deliberately no field here that could carry
+    an image, a video frame, or a facial landmark — camera frames never leave the
+    browser, and the schema is the enforcement point.
+    """
+    session_id: str = Field(..., max_length=36)
+    # no_face | multiple_faces | looking_away | tab_hidden | window_blur
+    #   | camera_off | mic_off      (validated against app.presence.FOCUS_EVENT_TYPES)
+    type: str = Field(..., max_length=24)
+
+
+class FocusEventResponse(BaseModel):
+    recorded: bool                      # False when debounced or not applicable
+    attention_events: int = 0           # running total for this session
+    escalation_level: int = 0           # 0 none | 1 gentle | 2 firm | 3 noted in feedback
+    device_action: str = "none"         # none | nudge | warn | wrap
+
+
+class WrapRequest(BaseModel):
+    session_id: str = Field(..., max_length=36)
+    # camera_off | no_answer_timeout
+    reason: str = Field(..., max_length=40)
+
+
+class WrapResponse(BaseModel):
+    """The EARLY_WRAP decision is made and persisted SERVER-side, so a refresh cannot
+    dodge it. Scoring is unaffected — the debrief runs over the rounds completed."""
+    wrapped: bool
+    reason: Optional[str] = None
+    state: Optional[SessionState] = None
 
 
 class EditLastAnswerRequest(BaseModel):
@@ -171,6 +217,13 @@ class DebriefResponse(BaseModel):
     # {enough_data: false, message} when < 3 spoken answers. Informational — it does
     # NOT affect overall_band in v1.
     delivery: dict = {}
+    # Interview Room: Professional presence — COUNTS of attention events + one coaching
+    # line. Camera-based lines are omitted entirely for a camera-off join. Informational;
+    # it does not move the readiness band.
+    professional_presence: dict = {}
+    # Set when the interview ended early (e.g. the camera stayed off). Neutral language;
+    # the rounds that were completed are still scored normally — nothing is zeroed.
+    early_wrap: Optional[str] = None
 
 
 class AlumniQuestionSubmit(BaseModel):

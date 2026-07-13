@@ -324,10 +324,16 @@ def build_kickoff(cfg: dict, seed=None) -> str:
     variation dials is drawn per session to stop the model collapsing onto one persona.
     """
     rng = random.Random(seed)
-    # Gender-match the interviewer's name to the TTS voice so name + voice + on-screen
-    # character are one coherent person.
-    pool = _NAMES_M if (cfg.get("voice") or "female") == "male" else _NAMES_F
-    interviewer_name = rng.choice(pool)
+    # Interview Room: the CLIENT's roster (pickInterviewer) is the source of truth for
+    # the face the student sees, so the persona must ADOPT that name — otherwise the
+    # portrait says "Priya" and the voice introduces itself as someone else. If no name
+    # is supplied (classic mode), fall back to drawing one, gender-matched to the voice.
+    supplied = sanitize_untrusted(cfg.get("interviewer_name") or "", 40).strip()
+    if supplied:
+        interviewer_name = supplied
+    else:
+        pool = _NAMES_M if (cfg.get("voice") or "female") == "male" else _NAMES_F
+        interviewer_name = rng.choice(pool)
     name = sanitize_untrusted(cfg.get("name") or "", 120) or "the candidate"
     role = sanitize_untrusted(cfg.get("role") or "", 120) or "the target role"
     company = sanitize_untrusted(cfg.get("company") or "", 120) or "a general mid-tier product company"
@@ -475,8 +481,13 @@ def _ask_line(stage: str, plan: dict, role: str) -> str:
 
 
 def stage_turn_directive(
-    cfg: dict, current_stage: str, round_index_after: int, substantive: bool = True
+    cfg: dict, current_stage: str, round_index_after: int, substantive: bool = True,
+    presence_note: str = "",
 ) -> str:
+    """`presence_note` (Interview Room) is an attention/camera directive from
+    app.presence. It is PREPENDED so the interviewer raises it ONCE, in their own
+    improvised voice, and then continues the planned round untouched — the ladder
+    changes tone, never difficulty or structure."""
     """Per-turn instruction (a small, un-cached system block) that keeps the
     interviewer aligned with the server-authoritative stage machine (INT-04).
 
@@ -485,6 +496,14 @@ def stage_turn_directive(
     steps difficulty DOWN on the SAME topic (one clarifier only), never pivoting to
     biography or small-talk. The stage machine has held round_index, so this turn does
     not consume a planned question slot."""
+    base = _stage_directive_base(cfg, current_stage, round_index_after, substantive)
+    note = (presence_note or "").strip()
+    return (note + "\n\n" + base) if note else base
+
+
+def _stage_directive_base(
+    cfg: dict, current_stage: str, round_index_after: int, substantive: bool = True
+) -> str:
     level = cfg.get("level", "")
     plan = stages.stage_plan(level)
     totals = plan["totals"]

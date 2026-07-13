@@ -208,6 +208,17 @@ def advance_after_rating(current_stage: str, round_index: int, level: str) -> tu
     return current_stage, round_index
 
 
+def early_wrap_transition(current_stage: str) -> tuple[str, str]:
+    """Interview Room (Phase E): end the interview early and go straight to the readout.
+
+    Returns (new_stage, stage_it_was_wrapped_at). The decision is made and PERSISTED
+    server-side, so refreshing cannot dodge it. Scoring is unaffected: the debrief runs
+    over the rounds actually completed — we score what happened and mark what didn't.
+    Nothing is zeroed as a punishment.
+    """
+    return "READOUT", (current_stage or "")
+
+
 def advance_after_reverse(round_index: int, level: str) -> tuple[str, int]:
     """REVERSE is not rating-gated; advance straight to READOUT when complete."""
     if round_index >= stage_total(level, "REVERSE"):

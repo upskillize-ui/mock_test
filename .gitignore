@@ -6,6 +6,6 @@ package-lock.json
 tts_cache/
 scripts/_tts_probe_out.mp3
 
-# Interviewer avatar art — kept out of git (HF rejects raw binaries;
-# re-add via Git LFS/Xet when these are actually wired up).
-frontend/src/interviewers/*.png
+# Interviewer avatar art is now BUILD-CRITICAL (InterviewerCharacter.jsx imports it),
+# so it must be in git. HF rejects raw binaries, so it is tracked via Git LFS —
+# see .gitattributes. Do NOT re-ignore these.
