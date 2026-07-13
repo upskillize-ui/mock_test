@@ -951,11 +951,12 @@ const STATE_LABEL = { speaking: "Speaking", thinking: "Thinking", listening: "Li
 // name, picked by voice/difficulty and seeded on the session id) and the TTS analyser
 // that drives its speaking waveform — there must be exactly one analyser in the app,
 // because createMediaElementSource() may be called only once per audio element.
-function InterviewerPresence({ state, voice, difficulty, seed }) {
+function InterviewerPresence({ state, voice, difficulty, seed, tone, escalationLevel, stage, group }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
       <InterviewerCharacter state={state} voice={voice} size={220}
-        difficulty={difficulty} seed={seed} />
+        difficulty={difficulty} seed={seed}
+        tone={tone} escalationLevel={escalationLevel} stage={stage} group={group} />
       <div className="iq-stage-label" role="status" aria-live="polite">{STATE_LABEL[state]}</div>
     </div>
   );
@@ -1146,16 +1147,24 @@ function StageSettingsMenu({ onClose, voiceStage, setVoiceStage, autoListen, set
   );
 }
 
-function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initialState, initialMessages, startedAt, onEnd, onRestart }) {
+function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greetingSegments, initialState, initialMessages, startedAt, onEnd, onRestart }) {
   // INT-06: on resume we hydrate from server history; on a fresh start we seed with the greeting.
   const [messages, setMessages] = useState(
-    initialMessages && initialMessages.length ? initialMessages : [{ role: "assistant", content: greeting, audio_url: greetingAudioUrl }]
+    initialMessages && initialMessages.length ? initialMessages : [{ role: "assistant", content: greeting, audio_url: greetingAudioUrl, audio_segments: greetingSegments || [] }]
   );
   // Voice Phase 1: playback state.
-  const [muted, setMuted] = useState(getMutePref);
+  // E2: the interviewer is ALWAYS audible — there is no mute control. Accessibility
+  // is served by the CC captions toggle, not by silencing the panel.
+  const [muted] = useState(false);
   const [audioPlaying, setAudioPlaying] = useState(false);
   const [needsTap, setNeedsTap] = useState(false);   // autoplay blocked (iOS) → tap-to-play
   const playedIdxRef = useRef(-1);                    // last message index auto-played
+  const speakTokenRef = useRef(null);                 // E2: cancels a superseded sentence run
+  const [spokenLine, setSpokenLine] = useState("");   // E2: the sentence being spoken RIGHT NOW
+  // POSES: the register the server says this turn carries, and the focus-ladder level.
+  // The face follows the words — warm -> smile, probing -> intense, neutral -> alternate.
+  const [tone, setTone] = useState("warm");           // the greeting is warm
+  const [escalationLevel, setEscalationLevel] = useState(0);
   const audioBlobCache = useRef(new Map());           // audio_url -> object URL (so Replay reuses, no re-fetch)
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1208,6 +1217,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   const ratingListeningRef = useRef(false);  // the open mic is capturing a SPOKEN RATING
   const ratingAskedRef = useRef(false);      // the "how confident?" line has been spoken
   const ratingAudioRef = useRef(null);       // audio for that line, from the turn response
+  const ratingPromptRef = useRef("");        // its text, for the caption
   const ratingSilenceRef = useRef(null);     // 8s no-speech timer -> show the pills
   const busyRef = useRef(false);             // a submit/re-ask is in flight
   // Refs mirror state for the <audio> 'ended' handler and the rAF loop, which would
@@ -1255,7 +1265,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
     const onPlay = () => { setAudioPlaying(true); setNeedsTap(false); };
     const onStop = () => setAudioPlaying(false);
     // Two-way flow: when IQ finishes speaking, hand the floor to the learner.
-    const onEnded = () => { setAudioPlaying(false); audioEndedRef.current?.(); };
+    // E2: playback is now SEQUENCED explicitly (playSegments), because a per-sentence
+    // 'ended' would otherwise fire mid-reply and open the mic before the question was
+    // even asked. This listener only tracks the flag; the hand-off is done by the
+    // sequencer when the WHOLE reply has finished.
+    const onEnded = () => { /* sequencer owns the hand-off */ };
     p.addEventListener("play", onPlay);
     p.addEventListener("playing", onPlay);
     p.addEventListener("ended", onEnded);
@@ -1294,14 +1308,76 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
     } catch { setNeedsTap(true); }
   };
 
-  // Autoplay the newest interviewer message when its audio arrives (once per message).
+  // ── E2: pacing ──
+  // Play ONE clip and resolve when it actually finishes. This replaces the old
+  // event-driven flow: with per-sentence clips we must sequence explicitly, or the
+  // shared 'ended' listener would fire once per sentence and trip auto-listen early.
+  const playOne = (url) => new Promise((resolve) => {
+    const p = player();
+    if (!p || !url) { resolve(); return; }
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      p.removeEventListener("ended", done);
+      p.removeEventListener("error", done);
+      resolve();
+    };
+    (async () => {
+      try {
+        let objUrl = audioBlobCache.current.get(url);
+        if (!objUrl) {
+          objUrl = await fetchAudioObjectUrl(url);
+          audioBlobCache.current.set(url, objUrl);
+        }
+        p.addEventListener("ended", done);
+        p.addEventListener("error", done);
+        p.src = objUrl;
+        resumeTtsAnalyser();
+        const pr = p.play();
+        if (pr && pr.catch) pr.catch(() => { setNeedsTap(true); done(); });
+        else setNeedsTap(false);
+      } catch { done(); }
+    })();
+  });
+
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  /**
+   * E2: speak a reply SENTENCE BY SENTENCE, holding a human beat between them
+   * (300-450ms) and letting the question land (~700ms). The caption advances in exact
+   * lockstep with the audio — no progress-bar interpolation. A sentence whose synth
+   * failed simply shows its caption for a beat and moves on; the interview never stalls.
+   */
+  const playSegments = async (segments) => {
+    if (!segments?.length) return;
+    const token = {};
+    speakTokenRef.current = token;
+    setAudioPlaying(true);
+    for (const seg of segments) {
+      if (speakTokenRef.current !== token) return;        // superseded -> abandon quietly
+      if (seg.pause_before_ms) await sleep(seg.pause_before_ms);
+      if (speakTokenRef.current !== token) return;
+      setSpokenLine(seg.text || "");
+      if (seg.audio_url) await playOne(seg.audio_url);
+      else await sleep(650);                              // TTS failed for this line
+    }
+    if (speakTokenRef.current !== token) return;
+    setAudioPlaying(false);
+    setSpokenLine("");
+    audioEndedRef.current?.();                            // hand the floor to the learner
+  };
+
+  // Autoplay the newest interviewer message when it arrives (once per message).
   useEffect(() => {
     const idx = messages.length - 1;
     const last = messages[idx];
-    if (!last || last.role !== "assistant" || !last.audio_url) return;
+    if (!last || last.role !== "assistant") return;
     if (idx === playedIdxRef.current) return;
+    if (!last.audio_segments?.length && !last.audio_url) return;
     playedIdxRef.current = idx;
-    if (!muted) playAudio(last.audio_url);
+    if (last.audio_segments?.length) playSegments(last.audio_segments);
+    else (async () => { setAudioPlaying(true); await playOne(last.audio_url); setAudioPlaying(false); audioEndedRef.current?.(); })();
   }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const latestAudioUrl = (() => {
@@ -1313,15 +1389,13 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
     return -1;
   })();
 
-  const toggleMute = () => {
-    setMuted(m => {
-      const next = !m;
-      try { localStorage.setItem(MUTE_KEY, next ? "1" : "0"); } catch { /* noop */ }
-      if (next) { try { player()?.pause(); } catch { /* noop */ } }
-      return next;
-    });
+  // E2: no toggleMute — the interviewer is always audible. Replay stays (re-hear a
+  // question), and CC captions carry accessibility.
+  const replay = () => {
+    const last = messages[lastAssistantIdx];
+    if (last?.audio_segments?.length) playSegments(last.audio_segments);
+    else if (latestAudioUrl) playAudio(latestAudioUrl, true);
   };
-  const replay = () => { if (latestAudioUrl) playAudio(latestAudioUrl, true); };
 
   // ── Voice Phase 2/3: record → transcribe → drop editable text into the input ──
   const sttAvailable = !!sstate?.stt_available;
@@ -1346,28 +1420,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   const [camOn, setCamOn] = useState(() => !!config.camera);
   const [typeOpen, setTypeOpen] = useState(false);   // the typing drawer
 
-  // CC: split the interviewer's line into sentences and advance them with the audio's
-  // own progress. Exact word timing isn't needed — sentence-level tracking reads right
-  // and costs nothing (no extra vendor call, no timestamps).
-  const [ccIdx, setCcIdx] = useState(0);
-  const ccSentences = ((lastAssistantText || "").replace(/\s+/g, " ").match(/[^.!?]+[.!?]*/g) || [])
-    .map(s => s.trim()).filter(Boolean);
-  useEffect(() => { setCcIdx(0); }, [lastAssistantText]);
-  useEffect(() => {
-    const p = player();
-    if (!p || !captions || !audioPlaying || ccSentences.length === 0) return;
-    const onTime = () => {
-      const d = p.duration;
-      if (!d || !isFinite(d) || d <= 0) return;
-      const frac = Math.min(0.999, Math.max(0, p.currentTime / d));
-      setCcIdx(Math.min(ccSentences.length - 1, Math.floor(frac * ccSentences.length)));
-    };
-    p.addEventListener("timeupdate", onTime);
-    return () => p.removeEventListener("timeupdate", onTime);
-  }, [captions, audioPlaying, ccSentences.length]);
-  // While speaking: the current sentence. Otherwise: the whole question, so a muted or
-  // deaf learner can always read what was asked.
-  const ccLine = audioPlaying ? (ccSentences[ccIdx] || "") : (lastAssistantText || "");
+  // E2 CC: the caption is the sentence ACTUALLY being spoken. Because the reply is
+  // synthesised one clip per sentence, the sequencer knows exactly which line is in the
+  // air — so captions land in true lockstep instead of being interpolated off a
+  // progress bar. When nothing is playing, show the whole question so it can be read.
+  const ccLine = spokenLine || (audioPlaying ? "" : (lastAssistantText || ""));
 
   // Mirror state into refs — the <audio> 'ended' handler and the rAF meter loop are
   // registered once and would otherwise close over stale values.
@@ -1542,13 +1599,18 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   //   1. a rating is due and IQ hasn't asked for it yet -> play the spoken rating ask;
   //   2. the rating ask has been spoken -> open the mic to capture the spoken rating;
   //   3. otherwise -> hand the floor back for the next answer (auto-listen).
-  const onAudioEnded = () => {
+  const onAudioEnded = async () => {
     if (!voiceModeRef.current) return;
     if (awaitingRatingRef.current) {
       if (!ratingAskedRef.current && ratingAudioRef.current) {
+        // Speak the rating ask, then open the mic for it. Sequenced explicitly (E2) —
+        // we no longer bounce off the audio element's 'ended' event.
         ratingAskedRef.current = true;
-        playAudio(ratingAudioRef.current, true);   // force: the rating ask must be heard
-        return;                                     // its own 'ended' brings us back here
+        setAudioPlaying(true);
+        setSpokenLine(ratingPromptRef.current || "");
+        await playOne(ratingAudioRef.current);
+        setAudioPlaying(false);
+        setSpokenLine("");
       }
       if (autoListenRef.current && consentRef.current && !ratingPillsRef.current) startRatingCapture();
       return;
@@ -1684,6 +1746,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
         try {
           const r = await postFocusEvent(sessionId, type);
           // The SERVER owns the ladder; we just obey its verdict.
+          if (typeof r?.escalation_level === "number") setEscalationLevel(r.escalation_level);
           if (r?.device_action === "wrap") await doEarlyWrap("camera_off");
         } catch { /* a dropped signal must never break the interview */ }
       },
@@ -1762,11 +1825,14 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
     setMessages(m => [...m, { role: "user", content: textVal, meta: spoken ? "SPOKEN" : "TYPED" }]); setInput(""); setLoading(true); setError(null);
     try {
       const res = await sendTurn(sessionId, textVal, sstate?.current_stage, voicePref || "female", spoken ? metrics : null);
-      setMessages(m => [...m, { role: "assistant", content: res.reply, audio_url: res.audio_url }]);
+      setMessages(m => [...m, { role: "assistant", content: res.reply, audio_url: res.audio_url, audio_segments: res.audio_segments || [] }]);
       setSstate(res.state);
       // Realism v2: if this answer is rating-gated, IQ asks for the rating ALOUD once
       // the reply finishes playing (see onAudioEnded).
+      if (res.tone) setTone(res.tone);
+      if (typeof res.escalation_level === "number") setEscalationLevel(res.escalation_level);
       ratingAudioRef.current = res.rating_audio_url || null;
+      ratingPromptRef.current = res.rating_prompt || "";
       ratingAskedRef.current = false;
       setRatingPills(false);
       // With TTS off there is no 'ended' event to drive the flow — nudge it manually
@@ -1860,11 +1926,10 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
             <div className="iq-hud-sub">{config.role}{config.company ? ` — ${config.company}` : " — General"}</div>
           </div>
           <div className="iq-hud-right" style={{ position: "relative" }}>
+            {/* E2: NO interviewer-mute control — the panel is always audible. Replay
+                stays (re-hear a question); accessibility is carried by CC captions. */}
             {latestAudioUrl && (
               <div className="iq-hud-audio">
-                <button className="iq-audio-btn" onClick={toggleMute} title={muted ? "Unmute interviewer voice" : "Mute interviewer voice"} aria-label={muted ? "Unmute interviewer voice" : "Mute interviewer voice"} style={muted ? {} : { color: IQ.teal }}>
-                  {muted ? <IconSpeakerOff /> : <IconSpeaker />}
-                </button>
                 <button className="iq-audio-btn" onClick={replay} disabled={!latestAudioUrl} title="Replay question" aria-label="Replay question">
                   <IconReplay />
                 </button>
@@ -1917,7 +1982,9 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
           <div className="iq-room">
             <div className="iq-room-main">
               <InterviewerPresence state={orbState} voice={voicePref}
-                difficulty={config.difficulty} seed={config.roomSeed || sessionId} />
+                difficulty={config.difficulty} seed={config.roomSeed || sessionId}
+                tone={tone} escalationLevel={escalationLevel}
+                stage={sstate?.current_stage || ""} group={messages.length} />
               <div className="iq-name-chip">
                 {(config.interviewerName || "Interviewer")} · InterviewIQ
               </div>
@@ -2564,6 +2631,7 @@ export default function App() {
   const [sessionId, setSessionId] = useState(null);
   const [greeting, setGreeting] = useState("");
   const [greetingAudioUrl, setGreetingAudioUrl] = useState(null);
+  const [greetingSegments, setGreetingSegments] = useState([]);   // E2: per-sentence greeting
   const [initialState, setInitialState] = useState(null);
   const [initialMessages, setInitialMessages] = useState(null);
   const [startedAt, setStartedAt] = useState(null);
@@ -2624,9 +2692,10 @@ export default function App() {
     setScreen("setup");
   };
 
-  const handleStart = (cfg, id, gr, st, audioUrl) => {
+  const handleStart = (cfg, id, gr, st, audioUrl, segments) => {
     const now = Date.now();
-    setConfig(cfg); setSessionId(id); setGreeting(gr); setGreetingAudioUrl(audioUrl || null); setInitialState(st);
+    setConfig(cfg); setSessionId(id); setGreeting(gr); setGreetingAudioUrl(audioUrl || null);
+    setGreetingSegments(segments || []); setInitialState(st);
     setInitialMessages(null); setStartedAt(now);
     saveActiveSession(id, cfg, now);   // INT-06: persist the instant the session starts
     setScreen("interview");
@@ -2666,7 +2735,7 @@ export default function App() {
 
       handleStart(
         { ...payload, roomSeed, mic: !!mic, camera: !!camera, interviewerName: iv.name },
-        r.session_id, r.greeting, r.state, r.audio_url,
+        r.session_id, r.greeting, r.state, r.audio_url, r.audio_segments || [],
       );
     } catch (e) {
       setJoinError(e.message);
@@ -2718,7 +2787,7 @@ export default function App() {
         </>
       )}
       {screen === "resume" && <ResumePrompt config={resumeCfg} onResume={doResume} onDiscard={restart} />}
-      {screen === "interview" && <InterviewScreen config={config} sessionId={sessionId} greeting={greeting} greetingAudioUrl={greetingAudioUrl} initialState={initialState} initialMessages={initialMessages} startedAt={startedAt} onEnd={() => setScreen("debrief")} onRestart={restart} />}
+      {screen === "interview" && <InterviewScreen config={config} sessionId={sessionId} greeting={greeting} greetingAudioUrl={greetingAudioUrl} greetingSegments={greetingSegments} initialState={initialState} initialMessages={initialMessages} startedAt={startedAt} onEnd={() => setScreen("debrief")} onRestart={restart} />}
       {screen === "debrief" && <DebriefScreen config={config} sessionId={sessionId} onRestart={restart} onViewHistory={() => { setHistoryDetailId(null); setScreen("history"); }} />}
       {screen === "history" && !historyDetailId && <HistoryScreen onPickSession={(sid) => { setHistoryDetailId(sid); }} onStartNew={restart} />}
       {screen === "history" && historyDetailId && <HistoryDetail sessionId={historyDetailId} onBack={() => setHistoryDetailId(null)} />}

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -41,7 +42,7 @@ from .schemas import (
 )
 from .prompts import (
     build_system_prompt, DEBRIEF_INSTRUCTION, stage_turn_directive,
-    build_kickoff, parse_kickoff, rating_ask, reask_line, REASK_DIRECTIVE,
+    build_kickoff, parse_kickoff, rating_ask, reask_line, REASK_DIRECTIVE, turn_tone,
 )
 from .claude_client import call_claude, extract_resume_text
 
@@ -332,6 +333,45 @@ async def _try_tts(session_id: str, text_out: str, voice: str | None) -> str | N
         return None
 
 
+# E2 pacing. A real interviewer breathes between sentences and lets the question land.
+INTER_SENTENCE_PAUSE_MS = 380     # spec: 300-450ms between sentences
+PRE_QUESTION_PAUSE_MS = 700       # spec: ~700ms before the actual question
+
+
+async def _try_tts_segments(session_id: str, text_out: str, voice: str | None) -> list[dict]:
+    """E2: synthesize ONE CLIP PER SENTENCE.
+
+    Returns [{text, audio_url, pause_before_ms}] so the client can play them in order,
+    hold a human beat between them, and advance the caption in exact lockstep with the
+    audio (no progress-bar interpolation).
+
+    COST: this is N vendor calls per turn instead of 1 (a 3-sentence turn = 3 calls).
+    The content-addressed cache absorbs repeats, but questions are mostly unique, so
+    budget roughly 2-3x the previous TTS spend. Flagged in the report.
+
+    Never blocks the interview: a sentence whose synth fails simply carries a null
+    audio_url and the client shows its caption for a beat and moves on.
+    """
+    if not settings.TTS_ENABLED:
+        return []
+    sentences = tts.split_sentences(text_out)
+    if not sentences:
+        return []
+    urls = await asyncio.gather(*[_try_tts(session_id, s, voice) for s in sentences])
+
+    segments = []
+    last = len(sentences) - 1
+    for i, (sentence, url) in enumerate(zip(sentences, urls)):
+        if i == 0:
+            pause = 0
+        elif i == last and last > 0:
+            pause = PRE_QUESTION_PAUSE_MS   # let the question land
+        else:
+            pause = INTER_SENTENCE_PAUSE_MS
+        segments.append({"text": sentence, "audio_url": url, "pause_before_ms": pause})
+    return segments
+
+
 def _session_to_cfg(row: dict) -> dict:
     return {
         "name": row.get("name") or "",
@@ -348,6 +388,8 @@ def _session_to_cfg(row: dict) -> dict:
         "intro": row.get("intro") or "",
         # Realism v2: the identity improvised at session start, replayed every turn.
         "interviewer_identity": row.get("interviewer_identity") or "",
+        # PART 1: the roster-picked name — the persona IS this person all session.
+        "interviewer_name": row.get("interviewer_name") or "",
     }
 
 
@@ -578,6 +620,19 @@ async def start_session(
         model=settings.MODEL_INTERVIEW,
         max_tokens=500,
     )
+    # PART 1: persist the roster-picked interviewer name so every later turn speaks as
+    # that same person. Defensive — a missing column must never break a session start.
+    if body.interviewer_name:
+        try:
+            db.execute(
+                text("UPDATE vyom_sessions SET interviewer_name=:n WHERE id=:id"),
+                {"n": body.interviewer_name[:40], "id": session_id},
+            )
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            log.warning("interviewer_name not stored (apply migration 006?): %s", type(e).__name__)
+
     # Interview Room: remember whether they JOINED with the camera on. Defensive — a
     # missing column (migration 006 not applied) must never break starting a session;
     # the room then simply runs without the camera-based ladder.
@@ -617,6 +672,7 @@ async def start_session(
     _update_session_counters(db, session_id)
 
     audio_url = await _try_tts(session_id, greeting, body.voice)
+    audio_segments = await _try_tts_segments(session_id, greeting, body.voice)
 
     state = _build_state({
         "level": body.level,
@@ -629,6 +685,7 @@ async def start_session(
     return StartSessionResponse(
         session_id=session_id, greeting=greeting, state=state, audio_url=audio_url,
         stt_available=bool(settings.STT_ENABLED and settings.VOICE_ENABLED),
+        audio_segments=audio_segments,
         # Dev/UAT only — lets the console prove each session invents a new interviewer.
         interviewer_identity=(identity or None) if settings.APP_ENV != "production" else None,
     )
@@ -711,6 +768,9 @@ async def session_turn(
     directive = stage_turn_directive(
         cfg, st, round_index_after, substantive=substantive,
         presence_note=_presence_note(db, session_row),
+        # PART 1: what they ACTUALLY just said. No summarisation call — the raw answer
+        # (clamped) is the cheapest and most faithful thing to react to.
+        prior_answer_summary=body.message.strip()[:600],
     )
 
     reply = await call_claude(
@@ -757,6 +817,7 @@ async def session_turn(
     _update_session_counters(db, body.session_id)
 
     audio_url = await _try_tts(body.session_id, reply, body.voice)
+    audio_segments = await _try_tts_segments(body.session_id, reply, body.voice)
 
     # Realism v2: when this answer is rating-gated, IQ asks for the confidence rating
     # ALOUD, so the voice stage can stay hands-free. Text + audio ride on the turn
@@ -774,7 +835,12 @@ async def session_turn(
         "last_answer_id": new_last,
         "answer_count": answer_count + 1,
     })
+    # POSES: the register for this turn. The face follows the words.
+    esc = _escalation_level(db, session_row)
+    tone = turn_tone(cfg.get("difficulty"), new_stage, esc)
+
     return TurnResponse(reply=reply, answer_id=answer_id, state=state, audio_url=audio_url,
+                        audio_segments=audio_segments, tone=tone, escalation_level=esc,
                         rating_prompt=rating_prompt, rating_audio_url=rating_audio_url)
 
 
@@ -786,6 +852,20 @@ def _focus_counts(db: Session, session_id: str) -> dict:
         {"s": session_id},
     ).mappings().all()
     return {r["event_type"]: int(r["n"]) for r in rows}
+
+
+def _escalation_level(db: Session, session_row: dict) -> int:
+    """Current focus-ladder level. Defensive: no migration 006 -> no ladder -> 0."""
+    try:
+        counts = _focus_counts(db, session_row["id"])
+    except Exception:
+        return 0
+    camera_at_join = bool(session_row.get("camera_at_join"))
+    total = sum(
+        n for t, n in counts.items() if t in presence.ATTENTION_SIGNALS
+        and (camera_at_join or t not in presence.CAMERA_SIGNALS)
+    )
+    return presence.escalation_level(total)
 
 
 def _presence_note(db: Session, session_row: dict) -> str:

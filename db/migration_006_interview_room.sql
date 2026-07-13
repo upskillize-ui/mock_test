@@ -40,6 +40,11 @@ ALTER TABLE vyom_messages
 
 -- ── Device commitment / early wrap (Phase E) ──────────────────────────────
 -- A wrap decision is SERVER-side and persisted, so a refresh cannot dodge it.
+-- The interviewer the CLIENT roster picked (pickInterviewer). The persona adopts this
+-- name, so the face on screen, the TTS voice and the words all belong to one person.
+ALTER TABLE vyom_sessions
+  ADD COLUMN interviewer_name VARCHAR(40) DEFAULT NULL AFTER interviewer_identity;
+
 ALTER TABLE vyom_sessions
   ADD COLUMN early_wrap_reason VARCHAR(40) DEFAULT NULL AFTER completion_type,
   ADD COLUMN early_wrap_stage  VARCHAR(20) DEFAULT NULL AFTER early_wrap_reason,

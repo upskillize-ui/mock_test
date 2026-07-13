@@ -31,6 +31,26 @@ import meeraImg from "./interviewers/meera_confident_human_female.png";
 import arjunImg from "./interviewers/arjun_warm_human_male.png";
 import vikramImg from "./interviewers/vikram_formal_human_male.png";
 
+import { choosePose, hasPoseSet, resolvePose, POSES } from "./posePolicy.js";
+
+// ── Pose set (four stills of the same person: listening / smile / intense / thinking).
+// FEATURE-DETECTED, never hard-imported: a missing file must not break the build, and a
+// character with no poses (robots, art not yet generated) simply keeps its single
+// portrait. import.meta.glob resolves whatever is actually on disk at build time — so
+// this ships DORMANT today and lights up the moment the PNGs land in poses/.
+//
+// Naming contract: frontend/src/interviewers/poses/{characterId}_{pose}.png
+const _POSE_MODULES = import.meta.glob("./interviewers/poses/*.png", {
+  eager: true,
+  import: "default",
+});
+export const POSE_MAP = Object.fromEntries(
+  Object.entries(_POSE_MODULES).map(([path, url]) => [
+    path.split("/").pop().replace(/\.png$/i, ""),   // "priya_smile"
+    url,
+  ]),
+);
+
 // ── Shared TTS analyser (module-level, one per page) ─────────────────────
 // createMediaElementSource() may be called only ONCE per element, and from then
 // on the element's audio flows ONLY through the graph — hence the _wiredEl guard
@@ -98,6 +118,8 @@ function injectCSS() {
                  box-shadow:0 10px 40px rgba(0,0,0,.45), 0 0 24px rgba(0,196,160,.10);
                  transition:transform .5s ease, box-shadow .5s ease, border-color .4s ease; }
     .iqv4-card img { display:block; width:100%; height:100%; object-fit:cover; }
+    /* Pose layers: stacked, opacity-only crossfade (350-450ms). */
+    .iqv4-pose { position:absolute; inset:0; transition:opacity 400ms ease; will-change:opacity; }
     .iqv4--listening .iqv4-card { transform:scale(1.015);
                  box-shadow:0 10px 40px rgba(0,0,0,.45), 0 0 30px rgba(0,196,160,.22); }
     .iqv4--speaking .iqv4-card { border-color:rgba(0,196,160,.7);
@@ -122,6 +144,9 @@ function injectCSS() {
     @media (prefers-reduced-motion: reduce) {
       .iqv4-arc, .iqv4-ring--listen { animation:none; }
       .iqv4-card, .iqv4-badge span { transition:none; }
+      /* The pose CROSSFADE is deliberately preserved: it is opacity only, which is
+         permitted under reduced-motion. We drop the motion, not the fade — otherwise
+         the face would hard-swap, which is exactly what the spec forbids. */
     }
   `;
   document.head.appendChild(s);
@@ -135,6 +160,12 @@ export default function InterviewerCharacter({
   size = 220,
   difficulty = "Realistic",
   seed,
+  // Pose inputs. `tone` is the server's hint ("warm"|"neutral"|"probing"); when it is
+  // absent we fall back to heuristics in posePolicy.
+  tone = "",
+  escalationLevel = 0,
+  stage = "",
+  group = 0,
 }) {
   useEffect(injectCSS, []);
 
@@ -174,10 +205,40 @@ export default function InterviewerCharacter({
     return () => cancelAnimationFrame(raf);
   }, [speaking]);
 
+  // ── Poses ──
+  // Preload every pose for this character on mount, so a swap never flash-loads.
+  useEffect(() => {
+    if (!c?.id || typeof Image === "undefined") return;
+    POSES.forEach((pz) => {
+      const url = POSE_MAP[`${c.id}_${pz}`];
+      if (url) { const im = new Image(); im.src = url; }
+    });
+  }, [c?.id]);
+
+  const posed = hasPoseSet(POSE_MAP, c.id);
+  const pose = choosePose({ state, tone, escalationLevel, stage, difficulty, group });
+  const src = resolvePose(POSE_MAP, c.id, pose, c.img);
+
+  // Crossfade: two stacked layers, opacity only. Never a hard swap. Opacity fades are
+  // permitted under prefers-reduced-motion (it is the MOTION we drop, not the fade).
+  const [front, setFront] = useState(src);
+  const [back, setBack] = useState(null);
+  const [fading, setFading] = useState(false);
+  useEffect(() => {
+    if (src === front) return;
+    setBack(src);
+    const raf = requestAnimationFrame(() => setFading(true));
+    const t = setTimeout(() => { setFront(src); setBack(null); setFading(false); }, 420);
+    return () => { cancelAnimationFrame(raf); clearTimeout(t); };
+  }, [src]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const W = size;
   const H = Math.round(size * 1.25);
   const level = speaking ? Math.max(0.12, amp) : 0;
   const stateClass = speaking ? " iqv4--speaking" : listening ? " iqv4--listening" : "";
+  // A shared object-position per character keeps the face anchored across fades — the
+  // poses are cropped quadrants, so framing can shift a little between them.
+  const anchor = c.objectPosition ? { objectPosition: c.objectPosition } : undefined;
 
   return (
     <div className={"iqv4" + stateClass} role="img"
@@ -198,8 +259,15 @@ export default function InterviewerCharacter({
       {listening && <div className="iqv4-ring iqv4-ring--listen" />}
 
       <div className="iqv4-card" style={{ width: W, height: H }}>
-        <img src={c.img} alt="" draggable="false"
-          style={c.objectPosition ? { objectPosition: c.objectPosition } : undefined} />
+        {/* Two stacked layers, opacity crossfade — never a hard swap. With no pose set
+            (robots / art pending) both layers hold the same single portrait and this
+            costs nothing. */}
+        <img className="iqv4-pose" src={front} alt="" draggable="false"
+          style={{ ...anchor, opacity: fading ? 0 : 1 }} />
+        {back && (
+          <img className="iqv4-pose" src={back} alt="" draggable="false"
+            style={{ ...anchor, opacity: fading ? 1 : 0 }} />
+        )}
         <div className="iqv4-vignette" />
         {speaking && (
           <div className="iqv4-badge" aria-hidden="true">

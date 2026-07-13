@@ -70,6 +70,10 @@ class StartSessionResponse(BaseModel):
     state: SessionState
     # Voice Phase 1: relative URL to spoken greeting audio; null when TTS is off/failed.
     audio_url: Optional[str] = None
+    # E2 pacing: per-sentence clips (see TurnResponse.audio_segments).
+    audio_segments: list[dict] = []
+    # POSES: the greeting is always warm (see TurnResponse.tone).
+    tone: str = "warm"
     # Voice Phase 2: mirror of state.stt_available at the top level so a client that
     # keeps only the session id (not the whole state) can decide to show the mic
     # without a second /state fetch. Source of truth is still state.stt_available.
@@ -100,6 +104,14 @@ class TurnResponse(BaseModel):
     state: SessionState
     # Voice Phase 1: relative URL to spoken question audio; null when TTS off/failed.
     audio_url: Optional[str] = None
+    # E2 pacing: ONE clip per sentence — [{text, audio_url, pause_before_ms}] — so the
+    # client can hold a human beat between sentences and advance captions in lockstep.
+    audio_segments: list[dict] = []
+    # POSES: the register this turn carries — "warm" | "neutral" | "probing". The server
+    # decides it (it knows the round and the focus ladder); the client maps it onto the
+    # interviewer's pose, so the face and the words say the same thing.
+    tone: str = "neutral"
+    escalation_level: int = 0
     # Realism v2: when this answer is rating-gated, IQ ASKS for the confidence rating
     # aloud. Present only when state.awaiting_rating is true.
     rating_prompt: Optional[str] = None

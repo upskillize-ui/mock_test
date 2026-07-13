@@ -10,6 +10,7 @@ Guards the things that must NOT regress:
 Runnable with:  python -m pytest tests/test_room.py
 """
 import os
+import re
 import sys
 
 os.environ.setdefault("JWT_SECRET", "test")
@@ -119,10 +120,22 @@ BANNED = ("cheat", "dishonest", "suspicious", "lying", "liar",
           "personality", "attitude problem")
 
 
+def _user_facing_strings():
+    """Everything a CANDIDATE could actually read or hear. The persona prompt is NOT in
+    here on purpose: PART 1 requires it to name the forbidden words in order to forbid
+    them ("Never say nervous, bored …"). A literal token-ban would make the rule
+    unstateable. What actually harms is the ATTRIBUTION PATTERN — tested separately
+    below, across the prompts too."""
+    out = list(pr._COACHING.values())
+    out += [pr.presence_readout({}, True)["coaching_note"]]
+    out += [pr.presence_readout({"looking_away": 9}, True)["coaching_note"]]
+    out += [pr.presence_readout({"tab_hidden": 3}, True)["coaching_note"]]
+    return out
+
+
 def test_no_banned_language_in_any_user_facing_presence_copy():
-    strings = list(pr._COACHING.values())
-    strings += [pr.presence_readout({}, True)["coaching_note"]]
-    strings += [pr.presence_readout({"looking_away": 9}, True)["coaching_note"]]
+    strings = _user_facing_strings()
+    # Directives are model instructions, but they must ALSO stay clean of these tokens.
     strings += [pr.escalation_directive(i) for i in (1, 2, 3)]
     strings += [pr.camera_directive(a) for a in ("nudge", "warn")]
     strings += [pr.wrap_directive()]
@@ -130,6 +143,53 @@ def test_no_banned_language_in_any_user_facing_presence_copy():
         low = text.lower()
         for bad in BANNED:
             assert bad not in low, f"banned word {bad!r} in: {text[:70]}"
+
+
+# ── The attribution PATTERN is the real harm — ban it everywhere, prompts included ──
+# "your gaze drifted; try holding it" is coaching. "you seemed bored" is a claim about a
+# person's inner state that we cannot possibly support. Only the second is forbidden.
+
+EMOTION_WORDS = (
+    "bored", "nervous", "disinterested", "uninterested", "anxious", "sad", "scared",
+    "unconfident", "uncomfortable", "distracted", "upset", "angry", "unhappy",
+    "disengaged", "low.energy",
+)
+ATTRIBUTION_RX = re.compile(
+    r"\b(you|they|he|she|the candidate)\s+"
+    r"(were|was|are|is|seem\w*|look\w*|felt|feel\w*|appear\w*|come across as)\b"
+    r"[^.?!]{0,40}?\b(" + "|".join(EMOTION_WORDS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def test_no_emotion_attribution_pattern_anywhere():
+    """Describe observable behaviour; never claim an inner state. This scans the PROMPTS
+    too — the persona may NAME these words to forbid them, but must never USE them as an
+    attribution ("you seemed bored")."""
+    blobs = _user_facing_strings()
+    blobs += [pr.escalation_directive(i) for i in (0, 1, 2, 3)]
+    blobs += [pr.camera_directive(a) for a in ("none", "nudge", "warn")]
+    blobs += [pr.wrap_directive()]
+    cfg = {"name": "Asha", "role": "Backend Engineer", "level": "Fresher",
+           "company": "Razorpay", "duration_min": 20, "difficulty": "Realistic",
+           "interviewer_name": "Priya", "focus": [], "intro": "", "mode": "interview",
+           "round": "full"}
+    blobs += [p.build_persona(cfg), p.build_system_prompt(cfg),
+              p.stage_turn_directive(cfg, "DOMAIN", 1)]
+    for text in blobs:
+        m = ATTRIBUTION_RX.search(text or "")
+        assert not m, f"emotion attribution {m.group(0)!r} in: {text[:80]}"
+
+
+def test_the_attribution_pattern_test_actually_catches_the_bad_shape():
+    # Guard the guard — a test that can never fail is worthless.
+    assert ATTRIBUTION_RX.search("Honestly, you seemed a bit bored in that round.")
+    assert ATTRIBUTION_RX.search("The candidate was clearly nervous.")
+    assert ATTRIBUTION_RX.search("You felt uncomfortable there.")
+    # ...and that legitimate behavioural coaching passes cleanly.
+    assert not ATTRIBUTION_RX.search("Your gaze drifted off-camera; hold the interviewer's eye.")
+    assert not ATTRIBUTION_RX.search("You looked away on 40% of the case question.")
+    assert not ATTRIBUTION_RX.search("Never say nervous, bored, disinterested or anxious.")
 
 
 def test_presence_band_is_counts_only():

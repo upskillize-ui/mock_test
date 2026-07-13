@@ -91,6 +91,21 @@ def preprocess(text: str) -> str:
     return cleaned[:_MAX_TTS_CHARS]
 
 
+_SENTENCE_RX = re.compile(r"[^.!?…]+[.!?…]*")
+
+
+def split_sentences(text: str) -> list[str]:
+    """E2: split a reply into sentences so each can be synthesised as its OWN clip.
+
+    That is what buys human pacing: the client can hold a 300-450ms beat between
+    sentences and ~700ms before the question lands, and captions advance in exact
+    lockstep with the audio instead of being interpolated from a progress bar.
+    """
+    cleaned = strip_markdown(text or "")
+    parts = [s.strip() for s in _SENTENCE_RX.findall(cleaned)]
+    return [p for p in parts if p]
+
+
 def cache_key(text: str, speaker: str) -> str:
     """Stable content address for a synthesised clip.
 

@@ -8,7 +8,8 @@
 ALTER TABLE vyom_sessions
   DROP COLUMN camera_at_join,
   DROP COLUMN early_wrap_stage,
-  DROP COLUMN early_wrap_reason;
+  DROP COLUMN early_wrap_reason,
+  DROP COLUMN interviewer_name;
 
 ALTER TABLE vyom_messages
   DROP COLUMN presence_metrics;
