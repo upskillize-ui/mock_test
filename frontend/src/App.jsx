@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from "react";
-import InterviewerCharacter, { wireTtsAnalyser, resumeTtsAnalyser } from "./InterviewerCharacter.jsx";
+import InterviewerCharacter from "./InterviewerCharacter.jsx";
+import { wireTtsAnalyser, resumeTtsAnalyser, ttsAmplitude } from "./ttsAnalyser.js";
+import SelfView from "./SelfView.jsx";
 
 // Realism v2: spoken confidence rating. Accepts digits, English words, Hinglish
 // numerals, and an explicit "prefer not to say".
@@ -872,12 +874,15 @@ function VoiceConsentModal({ onAccept, onDecline, busy }) {
 // character's expression alone.
 const STATE_LABEL = { speaking: "Speaking", thinking: "Thinking", listening: "Listening", idle: "Ready" };
 
-// The interviewer presence. The character itself lives in InterviewerCharacter.jsx so
-// the redesign (or a vendor avatar) can swap it without touching the stage.
-function InterviewerPresence({ state, voice }) {
+// The interviewer presence. The character in InterviewerCharacter.jsx is purely
+// presentational: it takes an `amplitude` (0..1) and renders. The audio graph now lives
+// in ttsAnalyser.js, so the character can be redesigned (or swapped for a vendor avatar)
+// without dragging the analyser along with it.
+function InterviewerPresence({ state, voice, difficulty, seed }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-      <InterviewerCharacter state={state} voice={voice} size={200} />
+      <InterviewerCharacter state={state} voice={voice} size={220}
+        difficulty={difficulty} seed={seed} />
       <div className="iq-stage-label" role="status" aria-live="polite">{STATE_LABEL[state]}</div>
     </div>
   );
@@ -1726,7 +1731,9 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
               question is never a chat bubble here: it's spoken, optionally captioned,
               and always available in the transcript drawer. */}
           <div className="iq-stage">
-            <InterviewerPresence state={orbState} voice={voicePref} />
+            <SelfView onEnable={() => recordConsent({ consent_type: "camera_selfview", copy_version: CONSENT_COPY_VERSION, session_id: sessionId }).catch(() => {})} />
+            <InterviewerPresence state={orbState} voice={voicePref}
+              difficulty={config.difficulty} seed={sessionId} />
 
             {/* "Heard: …" — a 3s confirmation of what was transcribed. The answer is
                 already on its way; correct it afterwards from the transcript drawer. */}
