@@ -25,7 +25,10 @@ class Settings:
     JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
     JWT_AUDIENCE: str = os.getenv("JWT_AUDIENCE", "")
     JWT_ISSUER: str = os.getenv("JWT_ISSUER", "")
-    MAX_SESSIONS_PER_DAY: int = int(os.getenv("MAX_SESSIONS_PER_DAY", "10"))
+    # INT-09: daily interview cap, PER STUDENT PER DAY (keyed on user id + day, as today).
+    # The production cost-abuse guard. Bypassed entirely when APP_ENV=development so
+    # local UAT never stalls — see main._check_rate_limit.
+    MAX_SESSIONS_PER_DAY: int = int(os.getenv("MAX_SESSIONS_PER_DAY", "20"))
     MAX_ALUMNI_PER_DAY: int = int(os.getenv("MAX_ALUMNI_PER_DAY", "5"))
     # INT-04: hard cap on answered questions per session (spec math + buffer).
     MAX_ANSWERS_PER_SESSION: int = int(os.getenv("MAX_ANSWERS_PER_SESSION", "20"))

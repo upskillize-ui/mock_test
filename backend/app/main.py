@@ -94,6 +94,11 @@ log.info(
     settings.TTS_MODEL, settings.TTS_VOICE_FEMALE, settings.TTS_VOICE_MALE,
 )
 
+# INT-09: the daily-session cap is the production cost-abuse guard and is NOT removed.
+# It is only bypassed in development, so local UAT is never blocked.
+if settings.APP_ENV == "development":
+    log.warning("dev mode: session cap bypassed")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -186,6 +191,15 @@ register_dev_login(app)
 
 
 def _check_rate_limit(db: Session, user_id: str) -> None:
+    """INT-09 daily-session cap — the production cost-abuse guard.
+
+    Bypassed ENTIRELY in development so local UAT (which burns sessions fast) is never
+    blocked: we neither count the session nor enforce the cap. Any other APP_ENV —
+    production included — is unchanged and still enforced.
+    """
+    if settings.APP_ENV == "development":
+        return
+
     today = date.today()
     db.execute(
         text("""
