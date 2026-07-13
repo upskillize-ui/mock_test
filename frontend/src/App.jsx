@@ -1,4 +1,26 @@
 import { useState, useRef, useEffect } from "react";
+import InterviewerCharacter, { wireTtsAnalyser, resumeTtsAnalyser } from "./InterviewerCharacter.jsx";
+
+// Realism v2: spoken confidence rating. Accepts digits, English words, Hinglish
+// numerals, and an explicit "prefer not to say".
+//   returns 1..5  -> a rating
+//   returns null  -> "prefer not to say" (a valid, recorded non-answer)
+//   returns undefined -> could not parse (caller falls back to the pills)
+const SPOKEN_NUMBERS = {
+  one: 1, two: 2, three: 3, four: 4, five: 5,
+  ek: 1, do: 2, teen: 3, char: 4, chaar: 4, panch: 5, paanch: 5,
+};
+function parseSpokenRating(text) {
+  if (!text) return undefined;
+  const t = String(text).toLowerCase();
+  if (/(prefer not|rather not|don'?t want|no comment|skip (it|this)|pass)/.test(t)) return null;
+  const digit = t.match(/\b([1-5])\b/);
+  if (digit) return Number(digit[1]);
+  for (const [w, v] of Object.entries(SPOKEN_NUMBERS)) {
+    if (new RegExp(`\\b${w}\\b`).test(t)) return v;
+  }
+  return undefined;
+}
 
 // ── API plumbing ───────────────────────────────────────────────────────────
 // Accept either env var name; an explicitly-set empty string means same-origin (Docker/HF build).
@@ -46,6 +68,11 @@ async function fetchAudioObjectUrl(path) {
 const startSession = (c) => api("/session/start", { method: "POST", body: JSON.stringify(c) });
 const sendTurn = (sid, msg, stage, voice, deliveryMetrics) => api("/session/turn", { method: "POST", body: JSON.stringify({ session_id: sid, message: msg, stage, voice, delivery_metrics: deliveryMetrics || null }) });
 const submitRating = (sid, answerId, rating) => api("/session/turn/rating", { method: "POST", body: JSON.stringify({ session_id: sid, answer_id: answerId, rating }) });
+// Realism v2: transcription failed -> IQ says so in character and the mic reopens.
+// Consumes NO question slot (the backend inserts no message and changes no state).
+const reaskTurn = (sid, voice) => api("/session/reask", { method: "POST", body: JSON.stringify({ session_id: sid, voice }) });
+// Realism v2: correct a mis-transcribed answer from the transcript drawer. Idempotent.
+const editLastAnswer = (sid, message) => api("/session/turn/last", { method: "PATCH", body: JSON.stringify({ session_id: sid, message }) });
 const fetchSessionState = (sid) => api(`/session/${encodeURIComponent(sid)}/state`);
 const fetchSessionMessages = (sid) => api(`/session/${encodeURIComponent(sid)}/messages`);
 const endSession = (sid) => api("/session/end", { method: "POST", body: JSON.stringify({ session_id: sid }) });
@@ -117,7 +144,7 @@ const WAVE_BARS = 28;              // bars in the live waveform
 const SILENCE_RMS = 0.018;         // below this counts as silence
 const SILENCE_HOLD_MS = 2500;      // 2.5s trailing silence -> auto-stop (auto-listen only)
 const AUTO_LISTEN_GRACE_MS = 600;  // grace beat before the mic opens
-const REVIEW_AUTOSEND_S = 6;       // visible countdown before an untouched transcript sends
+const RATING_SILENCE_MS = 8000;    // no spoken rating in 8s -> fall back to the pills
 
 // One shared <audio> element across screens so the iOS unlock (done on the Start
 // button gesture) carries over to programmatic playback in the interview.
@@ -133,6 +160,12 @@ async function unlockAudioPlayback() {
   const p = player(); if (!p) return;
   try { p.src = SILENT_WAV; await p.play(); p.pause(); p.currentTime = 0; }
   catch { /* still blocked — the UI will offer a tap-to-play affordance */ }
+  // Realism v2: tap the TTS element with an AnalyserNode INSIDE this user gesture, so
+  // the AudioContext starts in "running" state. This is what drives the character's
+  // lip-sync from the real voice. If it fails, the element is left untouched and audio
+  // still plays normally (the mouth simply won't sync).
+  wireTtsAnalyser(p);
+  resumeTtsAnalyser();
 }
 
 // Inline Lucide-style line icons (1.6px stroke). No emojis.
@@ -397,6 +430,8 @@ const CSS = `
 
   .iq-stage-label{font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.55)}
   .iq-caption{max-width:640px;text-align:center;color:rgba(255,255,255,.92);font-size:15px;line-height:1.5;font-family:'Plus Jakarta Sans',sans-serif;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;animation:iqRise .3s ease}
+  /* "Heard: …" — 3s confirmation of the transcript that was just auto-submitted. */
+  .iq-heard{max-width:640px;text-align:center;color:rgba(255,255,255,.86);font-size:13px;line-height:1.5;font-family:'Plus Jakarta Sans',sans-serif;padding:8px 14px;border-radius:10px;background:rgba(0,196,160,.10);border:1px solid rgba(0,196,160,.35);overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;animation:iqRise .25s ease}
 
   /* Learner strip (bottom) */
   .iq-strip{flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:10px;padding:16px 20px 20px;background:#0B1628;border-top:1px solid rgba(255,255,255,.07)}
@@ -535,6 +570,12 @@ function SetupScreen({ onStart, userName }) {
         voice,
       };
       const r = await startSession(payload);
+      // Realism v2 (dev/UAT only): the interviewer improvises a fresh identity each
+      // session. Log it so three fresh sessions can be shown to produce three clearly
+      // different interviewers. Never rendered in the UI.
+      if (import.meta.env?.DEV && r.interviewer_identity) {
+        console.debug("[interviewer identity]", r.interviewer_identity);
+      }
       // INT-07: record the consent grant against this session (non-blocking).
       try { await recordConsent({ consent_type: "data_processing", copy_version: CONSENT_COPY_VERSION, session_id: r.session_id }); } catch { /* non-blocking */ }
       try { localStorage.setItem(CONSENT_KEY, "1"); } catch { /* noop */ }
@@ -827,30 +868,17 @@ function VoiceConsentModal({ onAccept, onDecline, busy }) {
 // scoring logic lives here. Colour never carries meaning alone: every state also
 // shows a persistent text label (and reduced-motion collapses the orb to a ring).
 
-const ORB_LABEL = { speaking: "Speaking", thinking: "Thinking", listening: "Listening", idle: "Ready" };
+// The persistent text state label (accessibility): state is never carried by the
+// character's expression alone.
+const STATE_LABEL = { speaking: "Speaking", thinking: "Thinking", listening: "Listening", idle: "Ready" };
 
-function VoiceOrb({ state }) {
+// The interviewer presence. The character itself lives in InterviewerCharacter.jsx so
+// the redesign (or a vendor avatar) can swap it without touching the stage.
+function InterviewerPresence({ state, voice }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-      <div className={"iq-orb-wrap iq-orb-" + state}>
-        <div className="iq-orb-halo" />
-        <div className="iq-orb">
-          <div className="iq-orb-core" />
-          <div className="iq-orb-aurora" />
-          <div className="iq-orb-ring iq-orb-ring1" />
-          <div className="iq-orb-ring iq-orb-ring2" />
-          {state === "thinking" && <div className="iq-orb-sweep" />}
-        </div>
-      </div>
-      {state === "speaking" && (
-        <div className="iq-wavebars" aria-hidden="true">
-          {[0, 1, 2, 3, 4, 5, 6].map(i => (
-            <span key={i} className="iq-wavebar"
-              style={{ animationDelay: (i * 0.09) + "s", height: (12 + (i % 3) * 6) + "px" }} />
-          ))}
-        </div>
-      )}
-      <div className="iq-stage-label" role="status" aria-live="polite">{ORB_LABEL[state]}</div>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+      <InterviewerCharacter state={state} voice={voice} size={200} />
+      <div className="iq-stage-label" role="status" aria-live="polite">{STATE_LABEL[state]}</div>
     </div>
   );
 }
@@ -867,30 +895,16 @@ function LiveWave({ levels }) {
   );
 }
 
-// Review stays mandatory (our STT design): the transcript is never sent unseen.
-// The countdown only automates the *untouched* case, and is cancelable.
-function ReviewCard({ text, onChange, secsLeft, onSend, onPause }) {
-  const pct = secsLeft == null ? 0 : (secsLeft / REVIEW_AUTOSEND_S) * 100;
-  return (
-    <div className="iq-review">
-      <div className="iq-review-h">Here&apos;s what I heard — edit if needed</div>
-      <textarea className="iq-review-t" value={text} autoFocus
-        onChange={e => { onPause(); onChange(e.target.value.slice(0, 4000)); }}
-        onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(); } }}
-        aria-label="Review your transcribed answer" />
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-        <button onClick={onSend} className="mba-btn-primary" style={{ padding: "9px 20px", fontSize: 13 }}>Send</button>
-        <button onClick={onPause} className="vchip" style={{ padding: "8px 14px", fontSize: 12 }}>Edit</button>
-        <span style={{ marginLeft: "auto", fontFamily: IQ.mono, fontSize: 12, color: secsLeft != null ? IQ.gold : T.subtle }}>
-          {secsLeft != null ? `Sending in ${secsLeft}s` : "Auto-send paused"}
-        </span>
-      </div>
-      {secsLeft != null && <div className="iq-countbar"><div className="iq-countbar-fill" style={{ width: pct + "%" }} /></div>}
-    </div>
-  );
-}
-
-function TranscriptDrawer({ open, onClose, messages, name }) {
+function TranscriptDrawer({ open, onClose, messages, name, onEditLast, editBusy }) {
+  // Realism v2: the answer is auto-submitted, so correction happens HERE — the most
+  // recent answer can be edited in the drawer and re-submitted idempotently.
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const lastUserIdx = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "user") return i;
+    return -1;
+  })();
+  useEffect(() => { if (!open) setEditing(false); }, [open]);
   useEffect(() => {
     if (!open) return;
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
@@ -911,18 +925,48 @@ function TranscriptDrawer({ open, onClose, messages, name }) {
           {messages.length === 0 && <div style={{ fontSize: 13, color: T.muted }}>The conversation will appear here.</div>}
           {messages.map((m, i) => {
             const isV = m.role === "assistant";
+            const isLastAnswer = !isV && i === lastUserIdx && !!onEditLast;
             return (
               <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: isV ? "flex-start" : "flex-end" }}>
                 <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", color: T.subtle, marginBottom: 3 }}>
                   {isV ? "InterviewIQ" : (name || "You")}
                 </span>
-                <div style={{ padding: "10px 13px", borderRadius: isV ? "2px 10px 10px 10px" : "10px 2px 10px 10px", maxWidth: "92%", fontSize: 13, lineHeight: 1.6, background: isV ? T.white : T.navy, color: isV ? T.text : "#fff", border: isV ? "1px solid " + T.border : "none" }}>
-                  {isV ? renderMd(m.content) : m.content}
-                </div>
-                {!isV && m.meta && (
-                  <span style={{ fontSize: 10, color: T.subtle, marginTop: 3, fontFamily: IQ.mono }}>
-                    {m.meta === "SPOKEN" ? "Spoken" : "Typed"}
-                  </span>
+                {isLastAnswer && editing ? (
+                  <div style={{ width: "100%" }}>
+                    <textarea value={draft} onChange={e => setDraft(e.target.value.slice(0, 4000))} rows={4} autoFocus
+                      aria-label="Correct your last answer" className="vi"
+                      style={{ width: "100%", resize: "vertical", fontSize: 13, lineHeight: 1.6, borderRadius: 8 }} />
+                    <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
+                      <button className="vchip" style={{ padding: "6px 12px", fontSize: 12 }}
+                        onClick={() => setEditing(false)} disabled={editBusy}>Cancel</button>
+                      <button className="mba-btn-primary" style={{ padding: "7px 16px", fontSize: 12, opacity: editBusy || !draft.trim() ? 0.5 : 1 }}
+                        disabled={editBusy || !draft.trim()}
+                        onClick={async () => { await onEditLast(draft.trim()); setEditing(false); }}>
+                        {editBusy ? "Saving…" : "Save correction"}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ padding: "10px 13px", borderRadius: isV ? "2px 10px 10px 10px" : "10px 2px 10px 10px", maxWidth: "92%", fontSize: 13, lineHeight: 1.6, background: isV ? T.white : T.navy, color: isV ? T.text : "#fff", border: isV ? "1px solid " + T.border : "none" }}>
+                    {isV ? renderMd(m.content) : m.content}
+                  </div>
+                )}
+                {!isV && !editing && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 3 }}>
+                    {m.meta && (
+                      <span style={{ fontSize: 10, color: T.subtle, fontFamily: IQ.mono }}>
+                        {m.meta === "SPOKEN" ? "Spoken" : "Typed"}
+                      </span>
+                    )}
+                    {isLastAnswer && (
+                      // Fix a mis-transcription: rewrites the stored answer so the debrief
+                      // scores what you meant. (IQ has already replied to the original.)
+                      <button onClick={() => { setDraft(m.content); setEditing(true); }}
+                        style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 10, fontWeight: 700, color: T.navy, textDecoration: "underline", fontFamily: IQ.sans }}>
+                        Correct this
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             );
@@ -1015,8 +1059,9 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   const [menuOpen, setMenuOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [typedInVoice, setTypedInVoice] = useState(false);   // typed fallback inside voice mode
-  const [review, setReview] = useState(null);                // { text } once a transcript lands
-  const [reviewSecs, setReviewSecs] = useState(null);        // auto-send countdown (null = paused)
+  const [heard, setHeard] = useState(null);                  // "Heard: …" caption flash (3s)
+  const [ratingPills, setRatingPills] = useState(false);     // pills fallback for the rating
+  const [editBusy, setEditBusy] = useState(false);           // drawer correction in flight
   const [levels, setLevels] = useState(() => new Array(WAVE_BARS).fill(0));
   const [graceMs, setGraceMs] = useState(0);                 // auto-listen grace beat
   const setVoiceStage = (v) => { setVoiceStageState(v); setFlagPref(STAGE_KEY, v); };
@@ -1031,8 +1076,14 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   const silenceStartRef = useRef(0);
   const spokeRef = useRef(false);      // only arm silence-stop once they've actually spoken
   const graceRafRef = useRef(null);
-  const reviewTimerRef = useRef(null);
-  const reviewTextRef = useRef("");
+  const heardTimerRef = useRef(null);
+  // Realism v2 flow refs.
+  const sttFailRef = useRef(0);          // consecutive STT failures (typed fallback at 2)
+  const ratingListeningRef = useRef(false);  // the open mic is capturing a SPOKEN RATING
+  const ratingAskedRef = useRef(false);      // the "how confident?" line has been spoken
+  const ratingAudioRef = useRef(null);       // audio for that line, from the turn response
+  const ratingSilenceRef = useRef(null);     // 8s no-speech timer -> show the pills
+  const busyRef = useRef(false);             // a submit/re-ask is in flight
   // Refs mirror state for the <audio> 'ended' handler and the rAF loop, which would
   // otherwise close over stale values.
   const autoListenRef = useRef(autoListen);
@@ -1042,7 +1093,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   const recordingRef = useRef(false);
   const transcribingRef = useRef(false);
   const typedInVoiceRef = useRef(false);
-  const reviewOpenRef = useRef(false);
+  const awaitingRatingRef = useRef(false);
+  const ratingPillsRef = useRef(false);
   // INT-06: timer remaining is derived from the persisted start time so a refresh
   // resumes the same countdown instead of restarting it.
   const [secondsLeft, setSecondsLeft] = useState(() => {
@@ -1077,7 +1129,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
     const onPlay = () => { setAudioPlaying(true); setNeedsTap(false); };
     const onStop = () => setAudioPlaying(false);
     // Two-way flow: when IQ finishes speaking, hand the floor to the learner.
-    const onEnded = () => { setAudioPlaying(false); maybeAutoListenRef.current?.(); };
+    const onEnded = () => { setAudioPlaying(false); audioEndedRef.current?.(); };
     p.addEventListener("play", onPlay);
     p.addEventListener("playing", onPlay);
     p.addEventListener("ended", onEnded);
@@ -1110,6 +1162,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
         audioBlobCache.current.set(url, objUrl);
       }
       p.src = objUrl;
+      resumeTtsAnalyser();   // a suspended context would route the audio into silence
       const pr = p.play();
       if (pr && pr.then) pr.then(() => setNeedsTap(false)).catch(() => setNeedsTap(true));
     } catch { setNeedsTap(true); }
@@ -1170,21 +1223,13 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   useEffect(() => { recordingRef.current = recording; }, [recording]);
   useEffect(() => { transcribingRef.current = transcribing; }, [transcribing]);
   useEffect(() => { typedInVoiceRef.current = typedInVoice; }, [typedInVoice]);
-  useEffect(() => { reviewOpenRef.current = !!review; reviewTextRef.current = review?.text || ""; }, [review]);
-  // The transcript drawer auto-opens at the rating widget and the readout.
+  useEffect(() => { awaitingRatingRef.current = awaitingRating; }, [awaitingRating]);
+  useEffect(() => { ratingPillsRef.current = ratingPills; }, [ratingPills]);
+  // The transcript drawer auto-opens at the readout. (It no longer force-opens at the
+  // rating, because the rating is now ASKED ALOUD and answered by voice.)
   useEffect(() => {
-    if (voiceMode && (awaitingRating || nextAction === "readout")) setDrawerOpen(true);
-  }, [voiceMode, awaitingRating, nextAction]);
-
-  // Leaving voice mode with a transcript still in the review card must not lose it —
-  // carry it into the classic composer instead.
-  useEffect(() => {
-    if (voiceMode || !review) return;
-    const pending = review.text;
-    if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null; }
-    setReview(null); setReviewSecs(null);
-    setInput(prev => ((prev ? prev.trimEnd() + " " : "") + pending).slice(0, 4000));
-  }, [voiceMode]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (voiceMode && nextAction === "readout") setDrawerOpen(true);
+  }, [voiceMode, nextAction]);
 
   const showToast = (msg) => {
     setSttToast(msg);
@@ -1204,6 +1249,35 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
   const voiceFallback = () => {
     showToast("Voice input unavailable — please type your answer");
     if (voiceModeRef.current) setTypedInVoice(true);
+  };
+
+  // Realism v2: "Heard: …" flashes for 3s under the character. The answer itself is
+  // already on its way and is appended to the drawer by the normal message flow.
+  const flashHeard = (text) => {
+    if (heardTimerRef.current) clearTimeout(heardTimerRef.current);
+    setHeard(text);
+    heardTimerRef.current = setTimeout(() => setHeard(null), 3000);
+  };
+
+  // Realism v2: a failed transcription is NOT a dead end and NOT a lost question.
+  // IQ says (in character) that it didn't catch the answer and the mic reopens — the
+  // backend /session/reask changes no state, so no question slot is consumed. Only
+  // after TWO consecutive failures do we give up on voice and swap in the composer.
+  const handleSttFailure = async () => {
+    if (!voiceModeRef.current) { voiceFallback(); return; }
+    sttFailRef.current += 1;
+    if (sttFailRef.current >= 2) { sttFailRef.current = 0; voiceFallback(); return; }
+    busyRef.current = true;
+    try {
+      const r = await reaskTurn(sessionId, voicePref || "female");
+      setMessages(m => [...m, { role: "assistant", content: r.reply, audio_url: r.audio_url }]);
+      busyRef.current = false;
+      if (r.audio_url) playAudio(r.audio_url, true);   // its 'ended' reopens the mic
+      else startGrace();                               // TTS off -> just reopen the mic
+    } catch {
+      busyRef.current = false;
+      voiceFallback();
+    }
   };
 
   // ── Web Audio meter: the REAL mic level drives the live waveform and the
@@ -1279,15 +1353,59 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
     if (!voiceModeRef.current || !autoListenRef.current) return;
     if (!consentRef.current) return;      // consent stays explicit — never implied
     if (!canAnswerRef.current) return;    // e.g. a confidence rating is due first
-    if (recordingRef.current || transcribingRef.current) return;
-    if (typedInVoiceRef.current || reviewOpenRef.current) return;
+    if (recordingRef.current || transcribingRef.current || busyRef.current) return;
+    if (typedInVoiceRef.current) return;
     startGrace();
   };
+
+  // ── Realism v2: the spoken confidence rating ──
+  // IQ asks aloud; we open the mic and parse the reply. The pills are the FALLBACK,
+  // shown only when we cannot parse what was said, or after 8s of silence.
+  const clearRatingSilence = () => {
+    if (ratingSilenceRef.current) { clearTimeout(ratingSilenceRef.current); ratingSilenceRef.current = null; }
+  };
+  const startRatingCapture = () => {
+    if (!voiceModeRef.current || recordingRef.current || transcribingRef.current) return;
+    ratingListeningRef.current = true;
+    setRatingPills(false);
+    beginRecording();
+    clearRatingSilence();
+    ratingSilenceRef.current = setTimeout(() => {
+      // 8s and they haven't said anything usable -> stop listening and offer the pills.
+      if (!ratingListeningRef.current) return;
+      ratingListeningRef.current = false;
+      if (recordingRef.current) stopRecording();
+      setRatingPills(true);
+    }, RATING_SILENCE_MS);
+  };
+  const failRatingToPills = () => {
+    clearRatingSilence();
+    ratingListeningRef.current = false;
+    setRatingPills(true);
+  };
+  // What happens when IQ finishes speaking. Three cases:
+  //   1. a rating is due and IQ hasn't asked for it yet -> play the spoken rating ask;
+  //   2. the rating ask has been spoken -> open the mic to capture the spoken rating;
+  //   3. otherwise -> hand the floor back for the next answer (auto-listen).
+  const onAudioEnded = () => {
+    if (!voiceModeRef.current) return;
+    if (awaitingRatingRef.current) {
+      if (!ratingAskedRef.current && ratingAudioRef.current) {
+        ratingAskedRef.current = true;
+        playAudio(ratingAudioRef.current, true);   // force: the rating ask must be heard
+        return;                                     // its own 'ended' brings us back here
+      }
+      if (autoListenRef.current && consentRef.current && !ratingPillsRef.current) startRatingCapture();
+      return;
+    }
+    maybeAutoListen();
+  };
+
   // The <audio> 'ended' listener is registered ONCE on mount, so it must not capture
   // a first-render closure (that would carry a stale sstate and post the wrong stage).
   // Route it through a ref that always points at this render's implementation.
-  const maybeAutoListenRef = useRef(null);
-  useEffect(() => { maybeAutoListenRef.current = maybeAutoListen; });
+  const audioEndedRef = useRef(null);
+  useEffect(() => { audioEndedRef.current = onAudioEnded; });
 
   // Actually acquire the mic and start capturing (consent already handled).
   const beginRecording = async () => {
@@ -1341,37 +1459,56 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
     const blob = new Blob(chunks, { type });
     const ext = type.includes("ogg") ? "ogg" : type.includes("mp4") ? "mp4" : type.includes("wav") ? "wav" : "webm";
     const durationSeconds = recStartRef.current ? (Date.now() - recStartRef.current) / 1000 : 0;
+    // A rating capture is NOT an answer — it never becomes a turn.
+    const isRating = ratingListeningRef.current;
     setTranscribing(true); transcribingRef.current = true;
     try {
       const res = await sttTranscribe(sessionId, blob, `answer.${ext}`, durationSeconds);
-      if (res && res.transcript) {
+      const transcript = res && res.transcript ? res.transcript : null;
+
+      if (isRating) {
+        clearRatingSilence();
+        ratingListeningRef.current = false;
+        const val = parseSpokenRating(transcript);
+        if (val === undefined) failRatingToPills();   // unparseable -> offer the pills
+        else await rate(val);                          // 1..5, or null = "prefer not to say"
+        return;
+      }
+
+      if (transcript) {
+        sttFailRef.current = 0;
         // Phase 3: mark this answer as SPOKEN and stash its delivery metrics for Send.
         answeredByVoiceRef.current = true;
         pendingDeliveryRef.current = res.delivery_metrics || null;
         if (voiceModeRef.current) {
-          // On the stage the transcript lands in the review card (never sent unseen).
-          setReview({ text: res.transcript.slice(0, 4000) });
-          startReviewCountdown();
+          // INSTANT FLOW: no review card, no Send. Flash what we heard and submit now;
+          // the answer is correctable afterwards from the transcript drawer.
+          flashHeard(transcript);
+          send(transcript.slice(0, 4000));
         } else {
           // Classic mode: straight into the editable composer, exactly as before.
-          setInput(prev => ((prev ? prev.trimEnd() + " " : "") + res.transcript).slice(0, 4000));
+          setInput(prev => ((prev ? prev.trimEnd() + " " : "") + transcript).slice(0, 4000));
           setTimeout(() => inputRef.current?.focus(), 50);
         }
       } else {
-        // STT returned null -> graceful fallback (toast + typed composer on the stage).
-        voiceFallback();
+        await handleSttFailure();
       }
     } catch {
-      voiceFallback();
+      if (isRating) failRatingToPills();
+      else await handleSttFailure();
     } finally { setTranscribing(false); transcribingRef.current = false; }
   };
 
   // Mic button: toggle stop while recording; otherwise gate on consent then record.
+  // The mic is usable for an answer, OR to speak the confidence rating.
+  const micUsable = canAnswer || (awaitingRating && voiceMode && !ratingPills);
+
   const onMicClick = () => {
     if (graceMs > 0) { clearGrace(); return; }   // instant cancel of the auto-listen beat
     if (recording) { stopRecording(); return; }
     if (transcribing) return;
     if (!voiceConsented) { setShowVoiceConsent(true); return; }
+    if (awaitingRating && voiceMode) { startRatingCapture(); return; }   // spoken rating
     beginRecording();
   };
 
@@ -1403,7 +1540,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
     clearRecTimer();
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     if (graceRafRef.current) cancelAnimationFrame(graceRafRef.current);
-    if (reviewTimerRef.current) clearInterval(reviewTimerRef.current);
+    if (heardTimerRef.current) clearTimeout(heardTimerRef.current);
+    if (ratingSilenceRef.current) clearTimeout(ratingSilenceRef.current);
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     recordingRef.current = false;
     const ctx = audioCtxRef.current;
@@ -1436,6 +1574,14 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
       const res = await sendTurn(sessionId, textVal, sstate?.current_stage, voicePref || "female", spoken ? metrics : null);
       setMessages(m => [...m, { role: "assistant", content: res.reply, audio_url: res.audio_url }]);
       setSstate(res.state);
+      // Realism v2: if this answer is rating-gated, IQ asks for the rating ALOUD once
+      // the reply finishes playing (see onAudioEnded).
+      ratingAudioRef.current = res.rating_audio_url || null;
+      ratingAskedRef.current = false;
+      setRatingPills(false);
+      // With TTS off there is no 'ended' event to drive the flow — nudge it manually
+      // so the hands-free loop still works.
+      if (voiceModeRef.current && !res.audio_url) setTimeout(() => audioEndedRef.current?.(), 300);
     } catch (e) {
       setError(e.message);
       try { setSstate(await fetchSessionState(sessionId)); } catch { /* noop */ }
@@ -1447,41 +1593,40 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
     }
   };
 
-  // ── Review card: the transcript is never sent unseen. The countdown only
-  // automates the UNTOUCHED case and pauses the moment the learner edits.
-  const clearReviewTimer = () => {
-    if (reviewTimerRef.current) { clearInterval(reviewTimerRef.current); reviewTimerRef.current = null; }
-  };
-  const pauseReviewCountdown = () => { clearReviewTimer(); setReviewSecs(null); };
-  const sendReview = () => {
-    clearReviewTimer();
-    const t = (reviewTextRef.current || "").trim();
-    setReview(null); setReviewSecs(null);
-    if (t) send(t);
-  };
-  const startReviewCountdown = () => {
-    clearReviewTimer();
-    // Count down on a local, so we never call a side effect (sendReview) from inside
-    // a setState updater — StrictMode runs updaters twice and would double-send.
-    let left = REVIEW_AUTOSEND_S;
-    setReviewSecs(left);
-    reviewTimerRef.current = setInterval(() => {
-      left -= 1;
-      if (left <= 0) { clearReviewTimer(); sendReview(); return; }
-      setReviewSecs(left);
-    }, 1000);
-  };
-
   const rate = async (val) => {
     if (ratingBusy || !awaitingRating || !sstate?.last_answer_id) return;
     setRatingBusy(true); setError(null);
     try {
       const res = await submitRating(sessionId, sstate.last_answer_id, val);
       setSstate(res.state);
+      // Rating done: reset the spoken-rating machinery and hand the floor straight
+      // back for the next answer (its question was already spoken with the reply).
+      clearRatingSilence();
+      ratingListeningRef.current = false;
+      ratingAskedRef.current = false;
+      ratingAudioRef.current = null;
+      setRatingPills(false);
+      if (voiceModeRef.current) setTimeout(() => audioEndedRef.current?.(), 400);
     } catch (e) {
       setError(e.message);
       try { setSstate(await fetchSessionState(sessionId)); } catch { /* noop */ }
     } finally { setRatingBusy(false); }
+  };
+
+  // Realism v2: correct a mis-transcribed answer from the drawer (idempotent PATCH).
+  const onEditLast = async (textVal) => {
+    setEditBusy(true);
+    try {
+      await editLastAnswer(sessionId, textVal);
+      setMessages(m => {
+        const copy = [...m];
+        for (let i = copy.length - 1; i >= 0; i--) {
+          if (copy[i].role === "user") { copy[i] = { ...copy[i], content: textVal }; break; }
+        }
+        return copy;
+      });
+    } catch (e) { setError(e.message); }
+    finally { setEditBusy(false); }
   };
 
   // Keyboard 1-5 submits the confidence rating on desktop.
@@ -1581,9 +1726,20 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
               question is never a chat bubble here: it's spoken, optionally captioned,
               and always available in the transcript drawer. */}
           <div className="iq-stage">
-            <VoiceOrb state={orbState} />
+            <InterviewerPresence state={orbState} voice={voicePref} />
 
-            {captions && lastAssistantText && <div className="iq-caption">{lastAssistantText}</div>}
+            {/* "Heard: …" — a 3s confirmation of what was transcribed. The answer is
+                already on its way; correct it afterwards from the transcript drawer. */}
+            {heard && (
+              <div className="iq-heard" aria-live="polite">
+                <span style={{ fontFamily: IQ.mono, fontSize: 10, letterSpacing: ".12em", textTransform: "uppercase", color: IQ.teal, marginRight: 8 }}>Heard</span>
+                {heard}
+              </div>
+            )}
+
+            {captions && !heard && lastAssistantText && (
+              <div className="iq-caption">{lastAssistantText}</div>
+            )}
 
             {needsTap && latestAudioUrl && !muted && (
               <button onClick={() => playAudio(latestAudioUrl, true)} className="iq-ghostbtn">
@@ -1591,18 +1747,17 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
               </button>
             )}
 
-            {reverseMode && !loading && !awaitingRating && !review && (
+            {reverseMode && !loading && !awaitingRating && (
               <div style={{ padding: "10px 16px", borderRadius: 10, background: "rgba(200,153,42,.14)", border: "1px solid " + IQ.gold, color: IQ.gold, fontSize: 13, fontWeight: 700, fontFamily: IQ.sans, textAlign: "center" }}>
                 Your turn to interview us. Ask us two questions.
               </div>
             )}
 
-            {/* Same rating component, centred on the stage (drawer peeks behind it). */}
-            {awaitingRating && !loading && <RatingWidget busy={ratingBusy} onRate={rate} />}
-
-            {review && (
-              <ReviewCard text={review.text} onChange={(t) => setReview({ text: t })}
-                secsLeft={reviewSecs} onSend={sendReview} onPause={pauseReviewCountdown} />
+            {/* The confidence rating is normally SPOKEN (IQ asks, you answer aloud).
+                The pills are the fallback only: unparseable reply, 8s of silence, or
+                when voice can't carry it (auto-listen off / no consent / typed mode). */}
+            {awaitingRating && !loading && (ratingPills || typedInVoice || !autoListen || !voiceConsented) && (
+              <RatingWidget busy={ratingBusy} onRate={rate} />
             )}
 
             {error && <div style={{ padding: "10px 14px", borderRadius: 8, background: "rgba(232,82,26,.16)", color: "#ffbda6", fontSize: 13, maxWidth: 620, textAlign: "center" }}>{error}</div>}
@@ -1648,13 +1803,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
             ) : (
               <>
                 <button className="iq-micpill" onClick={onMicClick}
-                  disabled={(!canAnswer || transcribing || loading || !!review) && graceMs <= 0}
-                  aria-label={graceMs > 0 ? "Cancel auto-listen" : "Record your answer"}>
+                  disabled={(!micUsable || transcribing || loading) && graceMs <= 0}
+                  aria-label={graceMs > 0 ? "Cancel auto-listen" : awaitingRating ? "Say your confidence rating" : "Record your answer"}>
                   <IconMic size={16} />
                   {graceMs > 0 ? `Listening in ${(graceMs / 1000).toFixed(1)}s — tap to cancel`
                     : transcribing ? "Transcribing…"
-                    : review ? "Review your answer above"
-                    : awaitingRating ? "Rate your confidence to continue"
+                    : awaitingRating ? (ratingPills ? "Pick a number above" : "Say a number — one to five")
                     : canAnswer ? "Tap to speak" : "Waiting…"}
                 </button>
                 {graceMs > 0 && (
@@ -1662,7 +1816,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
                     <div style={{ height: "100%", width: ((graceMs / AUTO_LISTEN_GRACE_MS) * 100) + "%", background: IQ.teal }} />
                   </div>
                 )}
-                {canAnswer && !review && !transcribing && (
+                {canAnswer && !transcribing && (
                   <button className="iq-ghostbtn" onClick={() => setTypedInVoice(true)} aria-label="Type your answer instead">
                     <IconKeyboard size={15} /> Type instead
                   </button>
@@ -1737,9 +1891,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, initia
         </>
       )}
 
-      {/* The full conversation always remains one tap away, in either mode. */}
+      {/* The full conversation always remains one tap away, in either mode. Because the
+          answer is now auto-submitted, this is also where a mis-transcription is fixed. */}
       <TranscriptDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}
-        messages={messages} name={config.name} />
+        messages={messages} name={config.name}
+        onEditLast={ended ? null : onEditLast} editBusy={editBusy} />
 
       {showVoiceConsent && <VoiceConsentModal onAccept={acceptVoiceConsent} onDecline={declineVoiceConsent} busy={consentBusy} />}
     </div>

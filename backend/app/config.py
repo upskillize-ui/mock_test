@@ -103,6 +103,12 @@ class Settings:
     # spoken answers. OFF by default; independent of STT so it can be piloted alone.
     DELIVERY_METRICS_ENABLED: bool = _env_bool("DELIVERY_METRICS_ENABLED")
 
+    # Realism v2: PATCH /session/turn/last — lets a learner correct a mis-transcribed
+    # answer from the transcript drawer. ON by default (the drawer edit depends on it);
+    # set false to remove the endpoint entirely (404). No schema impact — it rewrites
+    # vyom_messages.content in place and does NOT re-run the interviewer's reply.
+    EDIT_LAST_ANSWER_ENABLED: bool = _env_bool("EDIT_LAST_ANSWER_ENABLED", "true")
+
     RESUME_HOST_ALLOWLIST: list[str] = [
         h.strip().lower()
         for h in os.getenv("RESUME_HOST_ALLOWLIST", "res.cloudinary.com").split(",")

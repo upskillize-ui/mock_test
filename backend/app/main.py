@@ -26,6 +26,8 @@ from . import dev_auth
 from .schemas import (
     StartSessionRequest, StartSessionResponse,
     TurnRequest, TurnResponse, STTResponse,
+    ReaskRequest, ReaskResponse,
+    EditLastAnswerRequest, EditLastAnswerResponse,
     RatingRequest, RatingResponse, SessionState,
     SessionMessagesResponse,
     EndRequest, DebriefResponse,
@@ -35,7 +37,10 @@ from .schemas import (
     DeleteRequestResponse, DeleteConfirmRequest, DeleteConfirmResponse,
     PurgeResponse,
 )
-from .prompts import build_system_prompt, DEBRIEF_INSTRUCTION, stage_turn_directive
+from .prompts import (
+    build_system_prompt, DEBRIEF_INSTRUCTION, stage_turn_directive,
+    build_kickoff, parse_kickoff, rating_ask, reask_line, REASK_DIRECTIVE,
+)
 from .claude_client import call_claude, extract_resume_text
 
 
@@ -93,7 +98,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -325,6 +330,8 @@ def _session_to_cfg(row: dict) -> dict:
         "round_detail": row.get("round_detail") or "",
         "focus": (row["focus"] or "").split(",") if row.get("focus") else [],
         "intro": row.get("intro") or "",
+        # Realism v2: the identity improvised at session start, replayed every turn.
+        "interviewer_identity": row.get("interviewer_identity") or "",
     }
 
 
@@ -542,25 +549,36 @@ async def start_session(
     cfg = body.model_dump()
     system_prompt = build_system_prompt(cfg, alumni_intel)
 
-    kickoff = (
-        f"The session is starting now. In a SHORT spoken greeting (max 4 sentences), "
-        f"greet {body.name or 'the candidate'} by first name, confirm the role "
-        f"({body.role}) and that you have about {body.duration_min} minutes together, "
-        f"give a brief calming cue, and ask the first warm-up rapport question.\n\n"
-        f"CRITICAL FORMATTING — apply to EVERY message you send, not just this one:\n"
-        f"- Never use markdown headers (no '#', '##', '###' lines).\n"
-        f"- Never use horizontal rules (no '---', '***', '___').\n"
-        f"- No section titles. No document-style formatting. Speak conversationally, "
-        f"as a human interviewer would over a video call.\n"
-        f"- Begin your greeting directly with the candidate's name: 'Hi {body.name or 'there'}! ...'"
-    )
-
-    greeting = await call_claude(
+    # Realism v2: no fixed greeting. The model improvises a distinct interviewer
+    # identity for THIS session and opens in it; we persist the one-line identity so
+    # every later turn is prompted to stay in character. Higher temperature-equivalent
+    # variety comes from the instruction itself (see prompts.build_kickoff).
+    raw_kickoff = await call_claude(
         system=system_prompt,
-        messages=[{"role": "user", "content": kickoff}],
+        messages=[{"role": "user", "content": build_kickoff(cfg)}],
         model=settings.MODEL_INTERVIEW,
-        max_tokens=250,
+        max_tokens=500,
     )
+    identity, greeting = parse_kickoff(raw_kickoff)
+    if identity:
+        # Persist for cross-turn continuity. Defensive: if migration 005 has not been
+        # applied yet the column is missing — that must NOT break starting a session.
+        # Without it the interview still runs; it just loses identity continuity.
+        try:
+            db.execute(
+                text("UPDATE vyom_sessions SET interviewer_identity=:i WHERE id=:id"),
+                {"i": identity, "id": session_id},
+            )
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            log.warning("interviewer_identity not stored (apply migration 005?): %s",
+                        type(e).__name__)
+        # Dev-only: surfaces the improvised identity so UAT can confirm three fresh
+        # sessions really do produce three different interviewers. Never sent to the
+        # candidate; contains no learner PII.
+        if settings.APP_ENV != "production":
+            log.info("interviewer identity: %s", identity)
 
     _save_message(db, session_id, "assistant", greeting)
     _update_session_counters(db, session_id)
@@ -578,6 +596,8 @@ async def start_session(
     return StartSessionResponse(
         session_id=session_id, greeting=greeting, state=state, audio_url=audio_url,
         stt_available=bool(settings.STT_ENABLED and settings.VOICE_ENABLED),
+        # Dev/UAT only — lets the console prove each session invents a new interviewer.
+        interviewer_identity=(identity or None) if settings.APP_ENV != "production" else None,
     )
 
 
@@ -699,6 +719,14 @@ async def session_turn(
 
     audio_url = await _try_tts(body.session_id, reply, body.voice)
 
+    # Realism v2: when this answer is rating-gated, IQ asks for the confidence rating
+    # ALOUD, so the voice stage can stay hands-free. Text + audio ride on the turn
+    # response; the pills remain the fallback (parse-fail / silence) on the client.
+    rating_prompt = rating_audio_url = None
+    if new_awaiting:
+        rating_prompt = rating_ask(answer_id)
+        rating_audio_url = await _try_tts(body.session_id, rating_prompt, body.voice)
+
     state = _build_state({
         "level": level,
         "current_stage": new_stage,
@@ -707,7 +735,84 @@ async def session_turn(
         "last_answer_id": new_last,
         "answer_count": answer_count + 1,
     })
-    return TurnResponse(reply=reply, answer_id=answer_id, state=state, audio_url=audio_url)
+    return TurnResponse(reply=reply, answer_id=answer_id, state=state, audio_url=audio_url,
+                        rating_prompt=rating_prompt, rating_audio_url=rating_audio_url)
+
+
+@app.post("/session/reask", response_model=ReaskResponse)
+async def session_reask(
+    body: ReaskRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(current_user),
+):
+    """Realism v2: the transcription failed, so IQ says (in character) that it didn't
+    catch the answer and the client reopens the mic.
+
+    Deliberately side-effect-free on the interview: NO message is inserted, NO stage /
+    round_index / answer_count changes. A failed transcription must never cost the
+    learner one of the round's question slots.
+    """
+    session_row = _load_session(db, body.session_id, user_id)
+    if (session_row.get("status") or "") != "active":
+        raise HTTPException(400, "Session is not active")
+
+    cfg = _session_to_cfg(session_row)
+    seed = int(session_row.get("answer_count") or 0)
+    line = ""
+    try:
+        # One short in-character line (the system prompt carries the improvised identity).
+        line = (await call_claude(
+            system=build_system_prompt(cfg, ""),
+            messages=[{"role": "user", "content": REASK_DIRECTIVE}],
+            model=settings.MODEL_INTERVIEW,
+            max_tokens=60,
+        )).strip()
+    except HTTPException:
+        line = ""   # upstream model failed — fall back, never block the retry
+    if not line:
+        line = reask_line(seed)
+
+    audio_url = await _try_tts(body.session_id, line, body.voice)
+    return ReaskResponse(reply=line, audio_url=audio_url)
+
+
+@app.patch("/session/turn/last", response_model=EditLastAnswerResponse)
+def edit_last_answer(
+    body: EditLastAnswerRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(current_user),
+):
+    """Correct a mis-transcribed answer from the transcript drawer.
+
+    Rewrites the CONTENT of the learner's most recent answer in place, so the debrief
+    scores what they meant rather than what STT heard. Idempotent — re-sending the same
+    text changes nothing. NO schema change (it updates vyom_messages.content).
+
+    Deliberate limitation: it does NOT re-run the interviewer's reply. IQ has already
+    responded to the original wording; regenerating the turn would rewrite history and
+    re-bill the model. The corrected text is what gets scored. Flagged in the report.
+    """
+    if not settings.EDIT_LAST_ANSWER_ENABLED:
+        raise HTTPException(404, "Not found")
+
+    session_row = _load_session(db, body.session_id, user_id)
+    if (session_row.get("status") or "") != "active":
+        raise HTTPException(400, "Session is not active")
+
+    row = db.execute(
+        text("SELECT id FROM vyom_messages WHERE session_id=:s AND role='user' "
+             "ORDER BY id DESC LIMIT 1"),
+        {"s": body.session_id},
+    ).mappings().first()
+    if not row:
+        raise HTTPException(404, "No answer to edit yet")
+
+    db.execute(
+        text("UPDATE vyom_messages SET content=:c WHERE id=:id"),
+        {"c": body.message.strip(), "id": int(row["id"])},
+    )
+    db.commit()
+    return EditLastAnswerResponse(updated=True, answer_id=int(row["id"]))
 
 
 @app.get("/session/{session_id}/state", response_model=SessionState)

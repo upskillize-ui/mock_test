@@ -62,6 +62,10 @@ class StartSessionResponse(BaseModel):
     # keeps only the session id (not the whole state) can decide to show the mic
     # without a second /state fetch. Source of truth is still state.stt_available.
     stt_available: bool = False
+    # Realism v2: the one-line identity the interviewer improvised for this session.
+    # Returned in NON-PRODUCTION only, purely so UAT can log it and confirm that fresh
+    # sessions really do yield different interviewers. Never rendered in the UI.
+    interviewer_identity: Optional[str] = None
 
 
 class TurnRequest(BaseModel):
@@ -84,6 +88,38 @@ class TurnResponse(BaseModel):
     state: SessionState
     # Voice Phase 1: relative URL to spoken question audio; null when TTS off/failed.
     audio_url: Optional[str] = None
+    # Realism v2: when this answer is rating-gated, IQ ASKS for the confidence rating
+    # aloud. Present only when state.awaiting_rating is true.
+    rating_prompt: Optional[str] = None
+    rating_audio_url: Optional[str] = None
+
+
+class ReaskRequest(BaseModel):
+    session_id: str = Field(..., max_length=36)
+    voice: Literal["female", "male"] = "female"
+
+
+class ReaskResponse(BaseModel):
+    """Realism v2: IQ says 'I didn't catch that' in character and the mic reopens.
+
+    This does NOT insert a message and does NOT touch the stage machine — a failed
+    transcription must never consume one of the round's question slots.
+    """
+    reply: str
+    audio_url: Optional[str] = None
+
+
+class EditLastAnswerRequest(BaseModel):
+    session_id: str = Field(..., max_length=36)
+    message: str = Field(..., min_length=1, max_length=4000)
+
+
+class EditLastAnswerResponse(BaseModel):
+    """Correcting a mis-transcribed answer from the transcript drawer. Idempotent:
+    re-sending the same text is a no-op. It rewrites the stored answer (so the debrief
+    scores what the learner MEANT), but does not re-run the interviewer's reply."""
+    updated: bool
+    answer_id: Optional[int] = None
 
 
 class STTResponse(BaseModel):

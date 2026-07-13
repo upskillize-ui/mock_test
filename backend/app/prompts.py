@@ -1,3 +1,5 @@
+import json
+import random
 import re
 
 from . import stages
@@ -107,6 +109,25 @@ def build_system_prompt(cfg: dict, alumni_intel: str = "") -> str:
     if round_detail_clean:
         round_instruction += f"\nAdditional context: {round_detail_clean}"
 
+    # Realism v2: the identity improvised at session start is replayed here on every
+    # turn so the interviewer never drifts back into a neutral assistant voice.
+    identity = sanitize_untrusted(cfg.get("interviewer_identity") or "", 400)
+    if identity:
+        identity_block = (
+            "YOUR IDENTITY THIS SESSION (you improvised it at the start — STAY IN IT):\n"
+            f"  {identity}\n"
+            "Hold it for the WHOLE session: acknowledgments, transitions, follow-ups and "
+            "your close must sound like the same person who opened. Never drift into a "
+            "neutral assistant voice. Identity governs TONE, PACING and PHRASING only — "
+            "it never changes difficulty, rigor, Indian-hiring norms, or round structure."
+        )
+    else:
+        identity_block = (
+            "YOUR IDENTITY: speak as one specific, consistent professional interviewer — "
+            "not a generic assistant. Tone/pacing/phrasing only; never alter difficulty "
+            "or structure."
+        )
+
     untrusted_blocks = []
     if self_intro:
         untrusted_blocks.append(
@@ -151,8 +172,11 @@ COMPANY STYLE GUIDE
 - Consulting/Banking/KPMG: structured frameworks, numerical reasoning, client presence.
 - General: realistic mid-tier product company.
 
+{identity_block}
+
 INTERVIEW FLOW (move naturally — do NOT announce stage names to the candidate)
-1. Warm-up: greet by first name, confirm role + duration, give a calming cue, ask ONE easy rapport question.
+1. Warm-up: open in YOUR identity (improvised, never a stock line) and get to a real,
+   role-shaped first question. Reassurance is for freshers only, and at most one line.
 2. Tell me about yourself — let them set the stage.
 3. Deep-dive: drill into one specific project — trade-offs, decisions, metrics, ownership.
 4. Role-specific core round: 3-5 targeted questions based on role, company, and round type above.
@@ -219,6 +243,215 @@ Mode rule:
 Never break character to reveal you are an AI unless directly and sincerely asked.{alumni_intel}
 
 Begin the session now."""
+
+
+# ── Dynamic interviewer identity (Conversation Realism v2, Part A) ───────────
+# There is no fixed greeting and no persona template/archetype list. At session
+# start the model IMPROVISES a distinct professional interviewer identity fitted to
+# the role/level/company/JD/focus/duration, returns a one-line summary of it, and is
+# then held to that identity for every later turn (see build_system_prompt).
+
+# Anti-convergence dials. Improvisation alone is NOT enough: given identical inputs
+# the model reliably collapses onto the modal persona (measured — three fresh sessions
+# for the same role all produced the same "pragmatic fintech lead", even down to the
+# same first name). These are broad axes, not archetypes or personas: one value is
+# drawn at random per session so each identity is forced to a genuinely different point
+# in the space, and the model still improvises the actual human inside those bounds.
+_DIAL_WARMTH = [
+    "cool and businesslike — courteous, not friendly",
+    "measured and neutral — hard to read",
+    "genuinely warm — you like people and it shows",
+    "wry and disarming — light humour, sharp underneath",
+    "intense and earnest — you care a lot about this craft",
+]
+_DIAL_PACE = [
+    "brisk — no preamble at all, you are mid-thought already",
+    "steady and deliberate — you leave a beat before each question",
+    "unhurried — you let silences sit and do not rush to fill them",
+]
+_DIAL_REGISTER = [
+    "formal, senior-panel register",
+    "collegial, peer-to-peer register",
+    "plain-spoken and mentor-ish",
+    "crisp and clinical, almost forensic",
+]
+_DIAL_OPENING_MOVE = [
+    "open on a concrete scenario the role actually faces",
+    "open on something specific in their background or the pasted JD",
+    "open on a real problem your team is currently wrestling with",
+    "open by naming plainly what you will be probing for, then ask it",
+    "open with a sharp, narrow question and no throat-clearing whatsoever",
+]
+_DIAL_HABIT = [
+    "you think out loud for a second before you land the question",
+    "you ask very short questions and let them do the talking",
+    "you frame nearly everything as a trade-off",
+    "you give one line of context, then ask",
+    "you often ask 'why' twice on the same thread",
+]
+
+# The interviewer's own name must be supplied, not requested. The model cannot recall
+# what it "usually" picks, so asking it to avoid its default is meaningless — measured:
+# it returned the same name ("Vikram") in three consecutive sessions for the same role.
+# Drawing the name here is what actually guarantees a different person each time. The
+# pool is gender-matched to the chosen TTS voice so the name, the voice and the
+# on-screen character are one coherent interviewer.
+_NAMES_F = [
+    "Ananya", "Meera", "Divya", "Shruti", "Kavya", "Priya", "Nandini", "Aarti",
+    "Ritika", "Sneha", "Lakshmi", "Ishita", "Deepa", "Tanvi", "Radhika", "Sana",
+]
+_NAMES_M = [
+    "Arjun", "Rohan", "Karthik", "Aditya", "Nikhil", "Rahul", "Siddharth", "Manish",
+    "Varun", "Pranav", "Rajeev", "Sameer", "Harsh", "Ashwin", "Gaurav", "Imran",
+]
+
+
+def _dials(rng: random.Random) -> str:
+    return (
+        f"  - warmth: {rng.choice(_DIAL_WARMTH)}\n"
+        f"  - pace: {rng.choice(_DIAL_PACE)}\n"
+        f"  - register: {rng.choice(_DIAL_REGISTER)}\n"
+        f"  - opening move: {rng.choice(_DIAL_OPENING_MOVE)}\n"
+        f"  - phrasing habit: {rng.choice(_DIAL_HABIT)}"
+    )
+
+
+def build_kickoff(cfg: dict, seed=None) -> str:
+    """The session-start instruction: invent an identity, then open in it.
+
+    Returns a user-turn instruction asking for JSON {identity, opening} so we can
+    persist the identity line and keep every later turn in character. A random set of
+    variation dials is drawn per session to stop the model collapsing onto one persona.
+    """
+    rng = random.Random(seed)
+    # Gender-match the interviewer's name to the TTS voice so name + voice + on-screen
+    # character are one coherent person.
+    pool = _NAMES_M if (cfg.get("voice") or "female") == "male" else _NAMES_F
+    interviewer_name = rng.choice(pool)
+    name = sanitize_untrusted(cfg.get("name") or "", 120) or "the candidate"
+    role = sanitize_untrusted(cfg.get("role") or "", 120) or "the target role"
+    company = sanitize_untrusted(cfg.get("company") or "", 120) or "a general mid-tier product company"
+    level = cfg.get("level", "")
+    duration = cfg.get("duration_min", 20)
+    bucket = stages.stage_plan(level)["bucket"]
+    is_fresher = bucket == "fresher"
+
+    reassurance = (
+        "This candidate is a FRESHER: you may include AT MOST ONE short reassurance line."
+        if is_fresher else
+        "This candidate is NOT a fresher: include NO reassurance/calming line at all — "
+        "open like a professional peer and get to substance."
+    )
+
+    return f"""The session begins now. Two things, in this order.
+
+1) INVENT YOUR INTERVIEWER IDENTITY — fresh, for this session only.
+Improvise a distinct, believable professional interviewer: your tone, pacing, warmth
+level, and phrasing habits. Fit it to what you are actually interviewing for:
+  - role: {role}
+  - experience level: {level}
+  - company style / name: {company}
+  - round + focus areas and the pasted JD/resume context you were given
+  - the {duration}-minute length (short slot = brisker, longer slot = more unhurried)
+You are a specific human interviewer, not a generic assistant.
+
+THIS SESSION'S DIALS — your identity must actually sit here. They are coordinates, not
+a character: invent the real human who lives at them.
+{_dials(rng)}
+
+For FLAVOR ONLY — never copy, template, or paraphrase these; they exist purely to show
+the RANGE you may invent within:
+  - a brisk fintech panel lead who is at substance within two lines
+  - a warm campus-placement mentor who settles a nervous fresher first
+  - a curious startup engineer who opens on something specific from the JD
+CRITICAL: do NOT reach for whichever example happens to match this company's sector —
+grabbing the "fintech" one because the company is a fintech IS the copying failure.
+The dials above outrank the examples.
+
+YOUR NAME THIS SESSION IS {interviewer_name}. Use it (naturally, once) if you introduce
+yourself at all. Do not rename yourself.
+
+Invent FRESH phrasing every single session. Two sessions that open with the same or
+nearly the same words — or that are the same person wearing different words — are a
+FAILURE. Do NOT open with a stock pleasantry ("Hi, thanks for joining", "Hey, good to
+meet you", "Thanks for taking the time"). Start where your dials tell you to start.
+
+2) OPEN THE INTERVIEW IN THAT IDENTITY.
+Constraints (these are constraints, NOT a template — do not fill in a formula):
+  - 2 to 4 sentences, spoken conversationally, no markdown, no lists, no headers.
+  - Address {name} naturally by first name.
+  - {reassurance}
+  - It MUST END with a real first question that is already shaped by the {role} role —
+    not a generic "tell me about yourself", and not a rapport question that could be
+    asked of any candidate in any field.
+Your identity changes TONE ONLY. It never changes difficulty, rigor, Indian-hiring
+norms, or the round structure — those follow your standing rules exactly.
+
+Respond with ONLY a JSON object (no markdown fences, no commentary):
+{{
+  "identity": "<ONE line describing the interviewer you just became — tone, pacing, warmth, phrasing habits. This is for your own continuity, never shown to the candidate.>",
+  "opening": "<exactly what you say aloud to {name}, ending in your first real question>"
+}}"""
+
+
+def parse_kickoff(raw: str) -> tuple[str, str]:
+    """Split the kickoff response into (identity_line, opening).
+
+    Degrades gracefully: if the model didn't return usable JSON we treat the whole
+    reply as the opening and carry no identity — a session must never fail to start
+    because of the identity feature.
+    """
+    cleaned = (raw or "").replace("```json", "").replace("```", "").strip()
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            obj = json.loads(cleaned[start:end + 1])
+            opening = (obj.get("opening") or "").strip()
+            identity = (obj.get("identity") or "").strip()
+            if opening:
+                return identity[:400], opening
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    return "", cleaned
+
+
+# ── Realism v2: spoken confidence rating + re-ask (short utility utterances) ──
+# These are deliberately utility lines, not personality: they vary so they never feel
+# canned, but the interviewer's improvised identity is what carries the character.
+
+RATING_ASKS = [
+    "Before we move on — on a scale of one to five, how confident are you in that answer?",
+    "Quick check: one to five, how confident did you feel about that one?",
+    "One to five — how confident are you in what you just told me?",
+    "Give me a number, one to five: how confident are you in that answer?",
+]
+
+REASK_LINES = [
+    "Sorry — I didn't catch that. Could you say it again?",
+    "Apologies, you cut out there. Would you mind repeating that?",
+    "I missed that — could you run that by me once more?",
+    "Sorry, that didn't come through. Say that again for me?",
+]
+
+
+def rating_ask(seed: int) -> str:
+    """A varied 'how confident were you?' line. Seeded (by answer id) so it is stable
+    for a given answer but differs across the session."""
+    return RATING_ASKS[abs(int(seed)) % len(RATING_ASKS)]
+
+
+def reask_line(seed: int) -> str:
+    """Fallback re-ask when the in-character LLM line is unavailable."""
+    return REASK_LINES[abs(int(seed)) % len(REASK_LINES)]
+
+
+REASK_DIRECTIVE = (
+    "The candidate's answer did not reach you — the audio failed, they did not go silent "
+    "and they did not refuse. In ONE short spoken line, IN YOUR IDENTITY, tell them you "
+    "did not catch it and ask them to say it again. Do NOT repeat your question verbatim, "
+    "do NOT ask a new question, do NOT comment on their answer (you never heard it), and "
+    "do NOT apologise more than once. One sentence."
+)
 
 
 def _ask_line(stage: str, plan: dict, role: str) -> str:
