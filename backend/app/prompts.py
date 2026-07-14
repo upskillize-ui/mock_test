@@ -576,6 +576,30 @@ def reask_line(seed: int) -> str:
     return REASK_LINES[abs(int(seed)) % len(REASK_LINES)]
 
 
+# The mic is a persistent mute toggle (Meet semantics). If an answer window opens while
+# the candidate is muted, the interviewer offers the fork out loud after a short beat.
+# NOTE: we never auto-unmute — unmuting is always the candidate's explicit act.
+MUTE_FORK_LINES = [
+    "You're on mute — unmute, or switch to typing and we'll continue.",
+    "I think you're muted. Unmute when you're ready, or type it out and we'll carry on.",
+    "You're still on mute. Either unmute, or type your answer — both work.",
+    "Looks like you're muted. Unmute, or switch to typing and we'll keep going.",
+]
+
+
+def mute_fork_line(seed: int) -> str:
+    """Fallback when the in-character line is unavailable."""
+    return MUTE_FORK_LINES[abs(int(seed)) % len(MUTE_FORK_LINES)]
+
+
+MUTE_FORK_DIRECTIVE = (
+    "The candidate's microphone is MUTED and an answer is due. In ONE short spoken line, "
+    "IN YOUR IDENTITY, tell them they're on mute and give them the fork: unmute, or switch "
+    "to typing and you'll carry on. Typing is fully first-class — do NOT imply it is a "
+    "lesser option, and do NOT sound impatient. Do NOT repeat your question. One sentence."
+)
+
+
 REASK_DIRECTIVE = (
     "The candidate's answer did not reach you — the audio failed, they did not go silent "
     "and they did not refuse. In ONE short spoken line, IN YOUR IDENTITY, tell them you "

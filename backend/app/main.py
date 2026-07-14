@@ -43,6 +43,7 @@ from .schemas import (
 from .prompts import (
     build_system_prompt, DEBRIEF_INSTRUCTION, stage_turn_directive,
     build_kickoff, parse_kickoff, rating_ask, reask_line, REASK_DIRECTIVE, turn_tone,
+    mute_fork_line, MUTE_FORK_DIRECTIVE,
 )
 from .claude_client import call_claude, extract_resume_text
 
@@ -985,8 +986,12 @@ async def session_reask(
     db: Session = Depends(get_db),
     user_id: str = Depends(current_user),
 ):
-    """Realism v2: the transcription failed, so IQ says (in character) that it didn't
-    catch the answer and the client reopens the mic.
+    """A short spoken nudge, in character, that costs the candidate nothing.
+
+    kind="reask" — the transcription failed: IQ says it didn't catch that and the mic
+                   reopens.
+    kind="mute"  — the mic is MUTED and an answer is due: IQ offers the fork (unmute, or
+                   type). We NEVER auto-unmute — that is always the candidate's act.
 
     Deliberately side-effect-free on the interview: NO message is inserted, NO stage /
     round_index / answer_count changes. A failed transcription must never cost the
@@ -998,19 +1003,21 @@ async def session_reask(
 
     cfg = _session_to_cfg(session_row)
     seed = int(session_row.get("answer_count") or 0)
+    is_mute = body.kind == "mute"
+    directive = MUTE_FORK_DIRECTIVE if is_mute else REASK_DIRECTIVE
     line = ""
     try:
         # One short in-character line (the system prompt carries the improvised identity).
         line = (await call_claude(
             system=build_system_prompt(cfg, ""),
-            messages=[{"role": "user", "content": REASK_DIRECTIVE}],
+            messages=[{"role": "user", "content": directive}],
             model=settings.MODEL_INTERVIEW,
             max_tokens=60,
         )).strip()
     except HTTPException:
-        line = ""   # upstream model failed — fall back, never block the retry
+        line = ""   # upstream model failed — fall back, never block the candidate
     if not line:
-        line = reask_line(seed)
+        line = mute_fork_line(seed) if is_mute else reask_line(seed)
 
     audio_url = await _try_tts(body.session_id, line, body.voice)
     return ReaskResponse(reply=line, audio_url=audio_url)

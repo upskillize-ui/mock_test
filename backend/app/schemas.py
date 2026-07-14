@@ -121,6 +121,10 @@ class TurnResponse(BaseModel):
 class ReaskRequest(BaseModel):
     session_id: str = Field(..., max_length=36)
     voice: Literal["female", "male"] = "female"
+    # "reask" — the transcription failed, ask them to say it again.
+    # "mute"  — the mic is MUTED and an answer is due: offer the unmute-or-type fork.
+    # Neither inserts a message or touches the stage machine, so neither costs a slot.
+    kind: Literal["reask", "mute"] = "reask"
 
 
 class ReaskResponse(BaseModel):

@@ -145,3 +145,40 @@ def test_pacing_constants_match_the_spec():
     from app import main as m
     assert 300 <= m.INTER_SENTENCE_PAUSE_MS <= 450     # a human beat between sentences
     assert m.PRE_QUESTION_PAUSE_MS == 700              # let the question land
+
+
+# ── MIC = MEET SEMANTICS: the spoken "you're on mute" fork ────────────────
+
+def test_mute_fork_lines_offer_both_paths_and_vary():
+    lines = [p.mute_fork_line(i) for i in range(4)]
+    assert len(set(lines)) > 1                       # never canned
+    for line in lines:
+        low = line.lower()
+        assert "mute" in low                          # name the actual problem
+        assert "typ" in low                           # ...and always offer the other path
+
+
+def test_mute_fork_directive_never_belittles_typing_and_never_re_asks():
+    d = p.MUTE_FORK_DIRECTIVE
+    assert "unmute" in d.lower()
+    # Typed answers are first-class. The fork must not imply otherwise.
+    assert "lesser option" in d
+    assert "first-class" in d
+    # It offers a fork; it does not repeat the question or hurry them.
+    assert "do not repeat your question" in d.lower()
+    assert "impatient" in d
+
+
+def test_the_persona_itself_carries_the_mute_fork():
+    # The interviewer knows this moment natively — it is not bolted on.
+    s = flat(p.build_persona(_cfg()))
+    assert "You're on mute" in s
+    assert "Typed answers are FULLY first-class" in s
+
+
+def test_mute_fork_never_asks_a_question_so_it_cannot_cost_a_slot():
+    """The fork rides /session/reask, which inserts no message and changes no state.
+    The directive must therefore not smuggle a new question into the turn."""
+    d = p.MUTE_FORK_DIRECTIVE.lower()
+    assert "one sentence" in d
+    assert "do not repeat your question" in d

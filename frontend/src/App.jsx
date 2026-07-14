@@ -76,7 +76,7 @@ const sendTurn = (sid, msg, stage, voice, deliveryMetrics) => api("/session/turn
 const submitRating = (sid, answerId, rating) => api("/session/turn/rating", { method: "POST", body: JSON.stringify({ session_id: sid, answer_id: answerId, rating }) });
 // Realism v2: transcription failed -> IQ says so in character and the mic reopens.
 // Consumes NO question slot (the backend inserts no message and changes no state).
-const reaskTurn = (sid, voice) => api("/session/reask", { method: "POST", body: JSON.stringify({ session_id: sid, voice }) });
+const reaskTurn = (sid, voice, kind = "reask") => api("/session/reask", { method: "POST", body: JSON.stringify({ session_id: sid, voice, kind }) });
 // Realism v2: correct a mis-transcribed answer from the transcript drawer. Idempotent.
 const editLastAnswer = (sid, message) => api("/session/turn/last", { method: "PATCH", body: JSON.stringify({ session_id: sid, message }) });
 // Interview Room: ONE attention/device signal, derived on-device. Strings only — no
@@ -144,7 +144,6 @@ const getMutePref = () => { try { return localStorage.getItem(MUTE_KEY) === "1";
 // ── Voice Stage prefs (persisted; all default ON, and only ever apply when voice
 // is actually available — with voice off the session renders exactly as before).
 const STAGE_KEY = "interviewiq_voice_stage";
-const AUTOLISTEN_KEY = "interviewiq_autolisten";
 const CAPTIONS_KEY = "interviewiq_captions";
 const getFlagPref = (key, dflt = true) => {
   try { const v = localStorage.getItem(key); return v === null ? dflt : v === "1"; }
@@ -157,6 +156,7 @@ const SILENCE_RMS = 0.018;         // below this counts as silence
 const SILENCE_HOLD_MS = 2500;      // 2.5s trailing silence -> auto-stop (auto-listen only)
 const AUTO_LISTEN_GRACE_MS = 600;  // grace beat before the mic opens
 const RATING_SILENCE_MS = 8000;    // no spoken rating in 8s -> fall back to the pills
+const MUTE_FORK_DELAY_MS = 5000;   // muted with an answer due -> IQ offers the fork aloud
 
 // One shared <audio> element across screens so the iOS unlock (done on the Start
 // button gesture) carries over to programmatic playback in the interview.
@@ -501,7 +501,13 @@ const CSS = `
   .iq-switch-on .iq-switch-knob{transform:translateX(18px)}
 
   /* ── INTERVIEW ROOM (Phase B) — a two-person call, not a chat log ───────── */
-  .iq-room{flex:1;position:relative;display:flex;align-items:center;justify-content:center;background:#0B1628;padding:20px;overflow:hidden;min-height:0}
+  /* The room is a COLUMN: the stage (interviewer + self-view + overlays) and, below it,
+     a caption band with its own reserved height. The caption used to be absolutely
+     positioned in the same space as the self-view tile, so a long third line clipped
+     against it. Giving captions their own row makes that collision structurally
+     impossible — not just visually patched. */
+  .iq-room{flex:1;display:flex;flex-direction:column;background:#0B1628;overflow:hidden;min-height:0}
+  .iq-room-stage{flex:1;position:relative;display:flex;align-items:center;justify-content:center;padding:20px;min-height:0}
   .iq-room-main{display:flex;flex-direction:column;align-items:center;gap:12px;position:relative}
   /* Interviewer name chip, bottom-left of the tile — like a Meet participant label. */
   .iq-name-chip{position:absolute;left:8px;bottom:8px;display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:8px;background:rgba(11,22,40,.72);border:1px solid rgba(255,255,255,.12);color:#fff;font-size:12px;font-weight:700;font-family:'Plus Jakarta Sans',sans-serif;max-width:90%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -510,8 +516,16 @@ const CSS = `
   .iq-room-self video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
   .iq-room-self-dot{position:absolute;left:8px;bottom:8px;width:9px;height:9px;border-radius:50%;border:1px solid rgba(0,0,0,.35)}
   .iq-room-self-initial{width:54px;height:54px;border-radius:50%;background:#1a2744;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,.85);font-weight:800;font-size:20px}
-  /* Meet-style caption bar (CC) — the interviewer's current sentence. */
-  .iq-cc{position:absolute;left:50%;transform:translateX(-50%);bottom:18px;max-width:min(760px,92%);padding:10px 16px;border-radius:12px;background:rgba(11,22,40,.86);border:1px solid rgba(255,255,255,.10);color:#fff;font-size:15px;line-height:1.45;text-align:center;font-family:'Plus Jakarta Sans','Noto Sans Devanagari',sans-serif;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  /* Caption band: its OWN row, with height reserved for exactly two lines. Reserving the
+     height also stops the layout jumping as captions come and go. */
+  .iq-cc-band{flex-shrink:0;display:flex;align-items:center;justify-content:center;min-height:72px;padding:4px 20px 12px}
+  /* Meet-style caption bar (CC) — the interviewer's current sentence, HARD-clamped to
+     two lines with an ellipsis. -webkit-line-clamp alone was not enough (a third line
+     was still rendering and clipping), so max-height is the belt to its braces:
+     2 lines x 1.4 line-height, plus the 20px of vertical padding. */
+  .iq-cc{max-width:min(760px,100%);box-sizing:border-box;padding:10px 16px;border-radius:12px;background:rgba(11,22,40,.86);border:1px solid rgba(255,255,255,.10);color:#fff;font-size:15px;line-height:1.4;text-align:center;font-family:'Plus Jakarta Sans','Noto Sans Devanagari',sans-serif;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-overflow:ellipsis;max-height:calc(2 * 1.4em + 20px)}
+  /* "You're muted" — sits directly above the self-view tile, never over it. */
+  .iq-muted-chip{position:absolute;right:16px;bottom:150px;display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;background:rgba(232,82,26,.20);border:1px solid #E8521A;color:#fff;font-size:11px;font-weight:700;font-family:'Plus Jakarta Sans',sans-serif;white-space:nowrap}
   /* Bottom control bar — centred Meet-style pills. */
   .iq-bar{flex-shrink:0;display:flex;align-items:center;justify-content:center;gap:10px;padding:14px 16px;background:#0B1628;border-top:1px solid rgba(255,255,255,.07);flex-wrap:wrap}
   .iq-ctl{display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:50%;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#fff;cursor:pointer;transition:all .15s;flex-shrink:0}
@@ -529,7 +543,9 @@ const CSS = `
   .iq-typebar{flex-shrink:0;display:flex;gap:10px;align-items:flex-end;padding:12px 20px;background:#0f1c33;border-top:1px solid rgba(255,255,255,.08)}
   @media(max-width:640px){
     .iq-room-self{width:118px;right:10px;bottom:10px}
-    .iq-cc{font-size:14px;bottom:12px}
+    .iq-cc{font-size:14px}
+    .iq-cc-band{min-height:64px;padding:4px 12px 10px}
+    .iq-muted-chip{right:10px;bottom:106px;font-size:10px;padding:4px 9px}
     .iq-ctl{width:44px;height:44px}
   }
 
@@ -1114,7 +1130,7 @@ function Switch({ on, onChange, label }) {
   );
 }
 
-function StageSettingsMenu({ onClose, voiceStage, setVoiceStage, autoListen, setAutoListen,
+function StageSettingsMenu({ onClose, voiceStage, setVoiceStage,
                             captions, setCaptions, voice, setVoice }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
@@ -1128,8 +1144,6 @@ function StageSettingsMenu({ onClose, voiceStage, setVoiceStage, autoListen, set
       <div className="iq-menu" role="menu">
         <div className="iq-menu-row"><span>Voice mode</span>
           <Switch on={voiceStage} onChange={setVoiceStage} label="Voice mode" /></div>
-        <div className="iq-menu-row" style={dim}><span>Auto-listen</span>
-          <Switch on={autoListen} onChange={setAutoListen} label="Auto-listen" /></div>
         <div className="iq-menu-row" style={dim}><span>Captions</span>
           <Switch on={captions} onChange={setCaptions} label="Captions" /></div>
         <div className="iq-menu-sep" />
@@ -1189,7 +1203,6 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
 
   // ── Voice Stage: presentation state only (the state machine is untouched) ──
   const [voiceStage, setVoiceStageState] = useState(() => getFlagPref(STAGE_KEY, true));
-  const [autoListen, setAutoListenState] = useState(() => getFlagPref(AUTOLISTEN_KEY, true));
   const [captions, setCaptionsState] = useState(() => getFlagPref(CAPTIONS_KEY, true));
   const [voicePref, setVoicePrefState] = useState(() => config.voice || getVoicePref());
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1200,7 +1213,6 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
   const [levels, setLevels] = useState(() => new Array(WAVE_BARS).fill(0));
   const [graceMs, setGraceMs] = useState(0);                 // auto-listen grace beat
   const setVoiceStage = (v) => { setVoiceStageState(v); setFlagPref(STAGE_KEY, v); };
-  const setAutoListen = (v) => { setAutoListenState(v); setFlagPref(AUTOLISTEN_KEY, v); };
   const setCaptions = (v) => { setCaptionsState(v); setFlagPref(CAPTIONS_KEY, v); };
   const setVoicePref = (v) => { setVoicePrefState(v); try { localStorage.setItem(VOICE_KEY, v); } catch { /* noop */ } };
 
@@ -1220,9 +1232,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
   const ratingPromptRef = useRef("");        // its text, for the caption
   const ratingSilenceRef = useRef(null);     // 8s no-speech timer -> show the pills
   const busyRef = useRef(false);             // a submit/re-ask is in flight
+  const muteForkRef = useRef(null);          // the 5s "you're on mute" timer
+  const muteForkedForRef = useRef("");       // question we already offered the fork for
   // Refs mirror state for the <audio> 'ended' handler and the rAF loop, which would
   // otherwise close over stale values.
-  const autoListenRef = useRef(autoListen);
+  const micOnRef = useRef(true);   // MIC = mute toggle; unmuted is the capture gate
   const voiceModeRef = useRef(false);
   const canAnswerRef = useRef(false);
   const consentRef = useRef(false);
@@ -1428,7 +1442,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
 
   // Mirror state into refs — the <audio> 'ended' handler and the rAF meter loop are
   // registered once and would otherwise close over stale values.
-  useEffect(() => { autoListenRef.current = autoListen; }, [autoListen]);
+  useEffect(() => { micOnRef.current = micOn; }, [micOn]);
   useEffect(() => { voiceModeRef.current = voiceMode; }, [voiceMode]);
   useEffect(() => { canAnswerRef.current = canAnswer; }, [canAnswer]);
   useEffect(() => { consentRef.current = voiceConsented; }, [voiceConsented]);
@@ -1532,7 +1546,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
       if (rms > SILENCE_RMS * 1.6) spokeRef.current = true;
       // Trailing-silence auto-stop — ONLY in auto-listen mode, and only after they
       // have actually spoken, so the thinking pause before an answer never cuts in.
-      if (autoListenRef.current && spokeRef.current) {
+      if (micOnRef.current && spokeRef.current) {
         if (rms < SILENCE_RMS) {
           if (!silenceStartRef.current) silenceStartRef.current = performance.now();
           else if (performance.now() - silenceStartRef.current >= SILENCE_HOLD_MS) { stopRecording(); return; }
@@ -1562,7 +1576,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
     graceRafRef.current = requestAnimationFrame(step);
   };
   const maybeAutoListen = () => {
-    if (!voiceModeRef.current || !autoListenRef.current) return;
+    if (!voiceModeRef.current) return;
+    if (!micOnRef.current) return;        // MUTED: no capture EVER. Never auto-unmute.
     if (!consentRef.current) return;      // consent stays explicit — never implied
     if (!canAnswerRef.current) return;    // e.g. a confidence rating is due first
     if (recordingRef.current || transcribingRef.current || busyRef.current) return;
@@ -1612,7 +1627,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
         setAudioPlaying(false);
         setSpokenLine("");
       }
-      if (autoListenRef.current && consentRef.current && !ratingPillsRef.current) startRatingCapture();
+      if (micOnRef.current && consentRef.current && !ratingPillsRef.current) startRatingCapture();
       return;
     }
     maybeAutoListen();
@@ -1728,6 +1743,62 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
     if (awaitingRating && voiceMode) { startRatingCapture(); return; }   // spoken rating
     beginRecording();
   };
+
+  // ── MIC = MEET SEMANTICS ──
+  // The button is a PERSISTENT MUTE TOGGLE, not tap-to-speak. The state survives across
+  // questions until the student changes it.
+  //   UNMUTED — every answer window opens capture automatically; unmuting mid-question
+  //             starts capture immediately, with no extra tap.
+  //   MUTED   — no capture EVER occurs.
+  // We NEVER auto-unmute. Unmuting is always the student's explicit act (mic privacy).
+  const toggleMic = () => {
+    if (micOn) {
+      micOnRef.current = false;          // set the ref first: the meter loop reads it
+      setMicOn(false);
+      clearGrace();
+      if (recording) stopRecording();    // muting stops any capture in flight
+      return;
+    }
+    // UNMUTE — an explicit act. Consent is still explicit and separate.
+    if (!voiceConsented) { setShowVoiceConsent(true); return; }
+    micOnRef.current = true;
+    setMicOn(true);
+    clearMuteFork();
+    // If an answer (or a rating) is already due, start capturing right now — no extra tap.
+    if (transcribing || loading || recording) return;
+    if (awaitingRating && voiceMode && !ratingPills) startRatingCapture();
+    else if (canAnswer) beginRecording();
+  };
+
+  // Muted with an answer due -> after ~5s the interviewer offers the fork ALOUD
+  // ("You're on mute — unmute, or switch to typing"). Once per question. It costs no
+  // question slot (the endpoint inserts no message and changes no state), and it never
+  // unmutes anyone.
+  const clearMuteFork = () => {
+    if (muteForkRef.current) { clearTimeout(muteForkRef.current); muteForkRef.current = null; }
+  };
+  const questionKey = `${sstate?.current_stage || ""}|${sstate?.round_index ?? 0}|${sstate?.answer_count ?? 0}`;
+  useEffect(() => {
+    clearMuteFork();
+    if (!voiceMode || micOn || typeOpen) return;
+    if (!canAnswer || loading || audioPlaying || recording || transcribing) return;
+    if (muteForkedForRef.current === questionKey) return;   // already offered for this question
+    muteForkRef.current = setTimeout(async () => {
+      muteForkedForRef.current = questionKey;
+      try {
+        const r = await reaskTurn(sessionId, voicePref || "female", "mute");
+        setMessages(m => [...m, { role: "assistant", content: r.reply, audio_url: r.audio_url }]);
+        if (r.audio_url) {
+          setAudioPlaying(true);
+          setSpokenLine(r.reply);
+          await playOne(r.audio_url);
+          setAudioPlaying(false);
+          setSpokenLine("");
+        }
+      } catch { /* a nudge must never break the interview */ }
+    }, MUTE_FORK_DELAY_MS);
+    return clearMuteFork;
+  }, [voiceMode, micOn, typeOpen, canAnswer, loading, audioPlaying, recording, transcribing, questionKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Interview Room (Phase C/E) ──
   // Attention signals are derived ON-DEVICE and reported as STRINGS. The camera never
@@ -1953,7 +2024,6 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
               <StageSettingsMenu
                 onClose={() => setMenuOpen(false)}
                 voiceStage={voiceStage} setVoiceStage={setVoiceStage}
-                autoListen={autoListen} setAutoListen={setAutoListen}
                 captions={captions} setCaptions={setCaptions}
                 voice={voicePref} setVoice={setVoicePref}
               />
@@ -1980,6 +2050,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
           {/* ══ THE INTERVIEW ROOM ══ A two-person call, not a chat log. The question is
               spoken and captioned; the full transcript lives in the drawer. */}
           <div className="iq-room">
+            <div className="iq-room-stage">
             <div className="iq-room-main">
               <InterviewerPresence state={orbState} voice={voicePref}
                 difficulty={config.difficulty} seed={config.roomSeed || sessionId}
@@ -1994,6 +2065,13 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
             <RoomSelfView on={camOn} micOn={micOn}
               initial={(config.name || "You").trim().charAt(0).toUpperCase() || "Y"} />
 
+            {/* MUTED: no capture can occur. Stated plainly, never silently. */}
+            {!micOn && (
+              <div className="iq-muted-chip" role="status" aria-live="polite">
+                <IconMicOff size={13} /> You&apos;re muted
+              </div>
+            )}
+
             {/* Centre-stage overlays: rating, "Heard:", errors. */}
             <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)",
               display: "flex", flexDirection: "column", alignItems: "center", gap: 12, pointerEvents: "none", width: "min(620px, 92%)" }}>
@@ -2004,7 +2082,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
                     {heard}
                   </div>
                 )}
-                {awaitingRating && !loading && (ratingPills || typeOpen || !autoListen || !micOn) && (
+                {awaitingRating && !loading && (ratingPills || typeOpen || !micOn) && (
                   <RatingWidget busy={ratingBusy} onRate={rate} />
                 )}
                 {reverseMode && !loading && !awaitingRating && (
@@ -2032,10 +2110,6 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
               </div>
             </div>
 
-            {/* CC — the interviewer's current sentence while speaking; the whole question
-                otherwise, so a muted learner can always read it. */}
-            {captions && !heard && ccLine && <div className="iq-cc">{ccLine}</div>}
-
             {/* While listening, the real mic waveform sits above the bar. */}
             {recording && (
               <div style={{ position: "absolute", left: "50%", bottom: 16, transform: "translateX(-50%)",
@@ -2049,30 +2123,36 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
             {graceMs > 0 && !recording && (
               <div style={{ position: "absolute", left: "50%", bottom: 22, transform: "translateX(-50%)", textAlign: "center" }}>
                 <div style={{ fontSize: 12, color: "rgba(255,255,255,.7)", marginBottom: 5 }}>
-                  Listening in {(graceMs / 1000).toFixed(1)}s — tap the mic to cancel
+                  Listening in {(graceMs / 1000).toFixed(1)}s — mute to cancel
                 </div>
                 <div style={{ width: 150, height: 3, borderRadius: 2, background: "rgba(255,255,255,.15)", overflow: "hidden", margin: "0 auto" }}>
                   <div style={{ height: "100%", width: ((graceMs / AUTO_LISTEN_GRACE_MS) * 100) + "%", background: IQ.teal }} />
                 </div>
               </div>
             )}
+            </div>
+
+            {/* CC band — its own reserved row, so a two-line caption can never collide
+                with the self-view tile or run off the viewport. Speaking: the sentence in
+                the air. Idle: the whole question, so it can always be read. */}
+            <div className="iq-cc-band">
+              {captions && !heard && ccLine ? <div className="iq-cc">{ccLine}</div> : null}
+            </div>
           </div>
 
           {/* ══ CONTROL BAR ══ Meet-style. The mic doubles as push-to-talk in the
               auto-listen gaps, preserving the existing tap-to-speak semantics. */}
           <div className="iq-bar">
+            {/* MEET SEMANTICS: a persistent MUTE TOGGLE, not tap-to-speak. Unmuted, every
+                answer window captures automatically and this shows live state. Muted, no
+                capture ever happens. We never auto-unmute. */}
             <button
-              className={"iq-ctl" + (recording ? " iq-ctl--live" : !micOn ? " iq-ctl--off" : "")}
-              onClick={() => {
-                if (recording) { stopRecording(); return; }
-                if (!micOn) { setMicOn(true); return; }        // unmute
-                if (micUsable) { onMicClick(); return; }        // push-to-talk
-                setMicOn(false);                                // mute
-              }}
-              disabled={loading && !recording}
-              title={recording ? "Stop recording" : micOn ? "Speak / mute" : "Unmute"}
-              aria-label={recording ? "Stop recording" : micOn ? "Speak or mute" : "Unmute"}>
-              {recording ? <IconStop /> : micOn ? <IconMic /> : <IconMicOff />}
+              className={"iq-ctl" + (!micOn ? " iq-ctl--off" : recording ? " iq-ctl--live" : "")}
+              onClick={toggleMic}
+              aria-pressed={!micOn}
+              title={micOn ? (recording ? "Listening — click to mute" : "Mute") : "Unmute"}
+              aria-label={micOn ? (recording ? "Listening. Click to mute." : "Mute microphone") : "Unmute microphone"}>
+              {micOn ? <IconMic /> : <IconMicOff />}
             </button>
 
             <button
