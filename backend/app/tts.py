@@ -326,6 +326,107 @@ async def synthesize(text: str, speaker: str) -> bytes | None:
         return None
 
 
+# ── The clip pack: acknowledgments + listening backchannels ──────────────────
+# The thinking gap is the moment the illusion dies. An answer is submitted, and then the
+# room goes silent for two or three seconds while an LLM writes a reply and a vendor reads
+# it — and what the candidate hears in that gap is a MACHINE LOADING. A person doesn't do
+# that. A person says "Hmm." and then thinks.
+#
+# So: a tiny fixed vocabulary, synthesised ONCE per voice, ever, and played instantly on
+# submit while the real reply is generated. There are 8 of them + 2 backchannels, they are
+# content-addressed on disk like every other clip, and after the first run they cost
+# exactly nothing — 20 clips total across both voices, for the life of the product.
+ACK_LINES = [
+    "Hmm.",
+    "Okay.",
+    "Right.",
+    "Accha.",
+    "Got it.",
+    "Interesting.",
+    "Let me think about that.",
+    "Mm-hmm.",
+]
+
+# Played SOFTLY, mid-answer, at a natural pause in a long answer — the sound a person makes
+# to tell you they are still listening and you should keep going. Never more than twice in
+# one answer, and never in the first ten seconds: a backchannel that arrives too early
+# reads as an interruption, which is the exact opposite of what it is for.
+BACKCHANNEL_LINES = [
+    "Mm-hmm.",
+    "Right.",
+]
+
+
+def ack_line(seed: int) -> str:
+    """Seeded rotation, so the same answer always draws the same acknowledgment (stable
+    across a retry) but the session never repeats itself in a loop."""
+    return ACK_LINES[abs(int(seed)) % len(ACK_LINES)]
+
+
+async def get_shared_audio_hash(text: str, speaker: str) -> str | None:
+    """Cache-first synth for a SHARED, session-independent clip (the ack pack, the
+    backchannels).
+
+    Deliberately NOT metered and NOT capped, unlike get_audio_hash: these clips belong to
+    the product, not to a session. There are twenty of them in total, they are synthesised
+    once in the life of the cache, and billing them against whichever candidate happened to
+    warm them would make the per-session cost meter lie.
+    """
+    if not text or not text.strip():
+        return None
+    key = cache_key(text, speaker)
+    if read_cache(key) is not None:
+        return key
+    audio = await synthesize(text, speaker)
+    if audio is None:
+        return None
+    _write_cache(key, audio)
+    return key
+
+
+def clip_pack_lines() -> list[str]:
+    """Every shared line, de-duplicated ("Mm-hmm." and "Right." are in both lists, and
+    are ONE clip on disk — the cache is content-addressed, so they already were)."""
+    seen, out = set(), []
+    for line in ACK_LINES + BACKCHANNEL_LINES:
+        if line not in seen:
+            seen.add(line)
+            out.append(line)
+    return out
+
+
+async def warm_clip_pack(speakers: list[str]) -> dict:
+    """Synthesise the whole shared clip pack for these voices, at startup.
+
+    Best-effort by construction: a vendor outage at boot must not stop the app from
+    serving, and a clip that fails to warm is simply synthesised on first use (or, in the
+    worst case, silently skipped — the interview never depends on an acknowledgment).
+    Returns a summary for the boot log so a cold cache is visible in one line.
+    """
+    if not settings.TTS_ENABLED:
+        return {"warmed": 0, "cached": 0, "failed": 0, "bytes": 0}
+    warmed = cached = failed = total_bytes = 0
+    for speaker in speakers:
+        for line in clip_pack_lines():
+            key = cache_key(line, speaker)
+            hit = read_cache(key)
+            if hit is not None:
+                cached += 1
+                total_bytes += len(hit)
+                continue
+            try:
+                if await get_shared_audio_hash(line, speaker):
+                    warmed += 1
+                    blob = read_cache(key)
+                    total_bytes += len(blob or b"")
+                else:
+                    failed += 1
+            except Exception as e:
+                failed += 1
+                log.warning("clip pack warm failed: %s", type(e).__name__)
+    return {"warmed": warmed, "cached": cached, "failed": failed, "bytes": total_bytes}
+
+
 async def get_audio_hash(session_id: str, text: str, speaker: str) -> str | None:
     """Return a cache hash the client can fetch audio by, or None if unavailable.
 

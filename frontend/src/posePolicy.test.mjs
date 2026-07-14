@@ -7,8 +7,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  choosePose, hasPoseSet, resolvePose, nextEmphasis, POSES,
-  EMPHASIS_ON, EMPHASIS_OFF, EMPHASIS_MIN_HOLD_MS,
+  choosePose, hasPoseSet, resolvePose, nextEmphasis, weightedPool, POSES,
+  EMPHASIS_ON, EMPHASIS_OFF, EMPHASIS_MIN_HOLD_MS, POSED_WEIGHT,
 } from "./posePolicy.js";
 
 const FULL_SET = {
@@ -16,6 +16,14 @@ const FULL_SET = {
   priya_smile: "S.png",
   priya_intense: "I.png",
   priya_thinking: "T.png",
+};
+
+// The roster as it actually stands: Riya is the one character with a pose grid on disk.
+const RIYA_SET = {
+  riya_listening: "L.png",
+  riya_smile: "S.png",
+  riya_intense: "I.png",
+  riya_thinking: "T.png",
 };
 
 // ── Pose map + fallback (a character with no poses must never crash) ────────
@@ -115,4 +123,51 @@ test("a switch is held for at least 1.5s, however the amplitude swings", () => {
   assert.equal(nextEmphasis(true, 0.0, EMPHASIS_MIN_HOLD_MS - 1), true);
   // First frame of a reply: nothing has switched yet, so the gesture may fire at once.
   assert.equal(nextEmphasis(false, 0.9, Infinity), true);
+});
+
+// ── ROSTER WEIGHTING: the founder must actually SEE the pose system ────────
+// Half the value of this build is in the faces, and it is invisible in any session that
+// happens to draw a character whose pose grid has not been made yet. Until the whole cast
+// has one, the posed characters are weighted up. This is scaffolding with a delete-by
+// date: when the grids land, POSED_WEIGHT goes to 1 and these two tests go with it.
+
+const FEMALE_REALISTIC = [{ id: "priya" }, { id: "riya" }, { id: "meera" }];
+
+test("a posed character is three times as likely to be drawn as an un-posed one", () => {
+  const pool = weightedPool(FEMALE_REALISTIC, RIYA_SET);
+  const riya = pool.filter(c => c.id === "riya").length;
+  const priya = pool.filter(c => c.id === "priya").length;
+  assert.equal(riya, POSED_WEIGHT);
+  assert.equal(priya, 1);
+  assert.equal(pool.length, 5);           // 3 + 1 + 1
+  // ...which is a MAJORITY. "A Female/Realistic session should usually be Riya."
+  assert.ok(riya / pool.length > 0.5, "the posed character must win more often than not");
+});
+
+test("the un-posed characters stay in the pool — weighting is not exclusion", () => {
+  const ids = new Set(weightedPool(FEMALE_REALISTIC, RIYA_SET).map(c => c.id));
+  assert.deepEqual([...ids].sort(), ["meera", "priya", "riya"]);
+  // With no pose grids at all (the pre-poses world), the pool is exactly uniform again —
+  // which is also what happens the day we set POSED_WEIGHT to 1.
+  const flat = weightedPool(FEMALE_REALISTIC, {});
+  assert.equal(flat.length, FEMALE_REALISTIC.length);
+});
+
+// ── CRITICAL: the pressure panel never smiles ──────────────────────────────
+
+test("critical tone puts the face in `intense`, warm-up or not", () => {
+  assert.equal(choosePose({ state: "speaking", tone: "critical" }), "intense");
+  // ...and it outranks the warm-up smile, which every other difficulty gets.
+  assert.equal(choosePose({ state: "speaking", tone: "critical", stage: "WARMUP" }), "intense");
+  assert.equal(choosePose({ state: "speaking", tone: "warm", stage: "WARMUP" }), "smile");
+});
+
+test("with no server tone, Critical still leans in from the first question", () => {
+  assert.equal(
+    choosePose({ state: "speaking", tone: "", stage: "WARMUP", difficulty: "Critical" }),
+    "intense",
+  );
+  // She still LISTENS like a person — the pressure is in how she speaks, not a stare.
+  assert.equal(choosePose({ state: "listening", tone: "critical" }), "listening");
+  assert.equal(choosePose({ state: "thinking", tone: "critical" }), "thinking");
 });

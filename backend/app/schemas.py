@@ -44,7 +44,12 @@ class StartSessionRequest(BaseModel):
     level: Literal["Fresher", "1-3 years", "3-10 years", "10-20 years", "20+ years", "Career switcher"]
     company: str = Field("", max_length=120)
     duration_min: int = Field(20, ge=5, le=60)
-    difficulty: Literal["Easy", "Realistic", "Stretch"] = "Realistic"
+    # "Critical" is the pressure panel — a stress-interview simulator. It is a real genre
+    # in Indian hiring (bank PO panels, consulting partners, some PSU boards), and nobody
+    # lands in it by accident: the selector requires a second, explicit confirmation tap.
+    # It changes the interviewer's REGISTER and raises the curveball count. It does NOT
+    # relax a single guardrail — see prompts.build_persona.
+    difficulty: Literal["Easy", "Realistic", "Stretch", "Critical"] = "Realistic"
     mode: Literal["interview", "coach"] = "interview"
     round: Literal["screening", "technical", "leadership", "hr", "full"] = "full"
     round_label: str = Field("", max_length=80)
@@ -81,6 +86,58 @@ class StartSessionResponse(BaseModel):
     # Returned in NON-PRODUCTION only, purely so UAT can log it and confirm that fresh
     # sessions really do yield different interviewers. Never rendered in the UI.
     interviewer_identity: Optional[str] = None
+
+
+class GreetingRequest(BaseModel):
+    """FAST START: the room is already on screen — now go and get the greeting."""
+    session_id: str = Field(..., max_length=36)
+    voice: Literal["female", "male"] = "female"
+
+
+class GreetingResponse(BaseModel):
+    """The interviewer's opening line, and the audio for its FIRST SENTENCE ONLY.
+
+    The rest of the sentences ride back with `pending: true` and no audio_url — the client
+    starts playing sentence one immediately and pulls the others from /session/speech while
+    it is in the air. Waiting for the whole greeting to synthesise before saying one word
+    was most of the 14.5s the founder sat through.
+    """
+    greeting: str
+    audio_segments: list[dict] = []
+    tone: str = "warm"
+    interviewer_identity: Optional[str] = None
+
+
+class SpeechRequest(BaseModel):
+    """FAST START: 'synthesise the rest of what you just said, from sentence N on.'
+
+    An INDEX, never text. This endpoint cannot be made to read an arbitrary string aloud
+    on our bill: it re-derives the sentences server-side from the reply already stored for
+    THIS session, so the only thing it can ever synthesise is something this interviewer
+    has already said to this candidate.
+    """
+    session_id: str = Field(..., max_length=36)
+    voice: Literal["female", "male"] = "female"
+    from_index: int = Field(1, ge=0, le=64)
+
+
+class SpeechResponse(BaseModel):
+    # [{index, audio_url}] — the client merges these into the segments it already has.
+    segments: list[dict] = []
+
+
+class ClipPackResponse(BaseModel):
+    """The shared, pre-cached clips the room plays instantly — no LLM, no wait.
+
+    acks         — played the instant an answer is submitted, while the real reply
+                   generates. The thinking gap stops sounding like a machine loading.
+    backchannels — played softly at a natural pause inside a long answer ("mm-hmm"),
+                   so the interviewer sounds like she is still listening.
+
+    Both are [{text, audio_url}]. Empty when TTS is off, and the room is fine with that.
+    """
+    acks: list[dict] = []
+    backchannels: list[dict] = []
 
 
 class TurnRequest(BaseModel):
@@ -133,6 +190,12 @@ class TurnResponse(BaseModel):
     # aloud. Present only when state.awaiting_rating is true.
     rating_prompt: Optional[str] = None
     rating_audio_url: Optional[str] = None
+    # The engagement floor. "question" on every ordinary turn; "checkin" when the
+    # interviewer has broken off the question march to ask whether they are still there.
+    # A check-in is a direct question and carries its own short clock — the client reads
+    # `checkin_seconds` instead of the round's per-question budget.
+    question_kind: str = "question"
+    checkin_seconds: int = 45
 
 
 class ReaskRequest(BaseModel):
@@ -277,6 +340,15 @@ class AlumniQuestionSubmit(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     db: str
+    # Schema drift, checked once at boot (see app.schema_check). "ok" | "drift".
+    # A drifted database still SERVES — every optional column is written defensively — which
+    # is exactly why it needs to be visible somewhere a human will look. It deliberately
+    # does NOT make `status` degraded: the service is up, it is just quietly doing less than
+    # it says it does.
+    # (Named schema_STATUS, not `schema`: a field called `schema` shadows BaseModel.schema()
+    # and pydantic warns about it — a smell that a future version could turn into a break.)
+    schema_status: str = "ok"
+    pending_migrations: list[str] = []
     model_interview: str
     model_debrief: str
 

@@ -9,8 +9,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   questionSeconds, expiryAction, shouldArmAbandon,
-  QUESTION_SECONDS, DEFAULT_QUESTION_SECONDS,
+  shouldBackchannel, shouldBargeIn,
+  QUESTION_SECONDS, DEFAULT_QUESTION_SECONDS, CHECKIN_SECONDS,
   CAMERA_GRACE_MS, SILENT_ABANDON_MS,
+  BACKCHANNEL_MIN_ANSWER_MS, BACKCHANNEL_MIN_PAUSE_MS,
+  BACKCHANNEL_NEVER_BEFORE_MS, BACKCHANNEL_MAX_PER_ANSWER,
+  BARGE_IN_RMS, BARGE_IN_SUSTAIN_MS,
 } from "./roomPolicy.js";
 
 // ── The per-question budget ────────────────────────────────────────────────
@@ -94,4 +98,86 @@ test("no clock runs when no answer is due, or outside the room", () => {
 test("the device-policy clocks are the ones the policy promised", () => {
   assert.equal(CAMERA_GRACE_MS, 60_000);      // 60s camera grace
   assert.equal(SILENT_ABANDON_MS, 90_000);    // 90s both-channels-silent
+});
+
+// ── The engagement floor's check-in clock ──────────────────────────────────
+// The check-in ("Shall we keep going?") is a direct question, and it is the ONE question
+// in the interview that must not be given three minutes: three minutes is exactly the
+// silence it exists to break.
+
+test("a check-in gets its own short clock, not the round's full budget", () => {
+  assert.equal(questionSeconds("DOMAIN", "checkin"), CHECKIN_SECONDS);
+  assert.equal(CHECKIN_SECONDS, 45);
+  // ...and it is much shorter than the question it interrupted.
+  assert.ok(CHECKIN_SECONDS < QUESTION_SECONDS.DOMAIN);
+  // The server sends the number; we honour it rather than hard-coding our own.
+  assert.equal(questionSeconds("DOMAIN", "checkin", 30), 30);
+});
+
+test("an ordinary question is completely unaffected by the check-in clock", () => {
+  assert.equal(questionSeconds("DOMAIN"), QUESTION_SECONDS.DOMAIN);
+  assert.equal(questionSeconds("DOMAIN", "question"), QUESTION_SECONDS.DOMAIN);
+  assert.equal(questionSeconds("CASE", "question", 30), QUESTION_SECONDS.CASE);
+});
+
+// ── Listening backchannels ────────────────────────────────────────────────
+// Every one of these conditions exists to stop the "mm-hmm" becoming an INTERRUPTION,
+// which is worse than saying nothing at all.
+
+const bc = (over = {}) => shouldBackchannel({
+  elapsedMs: 30_000, pauseMs: 1_500, playedCount: 0, endOfAnswerMs: 2_500, ...over,
+});
+
+test("a long answer with a real pause earns a soft mm-hmm", () => {
+  assert.equal(bc(), true);
+});
+
+test("never in a short answer, and never in the opening seconds", () => {
+  assert.equal(bc({ elapsedMs: BACKCHANNEL_MIN_ANSWER_MS - 1 }), false);
+  assert.equal(bc({ elapsedMs: BACKCHANNEL_NEVER_BEFORE_MS - 1 }), false);
+  assert.equal(bc({ elapsedMs: 5_000 }), false);
+  // Exactly at the 20s mark it is allowed — the bar is "longer than ~20s".
+  assert.equal(bc({ elapsedMs: BACKCHANNEL_MIN_ANSWER_MS }), true);
+});
+
+test("a breath is not a pause, and a pause is not the end of an answer", () => {
+  // Too short: they are mid-sentence. Stepping on this is talking over them.
+  assert.equal(bc({ pauseMs: BACKCHANNEL_MIN_PAUSE_MS - 1 }), false);
+  assert.equal(bc({ pauseMs: BACKCHANNEL_MIN_PAUSE_MS }), true);
+  // Too long: they have FINISHED. That silence belongs to the end-of-answer detector, and
+  // an "mm-hmm" landing on top of it would cut off the answer we asked for.
+  assert.equal(bc({ pauseMs: 2_500 }), false);
+  assert.equal(bc({ pauseMs: 4_000 }), false);
+});
+
+test("at most twice in one answer — three is a tic, not a person", () => {
+  assert.equal(bc({ playedCount: BACKCHANNEL_MAX_PER_ANSWER - 1 }), true);
+  assert.equal(bc({ playedCount: BACKCHANNEL_MAX_PER_ANSWER }), false);
+  assert.equal(BACKCHANNEL_MAX_PER_ANSWER, 2);
+});
+
+// ── Barge-in ──────────────────────────────────────────────────────────────
+// The mic is open while the interviewer's own voice is coming out of the same laptop. A
+// low or instant trigger would have her hear herself, conclude she was interrupted, and
+// stop talking — to herself. Hence: a HIGH threshold, and it must be SUSTAINED.
+
+test("sustained speech over the interviewer is a barge-in", () => {
+  assert.equal(shouldBargeIn({ rms: 0.2, aboveSinceMs: BARGE_IN_SUSTAIN_MS }), true);
+});
+
+test("a cough, a chair, a single loud syllable: not a barge-in", () => {
+  // Loud, but not held.
+  assert.equal(shouldBargeIn({ rms: 0.9, aboveSinceMs: BARGE_IN_SUSTAIN_MS - 1 }), false);
+  assert.equal(shouldBargeIn({ rms: 0.9, aboveSinceMs: 0 }), false);
+  // Held, but not loud — room tone and breathing must never take the floor from her.
+  assert.equal(shouldBargeIn({ rms: BARGE_IN_RMS, aboveSinceMs: 5_000 }), false);
+  assert.equal(shouldBargeIn({ rms: 0.01, aboveSinceMs: 5_000 }), false);
+  assert.equal(shouldBargeIn({}), false);
+});
+
+test("the barge-in bar sits well clear of ordinary silence", () => {
+  // SILENCE_RMS in App.jsx is 0.018. The barge-in bar has to be far above it, or she
+  // would interrupt herself on background noise.
+  assert.ok(BARGE_IN_RMS > 0.018 * 2);
+  assert.ok(BARGE_IN_SUSTAIN_MS >= 250);   // long enough to be words, not a knock
 });

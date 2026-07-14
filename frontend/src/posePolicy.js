@@ -12,6 +12,33 @@
 
 export const POSES = ["listening", "smile", "intense", "thinking"];
 
+// ── Roster weighting (temporary) ─────────────────────────────────────────────
+// The pose system is the most expensive thing in this build and the least visible: a
+// session that draws an un-posed character shows none of it. Until every character has a
+// pose grid, the ones that DO are weighted up within the eligible pool — so a founder
+// running a couple of sessions actually SEES the faces move, instead of drawing Priya
+// three times and concluding the feature never shipped.
+//
+// This is scaffolding, not policy. DELETE IT when the cast's pose grids land: set
+// POSED_WEIGHT to 1 (or drop weightedPool entirely) and the roster is uniform again.
+export const POSED_WEIGHT = 3;
+
+/**
+ * weightedPool — expand an eligible pool so posed characters are POSED_WEIGHT times as
+ * likely to be drawn. Un-posed characters stay in (variety matters, and a pool that
+ * lost them would make the roster feel broken), they are simply rarer.
+ *
+ * Pure, so the weighting is testable without a bundler: the caller passes the pose map.
+ */
+export function weightedPool(pool, poseMap) {
+  const out = [];
+  for (const c of pool || []) {
+    const weight = hasPoseSet(poseMap, c.id) ? POSED_WEIGHT : 1;
+    for (let i = 0; i < weight; i++) out.push(c);
+  }
+  return out;
+}
+
 /**
  * choosePose — state first, then the server's tone hint, then heuristics.
  *
@@ -37,14 +64,18 @@ export function choosePose({
   // face must not be smiling while the words are firm.
   if (escalationLevel >= 2) return "intense";
 
+  // Critical is the pressure panel: the face does not soften, not even in the warm-up.
+  // She is leaning in from the first word, because that is what they signed up for.
+  if (tone === "critical") return "intense";
   if (tone === "probing") return "intense";
   if (tone === "warm") return "smile";
 
   if (!tone) {
     // No server hint -> heuristics.
     const s = String(stage || "").toUpperCase();
-    if (s === "" || s === "WARMUP") return "smile";        // greeting / warm-up
-    if (String(difficulty) === "Stretch") return "intense"; // deep-dives lean in
+    if (String(difficulty) === "Critical") return "intense"; // outranks the warm-up smile
+    if (s === "" || s === "WARMUP") return "smile";          // greeting / warm-up
+    if (String(difficulty) === "Stretch") return "intense";  // deep-dives lean in
   }
 
   // "neutral": alternate so the face doesn't freeze into one expression for a whole round.

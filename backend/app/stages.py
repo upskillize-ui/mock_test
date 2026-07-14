@@ -201,6 +201,85 @@ def consumes_question_slot(stage: str, is_substantive: bool, timed_out_skip: boo
     return True
 
 
+# ── The engagement floor ─────────────────────────────────────────────────────
+# A real panel does not ask six questions into silence. It stops and checks whether the
+# person is still there. Ours did not — the founder's UAT session watched the interviewer
+# march through the whole round list talking to nobody, burning an LLM call and a TTS bill
+# on every question. This is the rule that ends that.
+#
+# The counter is DERIVED, not stored: consecutive skips are the trailing run of
+# TIMEOUT_SKIP_TEXT answers in the transcript. That is why "any response resets the
+# counter" needs no code — a real answer (even "yes") breaks the run by existing. No new
+# column, no migration, nothing to keep in sync, and nothing a refresh can desynchronise.
+
+# The check-in gets its own short clock — it is a direct question, and a question the
+# candidate cannot see a clock on is a trap. The client owns the wall clock (see
+# roomPolicy.CHECKIN_SECONDS); this is the same number, on the side that decides.
+CHECKIN_SECONDS = 45
+
+# How many consecutive silences we allow before breaking the question march.
+#   COLD — nothing substantive has been said all session. Two is already generous: it is
+#          the difference between a candidate who is thinking and a candidate who is gone.
+#   WARM — they HAVE answered properly earlier. A good candidate freezing on a hard
+#          question deserves more rope than a blank session, so they get a third.
+SKIPS_BEFORE_CHECKIN_COLD = 2
+SKIPS_BEFORE_CHECKIN_WARM = 3
+
+
+def trailing_skips(user_answers: list[str]) -> int:
+    """How many of the LAST answers in a row were timed-out silences.
+
+    The run breaks on any real answer, which is exactly the "counter resets on any
+    response" rule — including a bare "yes" to the check-in, which is a response even
+    though it is not a substantive answer.
+    """
+    n = 0
+    for content in reversed(list(user_answers or [])):
+        if (content or "").strip() != TIMEOUT_SKIP_TEXT:
+            break
+        n += 1
+    return n
+
+
+def substantive_count(user_answers: list[str]) -> int:
+    """How many real answers this candidate has given so far, all session."""
+    return sum(1 for c in (user_answers or []) if not is_non_substantive(c or ""))
+
+
+def checkin_threshold(substantive_so_far: int) -> int:
+    """Consecutive silences we tolerate before checking in. Someone who has been
+    answering properly gets more rope than someone who has said nothing at all."""
+    return (
+        SKIPS_BEFORE_CHECKIN_WARM if int(substantive_so_far or 0) > 0
+        else SKIPS_BEFORE_CHECKIN_COLD
+    )
+
+
+def engagement_action(stage: str, skips: int, substantive_so_far: int) -> str:
+    """What the interview must do about the silence: "" | "checkin" | "wrap".
+
+    `skips` is the trailing run of silences INCLUDING the one just submitted.
+
+      at the threshold  -> CHECK IN. Break off the question march and ask, in persona,
+                           whether they are still there. A direct question, with a clock.
+      past it           -> WRAP. They did not answer the check-in either. Close courteously
+                           and score honestly what actually happened. Nothing is zeroed as
+                           a punishment; there simply is not much to score.
+
+    REVERSE is exempt: the "question" there is the candidate's own, there is nothing of
+    ours to check in about, and a silent candidate must still be able to reach the close.
+    """
+    if (stage or "").upper() == "REVERSE":
+        return ""
+    n = max(0, int(skips or 0))
+    threshold = checkin_threshold(substantive_so_far)
+    if n > threshold:
+        return "wrap"
+    if n == threshold:
+        return "checkin"
+    return ""
+
+
 def stage_label(stage: str, round_index: int, level: str, awaiting_rating: bool = False) -> str:
     """Human progress label, e.g. 'Behavioural · Question 2 of 4'."""
     name = STAGE_LABELS.get(stage, stage.title())

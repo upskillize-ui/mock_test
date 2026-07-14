@@ -25,8 +25,10 @@ from . import stt
 from . import delivery
 from . import dev_auth
 from . import presence
+from . import schema_check
 from .schemas import (
     StartSessionRequest, StartSessionResponse,
+    GreetingRequest, GreetingResponse, SpeechRequest, SpeechResponse, ClipPackResponse,
     TurnRequest, TurnResponse, STTResponse,
     ReaskRequest, ReaskResponse,
     EditLastAnswerRequest, EditLastAnswerResponse,
@@ -41,11 +43,12 @@ from .schemas import (
     PurgeResponse,
 )
 from .prompts import (
-    build_system_prompt, DEBRIEF_INSTRUCTION, stage_turn_directive,
+    build_system_prompt, debrief_instruction, stage_turn_directive,
     build_kickoff, parse_kickoff, rating_ask, reask_line, REASK_DIRECTIVE, turn_tone,
-    mute_fork_line, MUTE_FORK_DIRECTIVE,
+    mute_fork_line, MUTE_FORK_DIRECTIVE, WRAP_DISENGAGED,
+    partial_opening, first_complete_sentence,
 )
-from .claude_client import call_claude, extract_resume_text
+from .claude_client import call_claude, stream_claude, extract_resume_text
 
 
 def _as_obj(v, default):
@@ -371,20 +374,35 @@ async def _try_tts(session_id: str, text_out: str, voice: str | None) -> str | N
 # E2 pacing. A real interviewer breathes between sentences and lets the question land.
 INTER_SENTENCE_PAUSE_MS = 380     # spec: 300-450ms between sentences
 PRE_QUESTION_PAUSE_MS = 700       # spec: ~700ms before the actual question
+# ...and when the answer they just gave was a REAL one, the beat before the next question
+# is longer, because a person absorbs an answer before firing the next question. Firing at
+# 700ms after someone has just explained something for two minutes is the single clearest
+# tell that nobody was listening — it is the "scripted next-next" feel, in one number.
+# After a skip we stay at 700ms: there was nothing to absorb.
+PRE_QUESTION_PAUSE_SUBSTANTIVE_MS = 1100   # spec: 1000-1200ms
 
 
-async def _try_tts_segments(session_id: str, text_out: str, voice: str | None) -> list[dict]:
+async def _try_tts_segments(
+    session_id: str, text_out: str, voice: str | None,
+    *, first_only: bool = False, pre_question_pause_ms: int = PRE_QUESTION_PAUSE_MS,
+) -> list[dict]:
     """E2: synthesize ONE CLIP PER SENTENCE.
 
-    Returns [{text, audio_url, pause_before_ms}] so the client can play them in order,
-    hold a human beat between them, and advance the caption in exact lockstep with the
-    audio (no progress-bar interpolation).
+    Returns [{text, audio_url, pause_before_ms, pending}] so the client can play them in
+    order, hold a human beat between them, and advance the caption in exact lockstep with
+    the audio (no progress-bar interpolation).
 
     This is the ONLY synth path for an interviewer reply. It is N vendor CALLS instead of
     1 — but Sarvam bills AUDIO, and the sentences are the same words as the reply, so in
     SECONDS the split is very nearly free. What was not free was the whole-reply clip we
     used to synthesise alongside it and then almost never play (the tts cost meter put
     that at ~50% of the bill), so that call is gone.
+
+    FAST START — `first_only`: synthesise ONLY sentence one and mark the rest `pending`.
+    The interviewer starts talking the moment that one clip exists; the client fetches the
+    rest from /session/speech while it plays. Awaiting the whole set before saying a single
+    word was most of the greeting's dead air, and the sentences were already separate
+    clips — we were simply waiting for all of them for no reason.
 
     Never blocks the interview: a sentence whose synth fails simply carries a null
     audio_url and the client shows its caption for a beat and moves on.
@@ -394,19 +412,77 @@ async def _try_tts_segments(session_id: str, text_out: str, voice: str | None) -
     sentences = tts.split_sentences(text_out)
     if not sentences:
         return []
-    urls = await asyncio.gather(*[_try_tts(session_id, s, voice) for s in sentences])
 
+    if first_only:
+        urls = [await _try_tts(session_id, sentences[0], voice)]
+    else:
+        urls = await asyncio.gather(*[_try_tts(session_id, s, voice) for s in sentences])
+
+    return build_segments(sentences, urls, pre_question_pause_ms=pre_question_pause_ms)
+
+
+def build_segments(
+    sentences: list[str], urls: list, *, pre_question_pause_ms: int = PRE_QUESTION_PAUSE_MS,
+) -> list[dict]:
+    """Assemble the client's playback plan from the sentences and whatever audio we have.
+
+    `urls` may be SHORTER than `sentences` — that is the fast-start case: we have the first
+    clip and the rest are still being synthesised. Those carry `pending: true`, which is
+    NOT the same thing as a synth failure (a null audio_url with no `pending`): the client
+    waits for the former and skips past the latter.
+    """
     segments = []
     last = len(sentences) - 1
-    for i, (sentence, url) in enumerate(zip(sentences, urls)):
+    for i, sentence in enumerate(sentences):
         if i == 0:
             pause = 0
         elif i == last and last > 0:
-            pause = PRE_QUESTION_PAUSE_MS   # let the question land
+            pause = pre_question_pause_ms   # let the question land
         else:
             pause = INTER_SENTENCE_PAUSE_MS
-        segments.append({"text": sentence, "audio_url": url, "pause_before_ms": pause})
+        has_url = i < len(urls)
+        segments.append({
+            "text": sentence,
+            "audio_url": urls[i] if has_url else None,
+            "pause_before_ms": pause,
+            "pending": not has_url,
+        })
     return segments
+
+
+async def _greeting_segments(
+    session_id: str, greeting: str, voice: str | None,
+    first_clip=None, first_sentence: str = "",
+) -> list[dict]:
+    """The greeting's playback plan, reusing the clip we synthesised MID-GENERATION.
+
+    `first_clip` is the task fired from the kickoff stream the moment the opening sentence
+    was complete. Normally it is exactly the clip the finished greeting needs, because the
+    first sentence of a text cannot change once the model has moved past it. We verify that
+    against the final split anyway and fall back to synthesising properly if it does not
+    match: a wasted clip costs a fraction of a rupee, and a WRONG one would have the
+    interviewer open with a sentence she does not go on to say.
+    """
+    if not settings.TTS_ENABLED:
+        return []
+    sentences = tts.split_sentences(greeting)
+    if not sentences:
+        return []
+
+    first_url = None
+    if first_clip is not None:
+        try:
+            first_url = await first_clip
+        except Exception as e:
+            log.warning("streamed first-clip synth failed: %s", type(e).__name__)
+            first_url = None
+        if first_sentence != sentences[0]:
+            log.info("streamed first sentence did not survive the final parse; re-synthesising")
+            first_url = None
+    if first_url is None:
+        first_url = await _try_tts(session_id, sentences[0], voice)
+
+    return build_segments(sentences, [first_url])
 
 
 def _session_to_cfg(row: dict) -> dict:
@@ -503,6 +579,95 @@ def _finalize_session(db: Session, session_id: str, completion_type: str) -> Non
     _update_session_counters(db, session_id)
 
 
+# Set at boot by the schema check: the migration files this database still needs, or []
+# when it is up to date. Read by /health so drift is visible to a deploy without anyone
+# having to go and read a log.
+_PENDING_MIGRATIONS: list[str] = []
+
+
+@app.on_event("startup")
+def check_schema_on_boot():
+    """Is the database actually up to date with this code? Say so, loudly, once.
+
+    Every optional column here is written defensively, so a database two migrations behind
+    runs perfectly happily while quietly doing less than it says it does — which is exactly
+    what had happened (004 and 006 were never applied, so roster names, the camera policy
+    and early-wrap reasons were all silently no-ops). One banner at boot, and it is
+    impossible to miss.
+
+    It NEVER applies anything, and it never blocks boot.
+    """
+    global _PENDING_MIGRATIONS
+    db = next(get_db())
+    try:
+        _PENDING_MIGRATIONS = schema_check.check(db)
+    except Exception as e:
+        log.warning("schema check failed: %s", type(e).__name__)
+    finally:
+        db.close()
+
+
+@app.on_event("startup")
+async def warm_clip_pack_on_boot():
+    """Synthesise the acknowledgment + backchannel clips for both voices, once, at boot.
+
+    Fire-and-forget: it must never delay the app becoming healthy, and a vendor outage at
+    boot must never stop it serving. The clips are content-addressed on disk, so this is a
+    no-op on every restart after the first.
+    """
+    if not settings.TTS_ENABLED:
+        return
+
+    async def _warm():
+        speakers = [settings.TTS_VOICE_FEMALE, settings.TTS_VOICE_MALE]
+        summary = await tts.warm_clip_pack(speakers)
+        log.info(
+            "clip pack: %d lines x %d voices -> warmed=%d cached=%d failed=%d (%.1f KB on disk)",
+            len(tts.clip_pack_lines()), len(speakers),
+            summary["warmed"], summary["cached"], summary["failed"], summary["bytes"] / 1024,
+        )
+
+    asyncio.create_task(_warm())
+
+
+@app.get("/session/clips", response_model=ClipPackResponse)
+async def session_clips(
+    voice: str = Query("female"),
+    user_id: str = Depends(current_user),
+):
+    """The acknowledgment + backchannel clips for this voice.
+
+    The client fetches this ONCE when the room opens and plays from it for the rest of the
+    session: an ack the instant an answer is submitted (so the thinking gap sounds like a
+    person considering, not a machine loading), and a soft backchannel at a natural pause
+    in a long answer.
+
+    Cache-first and un-metered — see tts.get_shared_audio_hash. A clip that cannot be
+    synthesised is simply omitted; the client plays whatever it is given and the interview
+    is completely indifferent to an acknowledgment going missing.
+    """
+    if not settings.TTS_ENABLED:
+        return ClipPackResponse(acks=[], backchannels=[])
+
+    speaker = _resolve_speaker(voice)
+
+    async def _clips(lines):
+        hashes = await asyncio.gather(
+            *[tts.get_shared_audio_hash(line, speaker) for line in lines],
+            return_exceptions=True,
+        )
+        return [
+            {"text": line, "audio_url": f"/session/audio/{h}"}
+            for line, h in zip(lines, hashes)
+            if isinstance(h, str) and h
+        ]
+
+    acks, backchannels = await asyncio.gather(
+        _clips(tts.ACK_LINES), _clips(tts.BACKCHANNEL_LINES)
+    )
+    return ClipPackResponse(acks=acks, backchannels=backchannels)
+
+
 @app.get("/health", response_model=HealthResponse)
 def health(db: Session = Depends(get_db)):
     db_status = "ok"
@@ -511,9 +676,14 @@ def health(db: Session = Depends(get_db)):
     except Exception as e:
         log.error("health DB check failed: %s", e)
         db_status = "down"
+    # Schema drift rides on /health so a deploy can SEE it without reading a log. It does
+    # not make the service unhealthy — a drifted database still serves every request; the
+    # features behind the missing columns are simply not happening.
     return HealthResponse(
         status="ok" if db_status == "ok" else "degraded",
         db=db_status,
+        schema_status="ok" if not _PENDING_MIGRATIONS else "drift",
+        pending_migrations=list(_PENDING_MIGRATIONS),
         model_interview=settings.MODEL_INTERVIEW,
         model_debrief=settings.MODEL_DEBRIEF,
     )
@@ -642,21 +812,6 @@ async def start_session(
     )
     db.commit()
 
-    alumni_intel = fetch_alumni_intel(db, body.company, body.role)
-
-    cfg = body.model_dump()
-    system_prompt = build_system_prompt(cfg, alumni_intel)
-
-    # Realism v2: no fixed greeting. The model improvises a distinct interviewer
-    # identity for THIS session and opens in it; we persist the one-line identity so
-    # every later turn is prompted to stay in character. Higher temperature-equivalent
-    # variety comes from the instruction itself (see prompts.build_kickoff).
-    raw_kickoff = await call_claude(
-        system=system_prompt,
-        messages=[{"role": "user", "content": build_kickoff(cfg)}],
-        model=settings.MODEL_INTERVIEW,
-        max_tokens=500,
-    )
     # PART 1: persist the roster-picked interviewer name so every later turn speaks as
     # that same person. Defensive — a missing column must never break a session start.
     if body.interviewer_name:
@@ -684,32 +839,15 @@ async def start_session(
             db.rollback()
             log.warning("camera_at_join not stored (apply migration 006?): %s", type(e).__name__)
 
-    identity, greeting = parse_kickoff(raw_kickoff)
-    if identity:
-        # Persist for cross-turn continuity. Defensive: if migration 005 has not been
-        # applied yet the column is missing — that must NOT break starting a session.
-        # Without it the interview still runs; it just loses identity continuity.
-        try:
-            db.execute(
-                text("UPDATE vyom_sessions SET interviewer_identity=:i WHERE id=:id"),
-                {"i": identity, "id": session_id},
-            )
-            db.commit()
-        except Exception as e:
-            db.rollback()
-            log.warning("interviewer_identity not stored (apply migration 005?): %s",
-                        type(e).__name__)
-        # Dev-only: surfaces the improvised identity so UAT can confirm three fresh
-        # sessions really do produce three different interviewers. Never sent to the
-        # candidate; contains no learner PII.
-        if settings.APP_ENV != "production":
-            log.info("interviewer identity: %s", identity)
-
-    _save_message(db, session_id, "assistant", greeting)
-    _update_session_counters(db, session_id)
-
-    audio_segments = await _try_tts_segments(session_id, greeting, body.voice)
-
+    # FAST START: this endpoint returns THE SESSION ROW AND NOTHING ELSE, and it returns it
+    # now. The room renders on this response — interviewer tile up, caption band shimmering
+    # — while the greeting is still being written. Everything expensive (the kickoff LLM,
+    # the greeting's audio) has moved to POST /session/greeting, which the client calls the
+    # instant the room is on screen.
+    #
+    # Measured: this used to be a 14.5s wall the candidate stared at a spinner through. It
+    # is the single worst thing about the product's first ten seconds, and it was entirely
+    # self-inflicted: nothing about a session row requires an LLM.
     state = _build_state({
         "level": body.level,
         "current_stage": "WARMUP",
@@ -719,12 +857,151 @@ async def start_session(
         "answer_count": 0,
     })
     return StartSessionResponse(
-        session_id=session_id, greeting=greeting, state=state,
+        session_id=session_id, greeting="", state=state,
         stt_available=bool(settings.STT_ENABLED and settings.VOICE_ENABLED),
+        audio_segments=[],
+    )
+
+
+@app.post("/session/greeting", response_model=GreetingResponse)
+async def session_greeting(
+    body: GreetingRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(current_user),
+):
+    """FAST START, half two: the interviewer improvises their identity and opens.
+
+    Called the moment the room is on screen, so the kickoff LLM and the greeting's audio
+    are paid for while the candidate is already LOOKING at the interviewer instead of at a
+    spinner. Only the FIRST sentence is synthesised here — the interviewer starts talking
+    the instant that clip exists, and the rest of the greeting synthesises via
+    /session/speech while sentence one is in the air.
+
+    IDEMPOTENT. A double-fire (React strict mode, a retry, an impatient refresh) must not
+    buy a second kickoff call or invent a second interviewer: if this session already has
+    a greeting, we return the one it has.
+    """
+    session_row = _load_session(db, body.session_id, user_id)
+    cfg = _session_to_cfg(session_row)
+
+    existing = db.execute(
+        text("SELECT content FROM vyom_messages WHERE session_id=:s AND role='assistant' "
+             "ORDER BY id ASC LIMIT 1"),
+        {"s": body.session_id},
+    ).mappings().first()
+
+    # The clip for the greeting's FIRST sentence, fired the moment that sentence exists —
+    # which, because the kickoff streams and writes `opening` first, is about a second into
+    # a six-second generation rather than at the end of one. The voice vendor then works in
+    # parallel with the model instead of queueing behind it, and that overlap is the
+    # difference between the first spoken word landing at eight seconds and at four.
+    first_clip: asyncio.Task | None = None
+    first_sentence = ""
+
+    if existing:
+        greeting, identity = existing["content"], cfg.get("interviewer_identity") or ""
+    else:
+        alumni_intel = fetch_alumni_intel(db, cfg["company"], cfg["role"])
+        # Realism v2: no fixed greeting. The model improvises a distinct interviewer
+        # identity for THIS session and opens in it; we persist the one-line identity so
+        # every later turn is prompted to stay in character. Higher temperature-equivalent
+        # variety comes from the instruction itself (see prompts.build_kickoff).
+        kickoff_cfg = dict(cfg, voice=body.voice)
+
+        def _on_delta(text_so_far: str) -> None:
+            nonlocal first_clip, first_sentence
+            if first_clip is not None or not settings.TTS_ENABLED:
+                return
+            sentence = first_complete_sentence(partial_opening(text_so_far))
+            if sentence:
+                first_sentence = sentence
+                first_clip = asyncio.create_task(
+                    _try_tts(body.session_id, sentence, body.voice)
+                )
+
+        raw_kickoff = await stream_claude(
+            system=build_system_prompt(kickoff_cfg, alumni_intel),
+            messages=[{"role": "user", "content": build_kickoff(kickoff_cfg)}],
+            model=settings.MODEL_INTERVIEW,
+            max_tokens=500,
+            on_delta=_on_delta,
+        )
+        identity, greeting = parse_kickoff(raw_kickoff)
+        if identity:
+            # Persist for cross-turn continuity. Defensive: if migration 005 has not been
+            # applied yet the column is missing — that must NOT break starting a session.
+            # Without it the interview still runs; it just loses identity continuity.
+            try:
+                db.execute(
+                    text("UPDATE vyom_sessions SET interviewer_identity=:i WHERE id=:id"),
+                    {"i": identity, "id": body.session_id},
+                )
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                log.warning("interviewer_identity not stored (apply migration 005?): %s",
+                            type(e).__name__)
+            # Dev-only: surfaces the improvised identity so UAT can confirm three fresh
+            # sessions really do produce three different interviewers. Never sent to the
+            # candidate; contains no learner PII.
+            if settings.APP_ENV != "production":
+                log.info("interviewer identity: %s", identity)
+
+        _save_message(db, body.session_id, "assistant", greeting)
+        _update_session_counters(db, body.session_id)
+
+    audio_segments = await _greeting_segments(
+        body.session_id, greeting, body.voice, first_clip, first_sentence
+    )
+    return GreetingResponse(
+        greeting=greeting,
         audio_segments=audio_segments,
+        # The greeting settles them in — except on the pressure panel, which never softens.
+        tone=turn_tone(cfg.get("difficulty"), "WARMUP", 0),
         # Dev/UAT only — lets the console prove each session invents a new interviewer.
         interviewer_identity=(identity or None) if settings.APP_ENV != "production" else None,
     )
+
+
+@app.post("/session/speech", response_model=SpeechResponse)
+async def session_speech(
+    body: SpeechRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(current_user),
+):
+    """FAST START: synthesise the sentences the client has not been given audio for yet.
+
+    The client calls this the moment sentence one starts playing, so sentences two onward
+    are synthesised WHILE the interviewer is already talking, instead of the whole reply
+    being awaited before a single word is heard.
+
+    The client sends an INDEX, never text. That is the whole security story: the only thing
+    this endpoint can ever synthesise is a sentence of a reply THIS interviewer has already
+    said to THIS candidate, re-derived server-side from the stored message. There is no way
+    to hand it a string and bill us for reading it aloud.
+    """
+    _load_session(db, body.session_id, user_id)   # auth guard: not your session -> 404
+    row = db.execute(
+        text("SELECT content FROM vyom_messages WHERE session_id=:s AND role='assistant' "
+             "ORDER BY id DESC LIMIT 1"),
+        {"s": body.session_id},
+    ).mappings().first()
+    if not row:
+        return SpeechResponse(segments=[])
+
+    sentences = tts.split_sentences(row["content"])
+    start = max(0, int(body.from_index or 0))
+    wanted = list(enumerate(sentences))[start:]
+    if not wanted:
+        return SpeechResponse(segments=[])
+
+    urls = await asyncio.gather(
+        *[_try_tts(body.session_id, s, body.voice) for _, s in wanted]
+    )
+    return SpeechResponse(segments=[
+        {"index": i, "audio_url": url}
+        for (i, _), url in zip(wanted, urls)
+    ])
 
 
 @app.post("/session/turn", response_model=TurnResponse)
@@ -814,6 +1091,27 @@ async def session_turn(
     alumni_intel = fetch_alumni_intel(db, cfg["company"], cfg["role"])
     system_prompt = build_system_prompt(cfg, alumni_intel)
     messages = _load_messages(db, body.session_id)
+
+    # ── THE ENGAGEMENT FLOOR ─────────────────────────────────────────────────
+    # A real panel never asks six questions into silence. Both counters are DERIVED from
+    # the transcript we just loaded (stages.trailing_skips) — there is no column to keep
+    # in sync, and "any response resets the counter" needs no code at all: a real answer
+    # breaks the run of skips simply by existing.
+    user_answers = [m["content"] for m in messages if m["role"] == "user"]
+    engagement = stages.engagement_action(
+        st, stages.trailing_skips(user_answers), stages.substantive_count(user_answers)
+    )
+    # The same question, asked of the transcript as it stood BEFORE this answer: was the
+    # turn they are responding to right now the check-in? If so and they SAID something,
+    # they are back, and the interview resumes at the next planned question.
+    prior_answers = user_answers[:-1]
+    was_checkin = stages.engagement_action(
+        st, stages.trailing_skips(prior_answers), stages.substantive_count(prior_answers)
+    ) == "checkin"
+    resumed = was_checkin and not skipped
+    if engagement:
+        log.info("engagement floor: session=%s action=%s stage=%s", body.session_id, engagement, st)
+
     # Interview Room: if attention has drifted (or the camera went off), the interviewer
     # raises it ONCE on this turn, in their own improvised voice. Tone only — the round
     # plan, difficulty and rigor are untouched.
@@ -826,6 +1124,8 @@ async def session_turn(
         # something specific in it" must not be aimed at our own placeholder.
         prior_answer_summary="" if skipped else content[:600],
         timeout=timed_out,
+        engagement=engagement,
+        resumed=resumed,
     )
 
     reply = await call_claude(
@@ -838,7 +1138,26 @@ async def session_turn(
     _save_message(db, body.session_id, "assistant", reply)
 
     # Advance the stage machine.
-    if st == "REVERSE":
+    if engagement == "wrap":
+        # They did not answer the check-in either. Close the interview courteously and go
+        # straight to the readout, which scores — honestly — what actually happened. The
+        # decision is persisted, so a refresh cannot dodge it, and nothing is zeroed as a
+        # punishment: there simply is not much here to score.
+        new_stage, wrapped_at = stages.early_wrap_transition(st)
+        new_round, new_awaiting, new_last = 0, 0, None
+        try:
+            db.execute(
+                text("UPDATE vyom_sessions SET early_wrap_reason=:r, early_wrap_stage=:st "
+                     "WHERE id=:id"),
+                {"r": WRAP_DISENGAGED, "st": wrapped_at, "id": body.session_id},
+            )
+            db.commit()
+        except Exception as e:
+            # A missing column must never break the turn — the stage still becomes READOUT,
+            # so the candidate still reaches their readout. Only the reason line is lost.
+            db.rollback()
+            log.warning("early_wrap_reason not stored (apply migration 006?): %s", type(e).__name__)
+    elif st == "REVERSE":
         # Not rating-gated; advance straight to READOUT when the round completes.
         new_stage, new_round = stages.advance_after_reverse(round_index_after, level)
         new_awaiting, new_last = 0, None
@@ -871,7 +1190,16 @@ async def session_turn(
     db.commit()
     _update_session_counters(db, body.session_id)
 
-    audio_segments = await _try_tts_segments(body.session_id, reply, body.voice)
+    # QUESTION CADENCE: a person absorbs a real answer before firing the next question —
+    # so the beat before the question rises when they actually said something, and stays
+    # short after a skip (there was nothing to absorb). The reply's first clip comes back
+    # now; the rest synthesise while it plays.
+    audio_segments = await _try_tts_segments(
+        body.session_id, reply, body.voice, first_only=True,
+        pre_question_pause_ms=(
+            PRE_QUESTION_PAUSE_SUBSTANTIVE_MS if substantive else PRE_QUESTION_PAUSE_MS
+        ),
+    )
 
     # Realism v2: when this answer is rating-gated, IQ asks for the confidence rating
     # ALOUD, so the voice stage can stay hands-free. Text + audio ride on the turn
@@ -895,7 +1223,11 @@ async def session_turn(
 
     return TurnResponse(reply=reply, answer_id=answer_id, state=state,
                         audio_segments=audio_segments, tone=tone, escalation_level=esc,
-                        rating_prompt=rating_prompt, rating_audio_url=rating_audio_url)
+                        rating_prompt=rating_prompt, rating_audio_url=rating_audio_url,
+                        # The check-in is a direct question with its own short clock — the
+                        # client must not give it a full 3-minute domain budget.
+                        question_kind="checkin" if engagement == "checkin" else "question",
+                        checkin_seconds=stages.CHECKIN_SECONDS)
 
 
 def _focus_counts(db: Session, session_id: str) -> dict:
@@ -1387,7 +1719,9 @@ async def end_session(
     system_prompt = build_system_prompt(cfg, "")
     # INT-11: tag each answer with its answer_id so perAnswerScores can echo it.
     messages, valid_answer_ids = _load_debrief_messages(db, body.session_id)
-    messages.append({"role": "user", "content": DEBRIEF_INSTRUCTION})
+    # Critical (the pressure panel) appends its own acknowledgment: the readout names the
+    # mode they chose, so a hard-won score reads as the verdict on a hard interview.
+    messages.append({"role": "user", "content": debrief_instruction(cfg)})
 
     raw = await call_claude(
         system=system_prompt,

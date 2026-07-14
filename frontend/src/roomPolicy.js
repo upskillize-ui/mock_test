@@ -27,7 +27,14 @@ export const DEFAULT_QUESTION_SECONDS = 180;
 // candidate cannot see is a trap, and we do not lay traps.
 export const QUESTION_WARN_SECONDS = 30;
 
-export function questionSeconds(stage) {
+// The engagement floor's check-in ("Shall we keep going?") is a direct question, and it
+// gets its own short clock — a yes/no does not need three minutes, and giving it three
+// minutes would just be another three minutes of the silence we are trying to break.
+// Mirrors stages.CHECKIN_SECONDS; the server sends the number, this is the fallback.
+export const CHECKIN_SECONDS = 45;
+
+export function questionSeconds(stage, kind = "question", checkinSeconds = CHECKIN_SECONDS) {
+  if (kind === "checkin") return Number(checkinSeconds) || CHECKIN_SECONDS;
   return QUESTION_SECONDS[String(stage || "").toUpperCase()] || DEFAULT_QUESTION_SECONDS;
 }
 
@@ -74,4 +81,64 @@ export function shouldArmAbandon({ inRoom = false, answerDue = false, micOn = tr
   if (!inRoom || !answerDue) return false;
   if (micOn) return false;
   return !(Number(typedChars) > 0);
+}
+
+// ── Listening backchannels (the REALISM pack) ────────────────────────────────
+// A person who is listening to you makes noise. Not much — an "mm-hmm" at the moment you
+// pause for breath — but its ABSENCE is loud, and a panel that sits in perfect silence for
+// a three-minute answer is the single most machine-like thing in the room.
+//
+// The constraints are all about not INTERRUPTING, because a backchannel in the wrong place
+// is worse than none at all:
+//   - only in a long answer (a short one has no room for it);
+//   - only at a real pause, and never one long enough to be them FINISHING (that pause
+//     belongs to the end-of-answer detector, and stepping on it would cut them off);
+//   - never in the opening seconds, when they are still finding their footing;
+//   - at most twice, ever, in one answer. Three is a tic.
+export const BACKCHANNEL_MIN_ANSWER_MS = 20_000;   // "answers longer than ~20s"
+export const BACKCHANNEL_NEVER_BEFORE_MS = 10_000; // never in the first 10s
+export const BACKCHANNEL_MIN_PAUSE_MS = 1_200;     // a real breath, not a syllable gap
+export const BACKCHANNEL_MAX_PER_ANSWER = 2;
+
+/**
+ * shouldBackchannel — should a soft "mm-hmm" land right now?
+ *
+ * @param elapsedMs     how long they have been speaking, this answer
+ * @param pauseMs       how long the current silence has run
+ * @param playedCount   backchannels already played in THIS answer
+ * @param endOfAnswerMs the trailing silence that ENDS an answer. The pause must stay
+ *                      strictly under it: at that point they are not pausing, they are done.
+ */
+export function shouldBackchannel({
+  elapsedMs = 0, pauseMs = 0, playedCount = 0, endOfAnswerMs = 2_500,
+} = {}) {
+  if (playedCount >= BACKCHANNEL_MAX_PER_ANSWER) return false;
+  if (elapsedMs < BACKCHANNEL_MIN_ANSWER_MS) return false;
+  if (elapsedMs < BACKCHANNEL_NEVER_BEFORE_MS) return false;
+  if (pauseMs < BACKCHANNEL_MIN_PAUSE_MS) return false;
+  return pauseMs < endOfAnswerMs;
+}
+
+// ── Barge-in (the REALISM pack) ──────────────────────────────────────────────
+// You can interrupt a person. That is most of what makes them a person. If the candidate
+// starts talking while the interviewer is mid-reply, the interviewer stops — ducks out over
+// 200ms rather than cutting dead, because a hard cut sounds like a bug — and the floor is
+// theirs. She does not then re-say the sentences she was interrupted out of: nobody does
+// that, and a candidate who interrupts has already decided they do not need the rest.
+export const BARGE_IN_RMS = 0.06;        // well above SILENCE_RMS: a voice, not a cough
+export const BARGE_IN_SUSTAIN_MS = 300;  // ...held for long enough to be words
+export const BARGE_IN_DUCK_MS = 200;     // fade out, don't cut
+
+/**
+ * shouldBargeIn — is that the candidate talking over the interviewer?
+ *
+ * The threshold is deliberately high and requires SUSTAIN. The mic is open while audio is
+ * playing out of the same laptop, so echo cancellation is doing real work underneath this;
+ * a low bar would have the interviewer interrupting herself with her own voice.
+ *
+ * @param rms          current mic level, 0..1
+ * @param aboveSinceMs how long the level has been continuously above the threshold
+ */
+export function shouldBargeIn({ rms = 0, aboveSinceMs = 0 } = {}) {
+  return Number(rms) > BARGE_IN_RMS && Number(aboveSinceMs) >= BARGE_IN_SUSTAIN_MS;
 }

@@ -30,7 +30,9 @@ import meeraImg from "./interviewers/meera_confident_human_female.png";
 import arjunImg from "./interviewers/arjun_warm_human_male.png";
 import vikramImg from "./interviewers/vikram_formal_human_male.png";
 
-import { choosePose, hasPoseSet, resolvePose, nextEmphasis, POSES } from "./posePolicy.js";
+import {
+  choosePose, hasPoseSet, resolvePose, nextEmphasis, weightedPool, POSES,
+} from "./posePolicy.js";
 
 // ── Pose set (four stills of the same person: listening / smile / intense / thinking).
 // FEATURE-DETECTED, never hard-imported: a missing file must not break the build, and a
@@ -81,15 +83,19 @@ export function resumeTtsAnalyser() {
 // ── The roster ────────────────────────────────────────────────────────────
 const TEAL = "#00C4A0";
 
+// `temperaments` gates who can run which difficulty. Critical (the pressure panel) is
+// deliberately drawn from the characters who have an `intense` pose on disk — the mode's
+// whole face is that frame, and a character without it would run the pressure panel
+// smiling. Riya carries it today; the rest join as their pose grids land.
 const ROSTER = [
   { id: "priya", name: "Priya", img: priyaImg, voice: "female", temperaments: ["Easy", "Realistic"] },
   // Riya is the first character with a full pose set on disk (listening / smile /
   // intense / thinking). Her `img` is the base portrait, used only if a pose file is
   // ever missing — POSE_MAP resolves the four frames at build time.
-  { id: "riya", name: "Riya", img: riyaImg, voice: "female", temperaments: ["Easy", "Realistic"] },
-  { id: "meera", name: "Meera", img: meeraImg, voice: "female", temperaments: ["Realistic", "Stretch"] },
+  { id: "riya", name: "Riya", img: riyaImg, voice: "female", temperaments: ["Easy", "Realistic", "Critical"] },
+  { id: "meera", name: "Meera", img: meeraImg, voice: "female", temperaments: ["Realistic", "Stretch", "Critical"] },
   { id: "arjun", name: "Arjun", img: arjunImg, voice: "male", temperaments: ["Easy", "Realistic"] },
-  { id: "vikram", name: "Vikram", img: vikramImg, voice: "male", temperaments: ["Realistic", "Stretch"] },
+  { id: "vikram", name: "Vikram", img: vikramImg, voice: "male", temperaments: ["Realistic", "Stretch", "Critical"] },
 ];
 
 function hashSeed(s) {
@@ -103,7 +109,11 @@ export function pickInterviewer(voice = "female", difficulty = "Realistic", seed
   let pool = ROSTER.filter(c => c.voice === voice && c.temperaments.includes(difficulty));
   if (!pool.length) pool = ROSTER.filter(c => c.voice === voice);
   if (!pool.length) pool = ROSTER;
-  return pool[hashSeed(seed) % pool.length];
+  // Posed characters are weighted up until the whole cast has pose grids — otherwise the
+  // pose system is invisible in most sessions. See posePolicy.weightedPool; remove the
+  // weighting (one constant) when the grids land.
+  const weighted = weightedPool(pool, POSE_MAP);
+  return weighted[hashSeed(seed) % weighted.length];
 }
 
 // ── CSS (injected once) ───────────────────────────────────────────────────

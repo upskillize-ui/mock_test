@@ -10,6 +10,7 @@ import {
   questionSeconds, expiryAction, shouldArmAbandon, SKIP_MARKER,
   QUESTION_WARN_SECONDS, CAMERA_GRACE_MS, SILENT_ABANDON_MS,
   WRAP_CAMERA_OFF, WRAP_NO_ANSWER, WRAP_SESSION_TIME_UP,
+  shouldBackchannel, shouldBargeIn, BARGE_IN_RMS, BARGE_IN_DUCK_MS,
 } from "./roomPolicy.js";
 
 // Realism v2: spoken confidence rating. Accepts digits, English words, Hinglish
@@ -77,6 +78,18 @@ async function fetchAudioObjectUrl(path) {
 }
 
 const startSession = (c) => api("/session/start", { method: "POST", body: JSON.stringify(c) });
+// FAST START: /session/start now returns the session ROW and nothing else, so the room can
+// render immediately. These two are the rest of the greeting, fetched from inside the room.
+//   /session/greeting — the kickoff LLM + the audio for the FIRST SENTENCE only.
+//   /session/speech   — the remaining sentences, synthesised WHILE sentence one plays. It
+//                       takes an INDEX, never text: it can only ever read back a sentence
+//                       this interviewer has already said to this candidate.
+const fetchGreeting = (sid, voice) => api("/session/greeting", { method: "POST", body: JSON.stringify({ session_id: sid, voice }) });
+const fetchSpeechRest = (sid, voice, fromIndex = 1) => api("/session/speech", { method: "POST", body: JSON.stringify({ session_id: sid, voice, from_index: fromIndex }) });
+// The pre-cached clip pack: acknowledgments ("Hmm.", "Accha.") played the instant an answer
+// is submitted, and soft backchannels ("mm-hmm") for a natural pause mid-answer. Fetched
+// once per session; the clips are synthesised once in the life of the cache.
+const fetchClipPack = (voice) => api(`/session/clips?voice=${encodeURIComponent(voice)}`);
 // `timeout` (E7.7) is set only when the per-question clock forced this turn:
 // "partial" — we cut them off and are submitting what we captured; "skip" — nothing was
 // captured, and the server writes the marker itself (we send no text for it).
@@ -173,6 +186,29 @@ function player() {
   if (!_player && typeof Audio !== "undefined") { _player = new Audio(); _player.preload = "auto"; }
   return _player;
 }
+// A SECOND element, for the little human noises (acknowledgments, backchannels). It has to
+// be separate: a backchannel plays while the mic is recording and an ack plays while the
+// reply is being generated, and either one landing on the main element would tear the
+// interviewer's own voice out mid-sentence.
+let _clipPlayer = null;
+function clipPlayer() {
+  if (!_clipPlayer && typeof Audio !== "undefined") {
+    _clipPlayer = new Audio();
+    _clipPlayer.preload = "auto";
+  }
+  return _clipPlayer;
+}
+// Backchannels play UNDER a live mic, into the same room. Loud enough to be heard, quiet
+// enough not to be transcribed as part of their answer.
+const BACKCHANNEL_VOLUME = 0.32;
+
+// Every mic we open, for anything. echoCancellation is not a nicety here — it is what makes
+// barge-in and backchannels possible at all: the interviewer's voice is coming out of the
+// same laptop the mic is listening through, and without cancellation she would hear herself
+// speak, decide the candidate had interrupted, and stop talking. To herself.
+const MIC_CONSTRAINTS = {
+  audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+};
 // Minimal silent WAV — played inside the Start-button gesture to unlock autoplay
 // on iOS Safari, which otherwise blocks programmatic .play().
 const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
@@ -273,6 +309,10 @@ const EARLY_WRAP_NOTE = {
   camera_off: "This interview ended early because the camera stayed off. What you covered is scored below exactly as it stood — nothing was zeroed.",
   no_answer_timeout: "This interview ended early after a long silence with no answer. What you covered is scored below exactly as it stood — nothing was zeroed.",
   session_time_up: "Time ran out before the last rounds. What you covered is scored below exactly as it stood — nothing was zeroed.",
+  // The engagement floor: questions kept running out, the interviewer checked in, and that
+  // went unanswered too. Said plainly and without blame — we have no idea why they went
+  // quiet, and guessing would be both rude and, quite possibly, wrong.
+  disengaged: "This interview ended early — the questions kept running out with no answer, and the check-in went unanswered too. What you covered is scored below exactly as it stood, and the next attempt is a clean slate.",
 };
 
 // ── Markdown rendering ─────────────────────────────────────────────────────
@@ -310,6 +350,20 @@ const LEVELS = ["Fresher", "1-3 years", "3-10 years", "10-20 years", "20+ years"
 const COMPANIES = [{ value: "", label: "General (mid-tier product)" }, { value: "TCS", label: "TCS / Infosys / Wipro" }, { value: "Amazon", label: "Amazon" }, { value: "Google", label: "Google / Meta / Microsoft" }, { value: "Startup", label: "Startups" }, { value: "Consulting", label: "Consulting / Banking / KPMG" }, { value: "Other", label: "Other (specify below)" }];
 const DURATIONS = [{ v: 10, l: "10 min" }, { v: 20, l: "20 min" }, { v: 30, l: "30 min" }, { v: 45, l: "45 min" }];
 const DIFFICULTIES = [{ v: "Easy", l: "Easy", d: "Warm-up pace" }, { v: "Realistic", l: "Realistic", d: "Matches real bar" }, { v: "Stretch", l: "Stretch", d: "Tough + curveball" }];
+// The fourth difficulty. A stress-interview simulator — a real genre in Indian hiring (bank
+// PO panels, consulting partners, some PSU boards) and something candidates ASK for.
+//
+// It sits apart from the other three, and it costs a second, explicit tap to enter, because
+// nobody should land in a pressure panel by mis-clicking a grid. What it changes is the
+// interviewer's REGISTER and the number of curveballs. What it does not change — not by one
+// word — is the guardrails: the criticism lands on the answer and the reasoning, never on
+// the person, and the readout is written in the same mentor voice as every other readout.
+const CRITICAL = {
+  v: "Critical",
+  l: "Critical",
+  d: "Pressure panel. Your answers will be challenged and criticised. Not a gentle experience.",
+  confirm: "I want the pressure panel",
+};
 const MODES = [{ v: "interview", l: "Interview mode", d: "Feedback at end only" }, { v: "coach", l: "Coach mode", d: "Feedback after each answer" }];
 const ROUNDS = [
   { v: "screening", l: "Screening Round", d: "Motivation, fitment & communication", badge: "SCREEN", detail: "Covers: Why this role? Why this company? Career goals, salary expectations, notice period. Short answers, rapid-fire pace. No technical depth." },
@@ -398,6 +452,27 @@ const CSS = `
   .vg2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
   .vg3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
   @media(max-width:800px){.vg2{grid-template-columns:1fr!important}}
+  /* The pressure panel (difficulty: Critical). Set apart from the three-up grid on
+     purpose — it is not a fourth flavour, it is a different kind of thing, and the UI
+     should say so before the interviewer does. */
+  .iq-critical{margin-top:8px;border:1.5px solid #e8e9f0;border-radius:10px;overflow:hidden;transition:border-color .2s,background .2s}
+  .iq-critical:hover{border-color:#e2b3ac}
+  .iq-critical-on{border:2px solid #c0392b;background:#fdf1f0}
+  .iq-critical-head{display:block;width:100%;text-align:left;padding:12px 14px;background:transparent;border:none;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif}
+  .iq-critical-head:focus-visible{outline:2px solid #c0392b;outline-offset:-2px}
+  .iq-critical-dot{width:8px;height:8px;border-radius:50%;background:#c0392b;flex-shrink:0}
+  .iq-critical-badge{margin-left:auto;font-size:9px;font-weight:800;letter-spacing:.06em;color:#fff;background:#c0392b;padding:2px 7px;border-radius:4px}
+  .iq-critical-confirm{padding:0 14px 14px;animation:iqFade .2s ease}
+  .iq-critical-btn{width:100%;padding:10px 16px;border-radius:8px;border:none;background:#c0392b;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;transition:background .15s}
+  .iq-critical-btn:hover{background:#a3301f}
+  .iq-critical-btn:focus-visible{outline:2px solid #1a1a1a;outline-offset:2px}
+  /* FAST START: the caption band while the greeting is still being written. The room is
+     already on screen and the interviewer is already there — this is the two seconds in
+     which she is drawing breath, and it should read as exactly that. */
+  .iq-connecting{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:rgba(255,255,255,.55)}
+  .iq-connecting-dot{width:6px;height:6px;border-radius:50%;background:#00C4A0;animation:iqPulse 1.4s ease-in-out infinite}
+  .iq-connecting-dot:nth-child(2){animation-delay:.2s}
+  .iq-connecting-dot:nth-child(3){animation-delay:.4s}
   .iq-hero:hover .iq-hero-desc{opacity:1!important;max-height:60px!important;margin-top:6px!important}
   .round-detail{display:none;font-size:11px;color:#72706b;margin-top:6px;line-height:1.5;padding:8px 12px;background:#f7f8fc;border-radius:6px;border-left:2px solid #1a2744}
   .vopt-on .round-detail{display:block}
@@ -603,6 +678,9 @@ function SetupScreen({ onStart, userName }) {
   const [companyName, setCompanyName] = useState("");
   const [duration, setDuration] = useState(20);
   const [difficulty, setDifficulty] = useState("Realistic");
+  // The pressure panel needs a second, explicit tap. `criticalArmed` is the state between
+  // the two: they have opened it and read what it is, but have not yet said yes.
+  const [criticalArmed, setCriticalArmed] = useState(false);
   const [mode, setMode] = useState("interview");
   const [round, setRound] = useState("full");
   const [focus, setFocus] = useState([]);
@@ -797,11 +875,51 @@ function SetupScreen({ onStart, userName }) {
               <label className="vl" style={{ marginTop: 14 }}>Difficulty</label>
               <div className="vg3">
                 {DIFFICULTIES.map(d => (
-                  <button key={d.v} className={"vopt" + (difficulty === d.v ? " vopt-on" : "")} onClick={() => setDifficulty(d.v)} style={{ textAlign: "center", padding: "12px 10px" }}>
+                  <button key={d.v} className={"vopt" + (difficulty === d.v ? " vopt-on" : "")} onClick={() => { setDifficulty(d.v); setCriticalArmed(false); }} style={{ textAlign: "center", padding: "12px 10px" }}>
                     <div style={{ fontWeight: 700, fontSize: 13, color: T.navy }}>{d.l}</div>
                     <div style={{ fontSize: 11, color: T.subtle, marginTop: 2 }}>{d.d}</div>
                   </button>
                 ))}
+              </div>
+
+              {/* The pressure panel. Two taps, deliberately: the first arms it and tells
+                  them exactly what they are choosing, the second confirms it. Nobody
+                  arrives here by accident, and nobody arrives here uninformed. */}
+              <div className={"iq-critical" + (difficulty === CRITICAL.v ? " iq-critical-on" : "")}>
+                <button
+                  className="iq-critical-head"
+                  aria-pressed={difficulty === CRITICAL.v}
+                  onClick={() => {
+                    if (difficulty === CRITICAL.v) { setDifficulty("Realistic"); setCriticalArmed(false); return; }
+                    setCriticalArmed(a => !a);
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span className="iq-critical-dot" />
+                    <span style={{ fontWeight: 800, fontSize: 13, color: difficulty === CRITICAL.v ? T.red : T.navy }}>
+                      {CRITICAL.l}
+                    </span>
+                    {difficulty === CRITICAL.v && <span className="iq-critical-badge">SELECTED</span>}
+                  </div>
+                  <div style={{ fontSize: 11, color: T.muted, marginTop: 3, lineHeight: 1.5 }}>{CRITICAL.d}</div>
+                </button>
+
+                {criticalArmed && difficulty !== CRITICAL.v && (
+                  <div className="iq-critical-confirm">
+                    <div style={{ fontSize: 12, color: T.muted, lineHeight: 1.6, marginBottom: 10 }}>
+                      The interviewer will challenge every answer you give, push back on weak
+                      reasoning, and cut you off if you ramble. She will never insult you — the
+                      criticism lands on your answers, never on you — but she will not be kind
+                      about the answers.
+                    </div>
+                    <button
+                      className="iq-critical-btn"
+                      onClick={() => { setDifficulty(CRITICAL.v); setCriticalArmed(false); }}
+                    >
+                      {CRITICAL.confirm}
+                    </button>
+                  </div>
+                )}
               </div>
 
               <label className="vl" style={{ marginTop: 14 }}>Mode</label>
@@ -1179,10 +1297,19 @@ function StageSettingsMenu({ onClose, voiceStage, setVoiceStage,
 }
 
 function InterviewScreen({ config, sessionId, greeting, greetingSegments, initialState, initialMessages, startedAt, onEnd, onRestart }) {
-  // INT-06: on resume we hydrate from server history; on a fresh start we seed with the greeting.
-  const [messages, setMessages] = useState(
-    initialMessages && initialMessages.length ? initialMessages : [{ role: "assistant", content: greeting, audio_segments: greetingSegments || [] }]
-  );
+  // INT-06: on resume we hydrate from server history.
+  // FAST START: on a fresh start there is NO greeting yet — /session/start returned the
+  // session row and nothing else, so the room could go up immediately. We open with an
+  // empty transcript and a "connecting" caption band, and fetch the greeting from here.
+  const [messages, setMessages] = useState(() => {
+    if (initialMessages && initialMessages.length) return initialMessages;
+    if (greeting) return [{ role: "assistant", content: greeting, audio_segments: greetingSegments || [] }];
+    return [];
+  });
+  // True until the interviewer has actually said something. Drives the caption band's
+  // shimmer — the room is up, she is there, she is drawing breath.
+  const [connecting, setConnecting] = useState(() => !(initialMessages?.length) && !greeting);
+  const greetingFetchedRef = useRef(false);
   // Voice Phase 1: playback state.
   // E2: the interviewer is ALWAYS audible — there is no mute control. Accessibility
   // is served by the CC captions toggle, not by silencing the panel.
@@ -1191,12 +1318,34 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const [needsTap, setNeedsTap] = useState(false);   // autoplay blocked (iOS) → tap-to-play
   const playedIdxRef = useRef(-1);                    // last message index auto-played
   const speakTokenRef = useRef(null);                 // E2: cancels a superseded sentence run
+  const playAbortRef = useRef(null);                  // settles the in-flight clip on a barge-in
   const [spokenLine, setSpokenLine] = useState("");   // E2: the sentence being spoken RIGHT NOW
   // POSES: the register the server says this turn carries, and the focus-ladder level.
   // The face follows the words — warm -> smile, probing -> intense, neutral -> alternate.
   const [tone, setTone] = useState("warm");           // the greeting is warm
   const [escalationLevel, setEscalationLevel] = useState(0);
   const audioBlobCache = useRef(new Map());           // audio_url -> object URL (so Replay reuses, no re-fetch)
+  // REALISM: the pre-cached clip pack ({acks, backchannels}) and where we are in its
+  // rotation. Seeded by the answer count, so the same session never loops the same "Hmm."
+  const clipsRef = useRef({ acks: [], backchannels: [] });
+  const ackSeedRef = useRef(0);
+  // REALISM (backchannels): per-answer state — how many "mm-hmm"s this answer has had, and
+  // when the current pause began. Reset at the start of every recording.
+  const bcCountRef = useRef(0);
+  const bcPauseStartRef = useRef(0);
+  // REALISM (barge-in): the mic stays open while the interviewer speaks, purely to hear
+  // whether the candidate has started talking over her. `warmStream` is that open mic —
+  // handed straight to the recorder on barge-in, so their first word is not lost to a
+  // second getUserMedia round trip.
+  const bargeCtxRef = useRef(null);
+  const bargeRafRef = useRef(null);
+  const bargeAboveSinceRef = useRef(0);
+  const bargedRef = useRef(false);
+  const warmStreamRef = useRef(null);
+  // What the interviewer ACTUALLY said aloud, sentence by sentence, this reply. On a
+  // barge-in the caption shows this and not the rest — she was interrupted, and pretending
+  // otherwise would put words in her mouth that the candidate never heard.
+  const spokenSoFarRef = useRef("");
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -1204,7 +1353,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [recSeconds, setRecSeconds] = useState(0);
-  const [voiceConsented, setVoiceConsented] = useState(false);   // per session
+  // The LOBBY is the consent moment: joining with the mic on records a voice_recording
+  // grant (see App.handleJoin), so re-asking here was a second modal for a permission they
+  // had already given — and, worse, it left hands-free DEAD until they clicked the mic
+  // once, which is precisely the manual tap the voice stage exists to remove. If they
+  // joined muted, consent is still explicit and still asked for at first mic use.
+  const [voiceConsented, setVoiceConsented] = useState(() => config.mic !== false);
   const [showVoiceConsent, setShowVoiceConsent] = useState(false);
   const [consentBusy, setConsentBusy] = useState(false);
   const [sttToast, setSttToast] = useState(null);
@@ -1275,6 +1429,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // they got out is submitted, or the question is skipped and the interview moves on.
   // The mic never sits waiting on a question whose time is gone.
   const [qLeft, setQLeft] = useState(null);      // seconds left; null = no clock running
+  // "question" | "checkin". The engagement floor's check-in is a direct question with its
+  // own short clock — a yes/no does not need three minutes, and giving it three minutes
+  // would just be three more minutes of the silence the check-in exists to break.
+  const [questionKind, setQuestionKind] = useState("question");
+  const checkinSecondsRef = useRef(45);          // the server sends it; this is the fallback
   const qDeadlineRef = useRef(0);                // absolute ms deadline
   const qKeyRef = useRef("");                    // the question that deadline belongs to
   const expiredForRef = useRef("");              // the question we have already expired
@@ -1314,11 +1473,86 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   }, [secondsLeft, ended, loading]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, loading, awaitingRating]);
 
-  // Backend is the source of truth: when it reports the interview is done, move to the readout.
+  // Backend is the source of truth: when it reports the interview is done, move to the
+  // readout — but NOT while the interviewer is still speaking her closing line. She now
+  // has one (the courteous early wrap), and cutting to the scorecard mid-sentence would
+  // make the one moment we promised to handle gracefully the rudest in the product.
+  //
+  // `speechPending` covers the gap before playback starts: the state lands and the audio
+  // begins in the same render pass, and without it we would route away in between.
+  const lastMsg = messages[messages.length - 1];
+  const speechPending = !!(
+    lastMsg?.role === "assistant"
+    && (lastMsg.audio_segments?.length || lastMsg.audio_url)
+    && playedIdxRef.current !== messages.length - 1
+  );
   useEffect(() => {
     if (ended) return;
-    if (nextAction === "readout" || nextAction === "done") { setEnded(true); onEnd(); }
-  }, [nextAction, ended, onEnd]);
+    if (nextAction !== "readout" && nextAction !== "done") return;
+    if (audioPlaying || speechPending) return;   // let her finish the sentence
+    setEnded(true);
+    onEnd();
+  }, [nextAction, ended, onEnd, audioPlaying, speechPending]);
+
+  // ── FAST START: fetch the greeting from inside the room ──
+  // The room is already on screen when this runs. The kickoff LLM and the greeting's first
+  // clip are paid for while the candidate is LOOKING at the interviewer, not at a spinner.
+  // Guarded by a ref, not just state: React strict mode double-fires mount effects, and a
+  // second kickoff would be a second LLM bill (the server is idempotent too — belt and
+  // braces, because this one is expensive to get wrong).
+  //
+  // NOTE — no `cancelled` flag on the cleanup, and that is deliberate. StrictMode
+  // double-invokes mount effects (mount -> cleanup -> mount) in development. The ref guard
+  // below already makes the fetch fire EXACTLY ONCE; a cancel-on-cleanup on top of it would
+  // then throw that one fetch's result away when the simulated unmount ran, and the room
+  // would sit on "Connecting…" forever. (It did. That is a bug a build and a unit test both
+  // sail straight past, and it only shows up in a browser.) The greeting has no cleanup to
+  // do — the worst case on a REAL unmount is a setState that React discards.
+  useEffect(() => {
+    if (!connecting || greetingFetchedRef.current || !sessionId) return;
+    greetingFetchedRef.current = true;
+    (async () => {
+      try {
+        const r = await fetchGreeting(sessionId, voicePref || "female");
+        if (import.meta.env?.DEV && r.interviewer_identity) {
+          console.debug("[interviewer identity]", r.interviewer_identity);
+        }
+        if (r.tone) setTone(r.tone);
+        setMessages([{ role: "assistant", content: r.greeting, audio_segments: r.audio_segments || [] }]);
+        setConnecting(false);
+      } catch (e) {
+        // The greeting is the one thing we cannot degrade around — with no opening line
+        // there is no interview. Say so plainly and let them start again.
+        setConnecting(false);
+        setError(e.message || "The interviewer could not be reached. Please start again.");
+      }
+    })();
+  }, [connecting, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── REALISM: the pre-cached clip pack ──
+  // Fetched once, used all session: an acknowledgment the instant an answer is submitted,
+  // and a soft backchannel at a natural pause in a long answer. Entirely optional — if this
+  // fails, the room is exactly what it was, minus the human noises.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetchClipPack(voicePref || "female");
+        if (cancelled) return;
+        clipsRef.current = { acks: r.acks || [], backchannels: r.backchannels || [] };
+        // Warm the blobs now, so the ack plays INSTANTLY on submit rather than after a
+        // fetch. An acknowledgment that arrives late is worse than one that never comes.
+        for (const c of [...(r.acks || []), ...(r.backchannels || [])]) {
+          if (!c.audio_url || audioBlobCache.current.has(c.audio_url)) continue;
+          try {
+            audioBlobCache.current.set(c.audio_url, await fetchAudioObjectUrl(c.audio_url));
+          } catch { /* one missing clip is nothing */ }
+          if (cancelled) return;
+        }
+      } catch { /* the room does not depend on these */ }
+    })();
+    return () => { cancelled = true; };
+  }, [voicePref]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Voice Phase 1: track playback so the avatar can pulse and errors fall back to text.
   useEffect(() => {
@@ -1382,8 +1616,13 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       settled = true;
       p.removeEventListener("ended", done);
       p.removeEventListener("error", done);
+      if (playAbortRef.current === done) playAbortRef.current = null;
       resolve();
     };
+    // A barge-in PAUSES the element, which fires neither "ended" nor "error" — so without
+    // an explicit abort this promise would never settle and the sequencer would hang on a
+    // clip nobody is listening to any more. The interrupter calls this.
+    playAbortRef.current = done;
     (async () => {
       try {
         let objUrl = audioBlobCache.current.get(url);
@@ -1404,22 +1643,84 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+  // ── REALISM: the little human noises ──
+  // Fire-and-forget on their OWN audio element, so they can never interrupt the
+  // interviewer's actual voice or the candidate's recording. Nothing awaits them and
+  // nothing breaks if they fail — an acknowledgment that doesn't arrive costs nothing.
+  const playClip = (url, volume = 1) => {
+    const p = clipPlayer();
+    const objUrl = url && audioBlobCache.current.get(url);
+    if (!p || !objUrl) return;                  // not pre-warmed -> skip it, don't stall
+    try {
+      p.pause();
+      p.volume = volume;
+      p.src = objUrl;
+      p.play()?.catch(() => { /* autoplay blocked — the room is fine without it */ });
+    } catch { /* noop */ }
+  };
+
+  /** The instant an answer is submitted: "Hmm." — while the real reply is being written.
+   *  This is the whole trick. The thinking gap was always there; what it sounded like was
+   *  a machine loading. Now it sounds like a person considering. */
+  const playAck = () => {
+    const acks = clipsRef.current.acks;
+    if (!acks.length) return;
+    const clip = acks[Math.abs(ackSeedRef.current++) % acks.length];
+    playClip(clip.audio_url, 1);
+  };
+
+  /** Mid-answer, at a natural pause in a long one: a soft "mm-hmm". Never twice running,
+   *  never in the opening seconds, never loud enough to be heard as an interruption. */
+  const playBackchannel = () => {
+    const bc = clipsRef.current.backchannels;
+    if (!bc.length) return;
+    const clip = bc[bcCountRef.current % bc.length];
+    playClip(clip.audio_url, BACKCHANNEL_VOLUME);
+  };
+
   /**
    * E2: speak a reply SENTENCE BY SENTENCE, holding a human beat between them
-   * (300-450ms) and letting the question land (~700ms). The caption advances in exact
-   * lockstep with the audio — no progress-bar interpolation. A sentence whose synth
-   * failed simply shows its caption for a beat and moves on; the interview never stalls.
+   * (300-450ms) and letting the question land (700ms, or ~1100ms when they have just
+   * given a real answer — a person absorbs an answer before firing the next question).
+   * The caption advances in exact lockstep with the audio — no progress-bar interpolation.
+   * A sentence whose synth failed simply shows its caption for a beat and moves on; the
+   * interview never stalls.
+   *
+   * FAST START: sentences after the first arrive `pending` — the server sent us sentence
+   * one the moment it existed, so she can START TALKING, and the rest synthesise while it
+   * is in the air. We kick that fetch off here, before playing a note, so it overlaps with
+   * the audio rather than following it.
    */
   const playSegments = async (segments) => {
     if (!segments?.length) return;
     const token = {};
     speakTokenRef.current = token;
+    bargedRef.current = false;
+    spokenSoFarRef.current = "";
     setAudioPlaying(true);
-    for (const seg of segments) {
-      if (speakTokenRef.current !== token) return;        // superseded -> abandon quietly
+
+    const restP = segments.some(s => s.pending)
+      ? fetchSpeechRest(sessionId, voicePref || "female", 1).catch(() => null)
+      : null;
+    let rest = null;
+
+    const spoken = [];
+    for (let i = 0; i < segments.length; i++) {
+      if (speakTokenRef.current !== token) return;        // superseded / barged -> abandon
+      let seg = segments[i];
+      if (seg.pending && restP) {
+        if (!rest) {
+          const r = await restP;
+          rest = new Map((r?.segments || []).map(s => [s.index, s.audio_url]));
+          if (speakTokenRef.current !== token) return;
+        }
+        seg = { ...seg, audio_url: rest.get(i) || null };
+      }
       if (seg.pause_before_ms) await sleep(seg.pause_before_ms);
       if (speakTokenRef.current !== token) return;
       setSpokenLine(seg.text || "");
+      spoken.push(seg.text || "");
+      spokenSoFarRef.current = spoken.join(" ");          // what she has ACTUALLY said
       if (seg.audio_url) await playOne(seg.audio_url);
       else await sleep(650);                              // TTS failed for this line
     }
@@ -1461,13 +1762,23 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const sttAvailable = !!sstate?.stt_available;
   // Phase 3 Part B: voice works in EVERY answering round (Warm-up, Domain,
   // Behavioural, Case, Reverse) — i.e. whenever the learner can submit an answer.
-  const canAnswer = !ended && !awaitingRating && (nextAction === "answer" || nextAction === "reverse_question");
+  //
+  // ...but NOT while `connecting`. FAST START opens the room on the session row, which
+  // already says next_action="answer" — so for the two or three seconds before the
+  // greeting lands, every "is it their turn?" check would say yes. Without this the mic
+  // would open, the question clock would start, and the 90-second abandonment timer would
+  // arm, all before the interviewer had said a single word. It is not their turn until
+  // somebody has asked them something.
+  const canAnswer = !ended && !connecting && !awaitingRating
+    && (nextAction === "answer" || nextAction === "reverse_question");
 
   // Voice Stage: a presentation mode over the same state machine. Only ever active
   // when voice is available; switch it off and the session renders exactly as today.
   const voiceMode = sttAvailable && voiceStage;
   const orbState = recording ? "listening"
-    : (transcribing || loading) ? "thinking"
+    // FAST START: while the greeting is being written she is THINKING, not idle — which is
+    // both what is actually happening and what the candidate should see her doing.
+    : (transcribing || loading || connecting) ? "thinking"
     : audioPlaying ? "speaking" : "idle";
   const lastAssistantText = (() => {
     for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "assistant") return messages[i].content;
@@ -1484,7 +1795,13 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // synthesised one clip per sentence, the sequencer knows exactly which line is in the
   // air — so captions land in true lockstep instead of being interpolated off a
   // progress bar. When nothing is playing, show the whole question so it can be read.
-  const ccLine = spokenLine || (audioPlaying ? "" : (lastAssistantText || ""));
+  //
+  // BARGE-IN: except when she was interrupted. Then the caption shows only what she
+  // actually got out (`spoken_prefix`) — the rest of that reply was never said aloud, and
+  // captioning it would be captioning words this candidate never heard.
+  const lastAssistantMsg = lastAssistantIdx >= 0 ? messages[lastAssistantIdx] : null;
+  const idleCaption = lastAssistantMsg?.spoken_prefix || lastAssistantText || "";
+  const ccLine = spokenLine || (audioPlaying ? "" : idleCaption);
 
   // Mirror state into refs — the <audio> 'ended' handler and the rAF meter loop are
   // registered once and would otherwise close over stale values.
@@ -1503,6 +1820,118 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   useEffect(() => {
     if (voiceMode && nextAction === "readout") setDrawerOpen(true);
   }, [voiceMode, nextAction]);
+
+  // ── REALISM: BARGE-IN ──
+  // You can interrupt a person, and that is most of what makes them one. While the
+  // interviewer is speaking and the floor is about to be the candidate's anyway, we hold
+  // the mic open for exactly one purpose: to hear whether they have started talking over
+  // her. When they have, she ducks out over 200ms — a hard cut sounds like a crash, a fade
+  // sounds like someone stopping because you started — and the floor is theirs.
+  //
+  // She does NOT re-say the sentences she was interrupted out of. Nobody does that, and a
+  // candidate who cuts in has already decided they do not need the rest.
+  const releaseWarmStream = () => {
+    const s = warmStreamRef.current;
+    if (s) { try { s.getTracks().forEach(t => t.stop()); } catch { /* noop */ } warmStreamRef.current = null; }
+  };
+
+  const stopBargeMonitor = ({ keepStream = false } = {}) => {
+    if (bargeRafRef.current) { cancelAnimationFrame(bargeRafRef.current); bargeRafRef.current = null; }
+    const ctx = bargeCtxRef.current;
+    if (ctx) { try { ctx.close(); } catch { /* noop */ } bargeCtxRef.current = null; }
+    bargeAboveSinceRef.current = 0;
+    if (!keepStream) releaseWarmStream();
+  };
+
+  const onBargeIn = async () => {
+    stopBargeMonitor({ keepStream: true });   // the open mic BECOMES their recording
+    speakTokenRef.current = null;             // the sequencer abandons the rest of the reply
+
+    const p = player();
+    if (p) {
+      const from = p.volume;
+      const steps = 8;
+      for (let i = 1; i <= steps; i++) {
+        p.volume = Math.max(0, from * (1 - i / steps));
+        await sleep(BARGE_IN_DUCK_MS / steps);
+      }
+      try { p.pause(); } catch { /* noop */ }
+      p.volume = from;                        // restore it for her next reply
+    }
+    playAbortRef.current?.();                 // a paused clip fires no 'ended' — settle it
+    setAudioPlaying(false);
+    setSpokenLine("");
+
+    // The caption keeps ONLY what she actually said aloud. Showing the sentences she was
+    // cut out of would put words in her mouth that this candidate never heard.
+    const spoken = spokenSoFarRef.current;
+    if (spoken) {
+      setMessages(m => m.map((msg, i) => (
+        i === m.length - 1 && msg.role === "assistant" ? { ...msg, spoken_prefix: spoken } : msg
+      )));
+    }
+
+    // Their turn began a second ago. Record on the mic that is ALREADY live rather than
+    // spending another getUserMedia on it — that round trip is their opening word.
+    if (canAnswerRef.current) beginRecording(warmStreamRef.current);
+  };
+
+  const startBargeMonitor = async () => {
+    if (bargeCtxRef.current) return;                                  // already listening
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
+    let stream = warmStreamRef.current;
+    if (!stream || !stream.active) {
+      try { stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS); }
+      catch { return; }        // no mic / denied -> no barge-in. The room is unchanged.
+      warmStreamRef.current = stream;
+    }
+    const AC = typeof window !== "undefined" && (window.AudioContext || window.webkitAudioContext);
+    if (!AC) return;
+    let an;
+    try {
+      const ctx = new AC();
+      bargeCtxRef.current = ctx;
+      const src = ctx.createMediaStreamSource(stream);
+      an = ctx.createAnalyser();
+      an.fftSize = 512;
+      an.smoothingTimeConstant = 0.6;
+      src.connect(an);        // deliberately NOT wired to destination: never echo them back
+    } catch { stopBargeMonitor({ keepStream: true }); return; }
+
+    const buf = new Uint8Array(an.fftSize);
+    const tick = () => {
+      if (!bargeCtxRef.current || bargedRef.current) return;
+      an.getByteTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+      const rms = Math.sqrt(sum / buf.length);
+      const now = performance.now();
+      if (rms > BARGE_IN_RMS) {
+        if (!bargeAboveSinceRef.current) bargeAboveSinceRef.current = now;
+        if (shouldBargeIn({ rms, aboveSinceMs: now - bargeAboveSinceRef.current })) {
+          bargedRef.current = true;
+          onBargeIn();
+          return;
+        }
+      } else {
+        bargeAboveSinceRef.current = 0;
+      }
+      bargeRafRef.current = requestAnimationFrame(tick);
+    };
+    bargeRafRef.current = requestAnimationFrame(tick);
+  };
+
+  // Arm the listener only while she is actually speaking AND the floor is about to be
+  // theirs. Not while a rating is due (what they would be interrupting is the rating ask,
+  // and cutting that short helps nobody). Not while MUTED — a muted mic is never opened,
+  // and that is the whole contract of the mute button, barge-in included.
+  const bargeArmed = audioPlaying && voiceMode && micOn && voiceConsented
+    && canAnswer && !recording && !transcribing && !ended;
+  useEffect(() => {
+    if (!bargeArmed) { stopBargeMonitor({ keepStream: true }); return; }
+    startBargeMonitor();
+    return () => stopBargeMonitor({ keepStream: true });
+  }, [bargeArmed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const showToast = (msg) => {
     setSttToast(msg);
@@ -1599,6 +2028,32 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
           else if (performance.now() - silenceStartRef.current >= SILENCE_HOLD_MS) { stopRecording(); return; }
         } else silenceStartRef.current = 0;
       }
+
+      // ── REALISM: LISTENING BACKCHANNELS ──
+      // A soft "mm-hmm" at a natural pause in a long answer. It runs off the SAME rms we
+      // already compute for the waveform, so it costs nothing, and every condition in
+      // shouldBackchannel is there to stop it becoming an interruption: long answers only,
+      // never in the opening seconds, never at a pause long enough to be them FINISHING,
+      // and never more than twice. A rating capture is not an answer and gets none.
+      if (spokeRef.current && !ratingListeningRef.current) {
+        const now = performance.now();
+        if (rms < SILENCE_RMS) {
+          if (!bcPauseStartRef.current) bcPauseStartRef.current = now;
+          const elapsedMs = recStartRef.current ? Date.now() - recStartRef.current : 0;
+          if (shouldBackchannel({
+            elapsedMs,
+            pauseMs: now - bcPauseStartRef.current,
+            playedCount: bcCountRef.current,
+            endOfAnswerMs: SILENCE_HOLD_MS,
+          })) {
+            bcCountRef.current += 1;
+            bcPauseStartRef.current = 0;      // at most one per pause
+            playBackchannel();
+          }
+        } else {
+          bcPauseStartRef.current = 0;
+        }
+      }
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
@@ -1687,19 +2142,38 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   useEffect(() => { audioEndedRef.current = onAudioEnded; });
 
   // Actually acquire the mic and start capturing (consent already handled).
-  const beginRecording = async () => {
+  // `existing` is the barge-in monitor's already-live mic, handed over rather than
+  // re-acquired: a second getUserMedia here would cost ~200ms, and those 200ms are the
+  // first word of whatever they cut in to say.
+  const beginRecording = async (existing) => {
     if (recording || transcribing) return;
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       voiceFallback(); return;
     }
-    let stream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      // Permission denied or no device → fall back to typing, zero degradation.
-      voiceFallback(); return;
+    // Take the mic that is ALREADY open if there is one — either the stream handed over by
+    // a barge-in, or the one the barge-in listener left warm when she finished speaking.
+    // Opening a second one would both leak the first (two live mics, two indicator lights)
+    // and cost a getUserMedia round trip at the exact moment they start talking.
+    const warm = warmStreamRef.current;
+    let stream = (existing && existing.active) ? existing
+      : (warm && warm.active) ? warm
+        : null;
+    if (stream) {
+      // It belongs to the recorder now — the monitor must not stop it out from under us.
+      if (warmStreamRef.current === stream) warmStreamRef.current = null;
+      stopBargeMonitor({ keepStream: true });
+    } else {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+      } catch {
+        // Permission denied or no device → fall back to typing, zero degradation.
+        voiceFallback(); return;
+      }
     }
     mediaStreamRef.current = stream;
+    // A fresh answer: it has had no backchannels, and it is not mid-pause.
+    bcCountRef.current = 0;
+    bcPauseStartRef.current = 0;
     let mr;
     try { mr = new MediaRecorder(stream); }   // mimeType left to the browser (the STT fix handles it)
     catch { stopMediaStream(); voiceFallback(); return; }
@@ -1826,6 +2300,10 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       setMicOn(false);
       clearGrace();
       if (recording) stopRecording();    // muting stops any capture in flight
+      // MUTED MEANS MUTED. The barge-in listener holds a live mic while she speaks; on
+      // mute it is torn down and the TRACK IS STOPPED, so the browser's recording
+      // indicator goes out. A mute button that leaves the mic open is a lie.
+      stopBargeMonitor();
       return;
     }
     // UNMUTE — an explicit act. Consent is still explicit and separate.
@@ -1924,10 +2402,10 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   useEffect(() => {
     if (!answerWindowOpen || qKeyRef.current === questionKey) return;
     qKeyRef.current = questionKey;
-    const budget = questionSeconds(sstate?.current_stage);
+    const budget = questionSeconds(sstate?.current_stage, questionKind, checkinSecondsRef.current);
     qDeadlineRef.current = Date.now() + budget * 1000;
     setQLeft(budget);
-  }, [answerWindowOpen, questionKey, sstate?.current_stage]);
+  }, [answerWindowOpen, questionKey, sstate?.current_stage, questionKind]);
 
   useEffect(() => {
     if (!answerWindowOpen || qKeyRef.current !== questionKey) { setQLeft(null); return; }
@@ -2034,12 +2512,20 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     if (abandonRef.current) clearTimeout(abandonRef.current);
     if (cameraGraceRef.current) clearTimeout(cameraGraceRef.current);
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    if (bargeRafRef.current) cancelAnimationFrame(bargeRafRef.current);
     recordingRef.current = false;
     const ctx = audioCtxRef.current;
     if (ctx) { try { ctx.close(); } catch { /* noop */ } audioCtxRef.current = null; }
+    const bctx = bargeCtxRef.current;
+    if (bctx) { try { bctx.close(); } catch { /* noop */ } bargeCtxRef.current = null; }
     const mr = mediaRecorderRef.current;
     if (mr && mr.state !== "inactive") { try { mr.stop(); } catch { /* noop */ } }
     stopMediaStream();
+    // The barge-in listener's mic outlives any single recording, so it has to be stopped
+    // here explicitly — otherwise leaving the interview leaves the mic light on.
+    const warm = warmStreamRef.current;
+    if (warm) { try { warm.getTracks().forEach(t => t.stop()); } catch { /* noop */ } warmStreamRef.current = null; }
+    try { clipPlayer()?.pause(); } catch { /* noop */ }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Diagnostics (dev only): surface stt_available once per state change so a
@@ -2067,10 +2553,22 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     const metrics = pendingDeliveryRef.current;
     answeredByVoiceRef.current = false; pendingDeliveryRef.current = null;
     setMessages(m => [...m, { role: "user", content: skipped ? SKIP_MARKER : textVal, meta: skipped ? "SKIPPED" : spoken ? "SPOKEN" : "TYPED" }]); setInput(""); setLoading(true); setError(null);
+
+    // ── REALISM: the acknowledgment ──
+    // "Hmm." — NOW, on a pre-cached clip, while the reply is still being written. This is
+    // the whole point: the thinking gap was always going to be two or three seconds long,
+    // and what it sounded like was a machine loading. A skip gets none — there was nothing
+    // to acknowledge, and "Interesting." after a silence would be absurd.
+    if (!skipped) playAck();
+
     try {
       const res = await sendTurn(sessionId, textVal, sstate?.current_stage, voicePref || "female", spoken ? metrics : null, timeout);
       setMessages(m => [...m, { role: "assistant", content: res.reply, audio_segments: res.audio_segments || [] }]);
       setSstate(res.state);
+      // The engagement floor: a check-in is a direct question and carries its own short
+      // clock (45s), not the round's full three-minute budget.
+      setQuestionKind(res.question_kind || "question");
+      if (res.checkin_seconds) checkinSecondsRef.current = res.checkin_seconds;
       // Realism v2: if this answer is rating-gated, IQ asks for the rating ALOUD once
       // the reply finishes playing (see onAudioEnded).
       if (res.tone) setTone(res.tone);
@@ -2321,7 +2819,17 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
                 with the self-view tile or run off the viewport. Speaking: the sentence in
                 the air. Idle: the whole question, so it can always be read. */}
             <div className="iq-cc-band">
-              {captions && !heard && ccLine ? <div className="iq-cc">{ccLine}</div> : null}
+              {/* FAST START: the room is up and she is on screen — this is the beat in
+                  which she is drawing breath, and it should read as exactly that rather
+                  than as a page that has not finished loading. */}
+              {connecting ? (
+                <div className="iq-connecting">
+                  <span className="iq-connecting-dot" />
+                  <span className="iq-connecting-dot" />
+                  <span className="iq-connecting-dot" />
+                  <span>Connecting you with your interviewer…</span>
+                </div>
+              ) : (captions && !heard && ccLine ? <div className="iq-cc">{ccLine}</div> : null)}
             </div>
           </div>
 
@@ -3058,7 +3566,9 @@ export default function App() {
 
   const restart = () => {
     clearActiveSession();
-    setConfig(null); setSessionId(null); setGreeting(""); setGreetingAudioUrl(null); setInitialState(null);
+    // (setGreetingAudioUrl used to be called here. It has not existed since the whole-reply
+    // clip was removed, so "Start fresh" threw a ReferenceError and did nothing at all.)
+    setConfig(null); setSessionId(null); setGreeting(""); setGreetingSegments([]); setInitialState(null);
     setInitialMessages(null); setStartedAt(null); setResumeCfg(null); setHistoryDetailId(null);
     setScreen("setup");
   };
@@ -3092,21 +3602,27 @@ export default function App() {
         interviewer_name: iv.name,      // the persona ADOPTS the face's name
         camera_at_join: !!camera,       // a camera-off join is never penalised
       });
-      if (import.meta.env?.DEV && r.interviewer_identity) {
-        console.debug("[interviewer identity]", r.interviewer_identity);
-      }
-      // INT-07 consent ledger. The lobby is now the ONE consent moment.
+
+      // FAST START: /session/start is now just the session row, so we are HERE in well
+      // under a second — and the room goes up NOW, with the interviewer already in it. The
+      // greeting is fetched from inside the room (InterviewScreen), and she starts talking
+      // the moment her first sentence has audio. What the candidate used to get instead was
+      // a fourteen-second spinner.
+      //
+      // The consent writes are deliberately NOT awaited: they are a ledger entry, they are
+      // non-blocking by design (the server-side gate is the real enforcement), and making
+      // the room wait on three round trips would hand back the time we just bought.
       const grants = [{ consent_type: "data_processing", copy_version: CONSENT_COPY_VERSION }];
       if (mic) grants.push({ consent_type: "voice_recording", copy_version: CONSENT_COPY_VERSION });
       if (camera) grants.push({ consent_type: "camera_selfview", copy_version: CONSENT_COPY_VERSION });
       for (const g of grants) {
-        try { await recordConsent({ ...g, session_id: r.session_id }); } catch { /* non-blocking */ }
+        recordConsent({ ...g, session_id: r.session_id }).catch(() => { /* non-blocking */ });
       }
       try { localStorage.setItem(CONSENT_KEY, "1"); } catch { /* noop */ }
 
       handleStart(
         { ...payload, roomSeed, mic: !!mic, camera: !!camera, interviewerName: iv.name },
-        r.session_id, r.greeting, r.state, r.audio_segments || [],
+        r.session_id, r.greeting || "", r.state, r.audio_segments || [],
       );
     } catch (e) {
       setJoinError(e.message);

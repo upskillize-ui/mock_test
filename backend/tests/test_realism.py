@@ -43,11 +43,27 @@ def test_kickoff_demands_improvisation_and_forbids_copying_examples():
 
 def test_kickoff_opening_constraints_not_a_template():
     k = p.build_kickoff(_cfg())
-    assert "2 to 4 sentences" in k
+    # The opening is capped at 2-3 sentences — the SAME limit the persona puts on every
+    # other turn ("2-3 SHORT sentences per turn, then STOP"). It used to allow four, and
+    # measured openings were running to five: a paragraph delivered at someone who has just
+    # sat down, which is neither what a person does nor what we told the model to do
+    # everywhere else. Tightening it also happens to be worth ~0.6s of the start latency,
+    # because those are tokens a candidate is sitting there waiting for.
+    assert "2 or 3 SHORT sentences" in k
+    assert "Not four" in k
     # Must land on a real, role-shaped first question (not generic rapport).
     assert "shaped by the" in k and "tell me about yourself" in k.lower()
     # Identity is tone-only — never difficulty/structure.
     assert "never changes difficulty" in k.lower() or "TONE ONLY" in k
+
+
+def test_the_opening_streams_before_the_identity_does():
+    """FAST START: `opening` MUST be the first key in the kickoff JSON. It is what the
+    candidate actually hears, and putting it first is what lets us start synthesising the
+    interviewer's first sentence while she is still writing her third."""
+    k = p.build_kickoff(_cfg())
+    assert k.index('"opening"') < k.index('"identity"')
+    assert 'Write "opening" first' in k
 
 
 def test_reassurance_only_for_freshers():

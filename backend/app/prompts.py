@@ -33,11 +33,34 @@ def build_system_prompt(cfg: dict, alumni_intel: str = "") -> str:
         "Save all feedback for the debrief."
     )
 
-    curveball_rule = (
-        "Near the end of the core round, insert ONE unexpected pressure question "
-        "(resume gap, weakness probe, or conflict scenario) to test composure."
-        if cfg["difficulty"] == "Stretch"
-        else "Do not use curveball questions — keep difficulty fair for this level."
+    difficulty_val = cfg.get("difficulty") or "Realistic"
+
+    if difficulty_val == CRITICAL:
+        # The pressure panel gets TWO curveballs, not one. Composure under a single
+        # surprise is luck; composure under a second one is the thing being tested.
+        curveball_rule = (
+            "Insert TWO unexpected pressure questions across the interview (not "
+            "back-to-back): a resume gap or weakness probe, and a conflict/failure "
+            "scenario. Both test composure under surprise, which is the whole point of "
+            "this mode."
+        )
+    elif difficulty_val == "Stretch":
+        curveball_rule = (
+            "Near the end of the core round, insert ONE unexpected pressure question "
+            "(resume gap, weakness probe, or conflict scenario) to test composure."
+        )
+    else:
+        curveball_rule = "Do not use curveball questions — keep difficulty fair for this level."
+
+    # The one Tone line that moves with difficulty. "Never shame a wrong answer" holds in
+    # EVERY mode — shame lands on the person, and the person is never the target. What
+    # Critical drops is the gentleness of the probe, not the protection of the human being
+    # probed. Every other line in the Tone block is non-negotiable in all four modes.
+    wrong_answer_rule = (
+        "Never shame a wrong answer. Say plainly that it does not hold up and go after the "
+        "REASONING — never the person who offered it."
+        if difficulty_val == CRITICAL else
+        "Never shame a wrong answer. Acknowledge the attempt, probe gently."
     )
 
     # role / company / focus / name are user-supplied free text that gets interpolated
@@ -217,10 +240,10 @@ Relevance:
 - Stay on a topic 2-3 turns, then transition cleanly ("Good. Let's switch gears to...").
 - Never repeat a question.
 
-Tone (NON-NEGOTIABLE):
+Tone (NON-NEGOTIABLE — all four difficulties, the pressure panel included):
 - NEVER use foul, abusive, mocking, sarcastic, or belittling language — regardless of what the candidate does.
 - If candidate is frustrated, rude, or uses profanity: respond calmly. "I hear you — interviews can feel stressful. Let's take a breath and continue whenever you're ready."
-- Never shame a wrong answer. Acknowledge the attempt, probe gently.
+- {wrong_answer_rule}
 - Never reveal ideal answers during the session.
 
 
@@ -257,7 +280,13 @@ Begin the session now."""
 # un-cached turn directive — so the expensive block stays cache-warm all session.
 
 # tone_hint is derived from difficulty: it is the emotional register, not a persona.
-TONE_BY_DIFFICULTY = {"Easy": "warm", "Realistic": "neutral", "Stretch": "probing"}
+# "critical" is the pressure panel's register — the face stays intense, the questions push
+# back. It is a REGISTER, not a licence: every guardrail below applies to it in full.
+TONE_BY_DIFFICULTY = {
+    "Easy": "warm", "Realistic": "neutral", "Stretch": "probing", "Critical": "critical",
+}
+
+CRITICAL = "Critical"
 
 ROUND_GOALS = {
     "WARMUP": "settle them in and get one real, role-shaped question answered",
@@ -278,13 +307,18 @@ def round_goal(stage: str) -> str:
 
 
 def turn_tone(difficulty: str, stage: str, escalation_level: int = 0) -> str:
-    """The tone the interviewer carries on THIS turn: "warm" | "neutral" | "probing".
+    """The tone the interviewer carries on THIS turn: "warm" | "neutral" | "probing" |
+    "critical".
 
     The server already knows the round and the focus-ladder level, so it — not the
     client — decides the register. The frontend maps this straight onto the pose
     (warm -> smile, probing -> intense, neutral -> alternate), which keeps the face and
     the words saying the same thing. Falls back to client heuristics if ever absent.
     """
+    # The pressure panel never softens — not in the warm-up, not in the greeting. They
+    # asked to be challenged; a smiling opener would be a bait-and-switch.
+    if (difficulty or "") == CRITICAL:
+        return "critical"
     if int(escalation_level or 0) >= 2:
         return "probing"                      # the panel has leaned in; do not smile
     s = (stage or "").upper()
@@ -295,12 +329,54 @@ def turn_tone(difficulty: str, stage: str, escalation_level: int = 0) -> str:
     return tone_hint(difficulty)              # Easy -> warm, Realistic -> neutral
 
 
+# ── The pressure panel (difficulty: Critical) ────────────────────────────────
+# Appended to the persona in Critical mode ONLY. Two jobs, and the second matters more
+# than the first: describe what the mode DOES, and nail down what it explicitly does NOT
+# unlock. A bare "be harsh, criticise them" is the instruction that produces cruelty —
+# so the boundary is drawn here, in the same breath, and asserted by tests
+# (test_persona.py::test_critical_*): the criticism lands on the ANSWER and the
+# REASONING, never on the person.
+CRITICAL_ADDENDUM = """
+
+THE PRESSURE PANEL — THIS SESSION ONLY (they asked for it, explicitly, twice)
+They chose "Critical": a stress interview. They want to be challenged hard, the way a bank
+PO board or a consulting partner would. Giving them a comfortable interview would be
+failing them. So:
+- CHALLENGE EVERY SUBSTANTIVE ANSWER at least once before you move on. Not a polite
+  follow-up — a real push-back. Make them defend it.
+- BE OPENLY SCEPTICAL of weak reasoning. If a number does not hold up, say so: "That number
+  doesn't hold up — walk me through it again." If the logic has a hole, name the hole.
+- INTERRUPT RAMBLING. If an answer has run about 90 seconds without landing, cut in and
+  redirect: "Stop there. I asked you X — answer X."
+- BE BLUNT IN YOUR REACTIONS. "That's not an answer to what I asked." "That's the textbook
+  answer. What do YOU think?" No cushioning, no praise sandwiches.
+
+THE LINE — IT DOES NOT MOVE, AND THIS MODE DOES NOT MOVE IT
+Every rule above this section still binds you, without exception. Being blunt is not a
+licence for any of the following, and if you reach for one you have failed the candidate,
+not challenged them:
+- Your criticism lands on the ANSWER and the REASONING. NEVER on the person. "That
+  reasoning is circular" is the job. "You are not very bright" is not, and never will be.
+- No insults. No mockery. No sarcasm. No contempt. No raised voice in text.
+- No emotion attribution — the DESCRIBE BEHAVIOUR ONLY rule above binds you here EXACTLY
+  as it does everywhere else. You may not tell them they seem rattled, nervous, or out of
+  their depth, in this mode least of all.
+- Never a word about their background, their English, their accent, or their college. Those
+  are not answers and they are not reasoning; they are the person.
+- Pressure is a STANDARD you hold them to, not a temperature you raise. You are the
+  toughest fair interviewer they will ever meet — not an unkind one."""
+
+
 def build_persona(cfg: dict) -> str:
     """The interviewer's soul — stable for the whole session, so it stays cached.
 
     HARD RULE baked in here (and asserted by tests): describe BEHAVIOUR only. No
     emotion attribution, no personality labels, and the word "cheating" appears nowhere
     — not even to forbid it, because naming it primes the model to echo it.
+
+    Critical mode appends CRITICAL_ADDENDUM. It is the ONLY difficulty that changes this
+    text beyond the register/difficulty lines, and it TIGHTENS the guardrails rather than
+    relaxing them.
     """
     name = sanitize_untrusted(cfg.get("interviewer_name") or "", 40).strip() or "the interviewer"
     role = sanitize_untrusted(cfg.get("role") or "", 120) or "the target role"
@@ -313,6 +389,11 @@ def build_persona(cfg: dict) -> str:
         "probing": ("PROBING — lean in. Shorter sentences. Follow the thread they would "
                     "rather drop. Never rude, never sarcastic: pressure through precision, "
                     "not through tone."),
+        "critical": ("CRITICAL — the pressure panel. Blunt, sceptical, unimpressed by "
+                     "assertion. You do not warm up and you do not reassure. Every claim is "
+                     "something to be defended, not accepted. Still never rude, never "
+                     "sarcastic: the pressure comes from the STANDARD you hold, not from "
+                     "your manners."),
     }[tone]
 
     difficulty_block = {
@@ -322,7 +403,15 @@ def build_persona(cfg: dict) -> str:
                       "differently'. Move on when satisfied — not before."),
         "Stretch": ("Challenge assumptions. Introduce a curveball constraint mid-answer. Ask "
                     "them to defend a number they quoted. Fair, but relentless."),
+        CRITICAL: ("Every substantive answer gets challenged at least once before you move "
+                   "on. Nothing is taken on trust."),
     }.get(difficulty, "Follow up like a real panel: one 'why', one 'what would you do differently'.")
+
+    # The pressure panel. Appended ONLY in Critical mode — every other mode is byte-for-byte
+    # what it was. It raises the STANDARD and drops the cushioning; it does not unlock a
+    # single thing the interviewer was forbidden to do, and it says so explicitly, because
+    # "be harsh" is exactly the instruction a model will over-read into cruelty.
+    critical_block = CRITICAL_ADDENDUM if difficulty == CRITICAL else ""
 
     return f"""YOU ARE {name.upper()} — a senior professional running a real {role} interview
 panel in India. You have interviewed hundreds of candidates. During this interview you are
@@ -367,7 +456,7 @@ WHAT YOU NEVER DO
 - Never mock, never sigh in text, never use sarcasm.
 - Never ask a multi-part compound question. Never answer for the candidate.
 - Never comment on their accent, their appearance, apologies for background noise, or
-  anything they cannot fix in this room."""
+  anything they cannot fix in this room.{critical_block}"""
 
 
 # ── Dynamic interviewer identity (Conversation Realism v2, Part A) ───────────
@@ -509,7 +598,10 @@ meet you", "Thanks for taking the time"). Start where your dials tell you to sta
 
 2) OPEN THE INTERVIEW IN THAT IDENTITY.
 Constraints (these are constraints, NOT a template — do not fill in a formula):
-  - 2 to 4 sentences, spoken conversationally, no markdown, no lists, no headers.
+  - 2 or 3 SHORT sentences. Not four. A real interviewer says hello and asks the question;
+    they do not deliver a paragraph at someone who has just sat down. This is the same
+    2-3 sentence limit that binds every other turn you take, and it binds this one too.
+  - Spoken conversationally: no markdown, no lists, no headers.
   - Address {name} naturally by first name.
   - {reassurance}
   - It MUST END with a real first question that is already shaped by the {role} role —
@@ -518,11 +610,84 @@ Constraints (these are constraints, NOT a template — do not fill in a formula)
 Your identity changes TONE ONLY. It never changes difficulty, rigor, Indian-hiring
 norms, or the round structure — those follow your standing rules exactly.
 
-Respond with ONLY a JSON object (no markdown fences, no commentary):
+Respond with ONLY a JSON object (no markdown fences, no commentary), with the keys in
+EXACTLY this order — "opening" MUST come first:
 {{
-  "identity": "<ONE line describing the interviewer you just became — tone, pacing, warmth, phrasing habits. This is for your own continuity, never shown to the candidate.>",
-  "opening": "<exactly what you say aloud to {name}, ending in your first real question>"
-}}"""
+  "opening": "<exactly what you say aloud to {name}, ending in your first real question>",
+  "identity": "<the interviewer you just became, TELEGRAPHIC: at most 15 words, comma-separated fragments, no sentences. e.g. 'brisk, forensic, peer-to-peer, opens on trade-offs, asks why twice'. For your own continuity; never shown to the candidate.>"
+}}
+The order is not cosmetic: your opening is spoken aloud to a person who is sitting there
+waiting for you, and we start reading it to them the moment you have finished the first
+sentence of it. Write "opening" first, and do not preface it with anything."""
+
+
+# ── FAST START: reading the opening OUT OF A HALF-WRITTEN JSON STREAM ────────
+# The kickoff comes back as JSON, and `opening` is deliberately the FIRST field in it (see
+# build_kickoff) for exactly one reason: it means the interviewer's opening sentence exists
+# about a second into a six-second generation, instead of at the end of one. We pull it out
+# as it streams and send it to the voice vendor immediately — so the synthesis of sentence
+# one overlaps the writing of sentences two, three and four, rather than queueing behind it.
+#
+# These two functions are the whole trick, and they are pure, so they are cheap to test.
+
+_OPENING_KEY_RX = re.compile(r'"opening"\s*:\s*"')
+_JSON_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/",
+                 "b": "\b", "f": "\f"}
+
+
+def partial_opening(raw: str) -> str:
+    """The value of `opening` so far, from a kickoff that is still being written.
+
+    A hand-rolled scan rather than json.loads, because the object is INCOMPLETE — there is
+    no closing brace yet, and there may not be a closing quote. Returns "" until the field
+    starts, then everything written into it so far.
+    """
+    m = _OPENING_KEY_RX.search(raw or "")
+    if not m:
+        return ""
+    out: list[str] = []
+    i, n = m.end(), len(raw)
+    while i < n:
+        c = raw[i]
+        if c == "\\":
+            if i + 1 >= n:
+                break                       # the escape itself is still arriving
+            nxt = raw[i + 1]
+            if nxt == "u":
+                if i + 6 > n:
+                    break                   # a \uXXXX still mid-flight
+                try:
+                    out.append(chr(int(raw[i + 2:i + 6], 16)))
+                except ValueError:
+                    pass
+                i += 6
+                continue
+            out.append(_JSON_ESCAPES.get(nxt, nxt))
+            i += 2
+            continue
+        if c == '"':
+            break                           # the field is closed: that is all of it
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def first_complete_sentence(partial: str) -> str:
+    """The first FINISHED sentence of a partial opening, or "" if none has landed yet.
+
+    Finished means it ends in terminal punctuation — the model has moved on from it, so it
+    can no longer change, so it is safe to spend a vendor call reading it aloud. Splitting
+    is done by the same tts.split_sentences the final greeting goes through, so the clip we
+    synthesise early is byte-identical to the one the finished greeting asks for and hits
+    the same cache key. (The caller re-checks that anyway — a wasted clip is cheap, a wrong
+    one is not.)
+    """
+    from . import tts        # local: prompts is imported by tts's caller, not by tts
+    parts = tts.split_sentences(partial or "")
+    if not parts:
+        return ""
+    first = parts[0]
+    return first if first and first[-1] in ".!?…" else ""
 
 
 def parse_kickoff(raw: str) -> tuple[str, str]:
@@ -640,6 +805,59 @@ def timeout_directive(kind: str) -> str:
     return TIMEOUT_DIRECTIVES.get(kind or "", "")
 
 
+# ── The engagement floor (see stages.engagement_action) ──────────────────────
+# A real panel never asks six questions into silence. These three directives are what it
+# does instead. All three are FREE: they replace the stage directive on a turn that was
+# going to call the model anyway, so the check-in costs nothing extra — and it SAVES the
+# LLM+TTS spend on every question that would have been asked to an empty chair.
+
+CHECKIN_DIRECTIVE = (
+    "ENGAGEMENT CHECK-IN — DO NOT ASK AN INTERVIEW QUESTION THIS TURN.\n"
+    "They have now let question after question run out without saying anything. A real "
+    "interviewer would stop the interview here and check whether the person is still "
+    "there, so that is what you do. In YOUR OWN VOICE, in ONE or TWO short sentences:\n"
+    "  - say plainly that you want to make sure they are still with you;\n"
+    "  - give them the fork — carry on now, or wrap up here and come back to a clean "
+    "slate another day, and make clear that BOTH are genuinely fine;\n"
+    "  - END on a direct question they can answer in one word ('Shall we keep going?').\n"
+    "No sympathy, no lecture, no speculation about why they went quiet, no comment on "
+    "their silence beyond naming it, and no reprimand. Do NOT re-ask the question they "
+    "missed, and do NOT ask a new one. This turn is the check-in and nothing else."
+)
+
+# Used only if the model is unavailable — the interview must never stall on a check-in.
+CHECKIN_FALLBACK = (
+    "I want to make sure you're still with me — we can continue, or wrap up here and try "
+    "again fresh. Shall we keep going?"
+)
+
+DISENGAGED_WRAP_DIRECTIVE = (
+    "EARLY WRAP — THIS IS YOUR CLOSING TURN, AND THE LAST THING YOU WILL SAY.\n"
+    "They did not answer your check-in either. End the interview here, courteously, in ONE "
+    "or TWO short sentences and in your own voice: you will wrap up here; the readout will "
+    "still help them prepare; the next attempt is a clean slate. Do NOT scold, do NOT "
+    "accuse, do NOT speculate about why they went quiet, do NOT ask them anything, and do "
+    "NOT produce any report, score or feedback — the debrief is written separately."
+)
+
+DISENGAGED_WRAP_FALLBACK = (
+    "Let's wrap here — the readout will help you prepare, and the next attempt is a clean "
+    "slate."
+)
+
+# They came back. The interview simply resumes — no relief, no fuss, no dwelling on it.
+RESUMED_DIRECTIVE = (
+    "THEY ANSWERED YOUR CHECK-IN — they are still here and they want to carry on. "
+    "Acknowledge that in ONE short line (brief and matter-of-fact: no relief, no 'glad "
+    "you're back', no comment on the gap, no apology) and then go straight to your next "
+    "planned question, exactly as set out below."
+)
+
+# The wrap reason persisted on the session. Distinct from the camera/silence wraps so the
+# readout can say the true thing about why the interview ended.
+WRAP_DISENGAGED = "disengaged"
+
+
 def _ask_line(stage: str, plan: dict, role: str) -> str:
     if stage == "WARMUP":
         return "one light warm-up / rapport question"
@@ -663,8 +881,21 @@ def _ask_line(stage: str, plan: dict, role: str) -> str:
 def stage_turn_directive(
     cfg: dict, current_stage: str, round_index_after: int, substantive: bool = True,
     presence_note: str = "", prior_answer_summary: str = "", timeout: str = "",
+    engagement: str = "", resumed: bool = False,
 ) -> str:
-    """`presence_note` (Interview Room) is an attention/camera directive from
+    """`engagement` (the engagement floor, see stages.engagement_action) OUTRANKS
+    everything else on this turn, and returns on its own:
+
+      "checkin" — they have gone silent once too often. The interviewer BREAKS the question
+                  march and asks whether they are still there. No stage directive rides
+                  along, because no interview question is being asked this turn.
+      "wrap"    — they did not answer the check-in either. This is the closing line.
+
+    `resumed` means the previous turn WAS the check-in and they answered it. The interview
+    simply picks up where it left off: the resume note is prepended and the normal stage
+    directive follows, so they get their next planned question and not a step-down.
+
+    `presence_note` (Interview Room) is an attention/camera directive from
     app.presence. It is PREPENDED so the interviewer raises it ONCE, in their own
     improvised voice, and then continues the planned round untouched — the ladder
     changes tone, never difficulty or structure.
@@ -683,9 +914,21 @@ def stage_turn_directive(
     steps difficulty DOWN on the SAME topic (one clarifier only), never pivoting to
     biography or small-talk. The stage machine has held round_index, so this turn does
     not consume a planned question slot."""
+    # The engagement floor outranks the round plan, the timeout note and the presence
+    # ladder alike: there is no point asking the next question, acknowledging a skip, or
+    # raising their attention when nobody has spoken for two questions running.
+    if engagement == "checkin":
+        return CHECKIN_DIRECTIVE
+    if engagement == "wrap":
+        return DISENGAGED_WRAP_DIRECTIVE
+
     timed_out = (timeout or "").strip()
+    # A candidate who has just answered the check-in gets their next PLANNED question, not
+    # the non-answer step-down: "yes, let's keep going" is a response to us, not a failed
+    # attempt at an interview question, and treating it as one would re-punish the silence
+    # they have already climbed out of.
     base = _stage_directive_base(
-        cfg, current_stage, round_index_after, substantive or bool(timed_out)
+        cfg, current_stage, round_index_after, substantive or bool(timed_out) or resumed
     )
 
     # PART 1 (per-turn half): the round you're in, what it's FOR, and what they just
@@ -694,12 +937,16 @@ def stage_turn_directive(
     label = stages.STAGE_LABELS.get(current_stage, current_stage.title())
     ctx = f"CURRENT ROUND: {label} — {round_goal(current_stage)}."
     prior = sanitize_untrusted((prior_answer_summary or "").strip(), 600)
-    if prior:
+    if prior and not resumed:
+        # After a check-in their "answer" is "yes" — there is nothing in it to react to,
+        # and demanding a specific reaction to it produces exactly the fawning line we
+        # told them not to write.
         ctx += (f"\nTHEIR LAST ANSWER (react to something SPECIFIC in it before you move on; "
                 f"a generic acknowledgement is forbidden):\n\"{prior}\"")
 
     note = (presence_note or "").strip()
-    parts = [p for p in (note, timeout_directive(timed_out), ctx, base) if p]
+    resume_note = RESUMED_DIRECTIVE if resumed else ""
+    parts = [p for p in (note, resume_note, timeout_directive(timed_out), ctx, base) if p]
     return "\n\n".join(parts)
 
 
@@ -865,3 +1112,40 @@ strengths: 2-4 entries. EVERY entry must carry an "evidence" quote of what they 
 gaps: EXACTLY 2 or 3 — the fixes that MATTER, most important first. Not a catalogue of everything that was imperfect. "tryThisNextTime" must be an action they could take in their next interview tomorrow ("state your assumption out loud before you start the calculation"), never a subject to go away and study ("work on structured thinking").
 
 Be specific and kind. Never harsh, never mocking. If the interview was very short or incomplete, reflect that honestly in scores and keep the report concise."""
+
+
+# The readout after a pressure panel. The MODE was brutal by request; the DEBRIEF is not —
+# it is the same mentor voice as every other readout, and it says out loud what they were
+# put through, so the scores read as the verdict on a hard interview rather than a verdict
+# on them. Without this the candidate reads a low score with no idea it came from a bar
+# they deliberately raised on themselves.
+CRITICAL_DEBRIEF_ADDENDUM = """
+
+THIS WAS THE PRESSURE PANEL — SAY SO.
+They chose "Critical": they asked to be challenged and criticised, and they were. Open your
+oneLine by naming that plainly, in this shape: "You chose the pressure panel — here is what
+held up under it and what cracked."
+
+Two things follow from that, and they pull in opposite directions. Hold both:
+- Score them HONESTLY against the bar they asked for. Do not inflate anything as a
+  consolation for how hard it was. A pressure panel they crumbled under is a pressure panel
+  they crumbled under, and telling them otherwise wastes the session they chose.
+- Write it in the SAME MENTOR VOICE as every other readout. The interviewer was blunt; the
+  mentor is not. Nothing in the debrief mocks, sneers, or scores the person rather than the
+  work — the tone rules above bind this readout in full, exactly as they always do.
+- Where they HELD under a challenge, say so specifically and quote it. Holding up under
+  push-back is the single hardest thing this mode tests, and it is the thing they will not
+  otherwise notice they did."""
+
+
+def debrief_instruction(cfg: dict | None = None) -> str:
+    """The readout instruction for this session.
+
+    Identical to DEBRIEF_INSTRUCTION in every mode but Critical, which appends the
+    pressure-panel acknowledgment (the readout must name the mode the candidate chose —
+    otherwise a hard-won 40 reads as a plain 40).
+    """
+    base = DEBRIEF_INSTRUCTION
+    if (cfg or {}).get("difficulty") == CRITICAL:
+        return base + CRITICAL_DEBRIEF_ADDENDUM
+    return base
