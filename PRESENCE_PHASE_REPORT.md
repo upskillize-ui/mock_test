@@ -1,7 +1,8 @@
 # PRESENCE_PHASE_REPORT.md — make it feel like a person, start to finish
 
-Five items from founder UAT (the six-question silent session). All five shipped.
-Suites green: **239 backend** (was 163) + **37 frontend** (was 24). Nothing pushed to hf.
+Five items from founder UAT (the six-question silent session). All five shipped, plus a
+schema-drift check and a capture invariant added on request (§6, §7).
+Suites green: **239 backend** (was 163) + **55 frontend** (was 24). Nothing pushed to hf.
 
 Every number below is **measured**, not estimated — against the real backend, the real
 Anthropic API, the real Sarvam vendor and the real database. The tools are committed
@@ -256,6 +257,96 @@ weighting go with it.
 
 ---
 
+## 7. THE CAPTURE INVARIANT (added on request)
+
+> **The mic never opens while the interviewer still has words she has not said.**
+
+Adding this as a regression test found that **three of the six arming sites were violating
+it**: unmuting mid-reply, tapping the mic mid-reply, and accepting the voice-consent modal
+mid-reply all called the recorder immediately. The recorder then captured *the interviewer's
+own voice* coming out of the laptop speakers, the trailing-silence detector "heard" her stop,
+and the whole thing was submitted as the candidate's answer to the question she was still in
+the middle of asking.
+
+It had been enforced by **convention** — every arming site remembering to check
+`audioPlaying` — which is the kind of rule that holds right up until someone adds a seventh
+arming site. It is now enforced three ways.
+
+### 1. Policy — one function, and it is the only decision
+
+`roomPolicy.canArmCapture()` (pure, tested). Three distinct states mean "she is not finished",
+and any one of them shuts the mic:
+
+| state | meaning |
+|---|---|
+| `connecting` | FAST START: the room is up but her opening has not arrived. **The session row already says it is the candidate's turn. It is not.** |
+| `speaking` | a clip is in the air right now |
+| `speechQueued` | her reply has ARRIVED but playback has not begun — a few milliseconds wide, and exactly the window a React state update slips through |
+
+All three are tracked in **refs, not state**: the mic is armed from callbacks and rAF loops
+that would otherwise read the previous render's value, and one stale read is a recording over
+the top of a question.
+
+### 2. Structure — one door, and the test slams it
+
+`beginRecording` is renamed **`openMicUnsafe`** and has exactly **one** caller: `armCapture()`,
+which asks the policy first. `captureInvariant.test.mjs` reads App.jsx as text and **fails the
+build if anything else calls it** — a future arming site cannot bypass the gate without
+turning it red. Mutation-tested: introducing a bypass produces
+
+```
+AssertionError: The microphone must have exactly one door.
+  App.jsx:2224  openMicUnsafe(stream);
+  App.jsx:2382  openMicUnsafe();
+If you are adding a new way to start capture, call armCapture() — it asks canArmCapture()
+first, which is what stops the mic opening while the interviewer is still talking.
+```
+
+### 3. Wiring — proved in a real browser, on all four paths
+
+18 unit tests walk each path **step by step**, asserting the mic is shut at every step and
+open only on the last: **session start** (room up → greeting queued → sentences 1..n in the
+air → she finishes), **next question**, **restart/resume**, **re-ask**, plus the spoken rating.
+
+Then a Playwright harness instruments `MediaRecorder` and `HTMLMediaElement` inside the page,
+drives a real session against the real backend, and asserts the recorder never starts while
+the interviewer's player still has clips to play. It **mutes and unmutes her mid-sentence** —
+the exact broken path. The before/after is unambiguous:
+
+```
+OLD (ungated unmute)                         NEW (gated)
+  audio.play      [her voice]                  audio.play      [her voice]
+  --- CLICK: mute (mid-sentence)               --- CLICK: mute (mid-sentence)
+  --- CLICK: unmute (still mid-sentence)       --- CLICK: unmute (still mid-sentence)
+  recorder.start   <-- OPENS HERE              audio.play      [her voice]
+  audio.play      [her voice]                  audio.play      [her voice]
+  audio.play      [her voice]                  audio.play      [her voice]
+                                               audio.play      [her voice]
+*** VIOLATED: the recorder opened with         recorder.start   <-- only now
+    2 of her sentences still unspoken ***      INVARIANT HELD
+```
+
+Note the detector tests **"segments remain unplayed"**, not "a clip is audible right now" —
+the first version of it missed the bug entirely, because the recorder was opening in the
+*gap between two sentences*, with four still to come.
+
+**Barge-in is not an exception.** When the candidate talks over her she is *stopped* first —
+the remaining clips are **abandoned, not postponed** — and only then does the mic open. By
+the time capture is armed she genuinely has nothing left to say, so barge-in passes the same
+gate honestly rather than going around it. Tapping the mic mid-question is now treated as
+exactly what it is: an interruption. She stops; the floor is theirs; she does not re-say the
+rest.
+
+Two more bugs fell out of this work:
+
+- **The re-ask and the mute-fork were each playing their clip twice** — once explicitly, and
+  once via the autoplay sequencer — so the second start tore the first out mid-word. There is
+  now one player and one owner.
+- **Unmuting while a turn was still generating** would open the mic into the thinking gap.
+  That gap belongs to her, not to their answer.
+
+---
+
 ## Bugs found and fixed along the way
 
 1. **`restart()` threw a `ReferenceError`.** It called `setGreetingAudioUrl`, which has not existed
@@ -331,6 +422,48 @@ On a healthy database it is one quiet line: `schema: up to date (through migrati
   a column. A test asserts every migration named there actually exists on disk.
 
 13 tests (`tests/test_schema_check.py`), including the exact drift that prompted it.
+
+### Confirmed to run in the Hugging Face Space, not just locally
+
+The Space is a Docker Space whose `CMD` is `uvicorn app.main:app --host 0.0.0.0 --port 7860`.
+Verified by running **that exact command**, on that port, and reading the boot log:
+
+```
+INFO:     Waiting for application startup.
+INFO  app.schema_check  schema: up to date (through migration 006_interview_room)   <-- HERE
+INFO  app.main          clip pack: 8 lines x 2 voices -> warmed=0 cached=16 ...
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:7860
+```
+
+...and, with a drifted schema, the full banner appears in the same place, `/health` returns
+`schema_status: "drift"` with the pending migration list, and **the app still comes up and
+serves**. Both were run end-to-end, not reasoned about.
+
+Why it holds there specifically:
+
+- It is an `@app.on_event("startup")` hook, so it runs inside the **ASGI lifespan** — before
+  the server accepts its first request. Uvicorn runs the lifespan whether it is invoked by
+  the Dockerfile's `CMD`, by `render.yaml`'s `startCommand`, or by hand. There is no
+  entrypoint in this repo that starts the app and skips it.
+- It logs through `logging` to **stderr**, which is exactly what an HF Space captures and
+  shows in its container logs. (`logging.basicConfig` in `main.py` configures the root
+  logger; uvicorn does not disable it — the lines above are the proof.)
+- HF injects config as **environment variables** rather than a `.env` file, which is the same
+  code path: `config.py` reads `os.getenv` either way, and `validate_settings()` already
+  refuses to boot without `DATABASE_URL`.
+- **It cannot hang the Space.** The probe opens a DB connection during the lifespan, so an
+  unreachable database would otherwise sit on a TCP connect while HF waits for the container
+  to become healthy. The engine now sets an **explicit `connect_timeout: 10`** rather than
+  relying on the driver's default, so the worst case is a bounded 10s, after which the check
+  logs "skipped" and the app boots anyway. An unreachable database is a database problem —
+  `/health` reports `db: down` — and the schema check gets out of the way rather than making
+  it worse.
+
+**Not verified:** the image was not built and run under Docker (no Docker daemon on this
+machine). What was verified is the command, the port, the lifespan ordering, the log
+destination and both outcomes. The remaining risk is Docker-image-specific rather than
+app-specific.
 
 ---
 

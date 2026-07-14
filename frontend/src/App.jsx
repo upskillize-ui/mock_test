@@ -10,7 +10,7 @@ import {
   questionSeconds, expiryAction, shouldArmAbandon, SKIP_MARKER,
   QUESTION_WARN_SECONDS, CAMERA_GRACE_MS, SILENT_ABANDON_MS,
   WRAP_CAMERA_OFF, WRAP_NO_ANSWER, WRAP_SESSION_TIME_UP,
-  shouldBackchannel, shouldBargeIn, BARGE_IN_RMS, BARGE_IN_DUCK_MS,
+  shouldBackchannel, shouldBargeIn, canArmCapture, BARGE_IN_RMS, BARGE_IN_DUCK_MS,
 } from "./roomPolicy.js";
 
 // Realism v2: spoken confidence rating. Accepts digits, English words, Hinglish
@@ -1319,6 +1319,13 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const playedIdxRef = useRef(-1);                    // last message index auto-played
   const speakTokenRef = useRef(null);                 // E2: cancels a superseded sentence run
   const playAbortRef = useRef(null);                  // settles the in-flight clip on a barge-in
+  // THE CAPTURE INVARIANT (see roomPolicy.canArmCapture). These three say "she has not
+  // finished speaking", and they are REFS, not state, on purpose: the mic is armed from
+  // callbacks and rAF loops that would read a stale render's `audioPlaying`, and one stale
+  // read is a recording that starts over the top of the question it is meant to answer.
+  const audioPlayingRef = useRef(false);   // a clip is in the air RIGHT NOW
+  const speechQueuedRef = useRef(false);   // her reply has arrived; playback has not begun
+  const connectingRef = useRef(true);      // FAST START: her opening has not arrived at all
   const [spokenLine, setSpokenLine] = useState("");   // E2: the sentence being spoken RIGHT NOW
   // POSES: the register the server says this turn carries, and the focus-ladder level.
   // The face follows the words — warm -> smile, probing -> intense, neutral -> alternate.
@@ -1402,7 +1409,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const ratingAudioRef = useRef(null);       // audio for that line, from the turn response
   const ratingPromptRef = useRef("");        // its text, for the caption
   const ratingSilenceRef = useRef(null);     // 8s no-speech timer -> show the pills
-  const busyRef = useRef(false);             // a submit/re-ask is in flight
+  const busyRef = useRef(false);             // a re-ask / nudge is in flight
+  const loadingRef = useRef(false);         // a TURN is in flight — she is about to speak
   const muteForkRef = useRef(null);          // the 5s "you're on mute" timer
   const muteForkedForRef = useRef("");       // question we already offered the fork for
   // Refs mirror state for the <audio> 'ended' handler and the rAF loop, which would
@@ -1518,7 +1526,9 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
           console.debug("[interviewer identity]", r.interviewer_identity);
         }
         if (r.tone) setTone(r.tone);
+        speechQueuedRef.current = !!(r.audio_segments || []).length;
         setMessages([{ role: "assistant", content: r.greeting, audio_segments: r.audio_segments || [] }]);
+        connectingRef.current = false;   // the gate reads the ref; setState has not landed yet
         setConnecting(false);
       } catch (e) {
         // The greeting is the one thing we cannot degrade around — with no opening line
@@ -1558,7 +1568,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   useEffect(() => {
     const p = player(); if (!p) return;
     const onPlay = () => { setAudioPlaying(true); setNeedsTap(false); };
-    const onStop = () => setAudioPlaying(false);
+    const onStop = () => setAudioPlaying(false);   // state only — the sequencer owns the ref
     // Two-way flow: when IQ finishes speaking, hand the floor to the learner.
     // E2: playback is now SEQUENCED explicitly (playSegments), because a per-sentence
     // 'ended' would otherwise fire mid-reply and open the mic before the question was
@@ -1601,6 +1611,21 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       const pr = p.play();
       if (pr && pr.then) pr.then(() => setNeedsTap(false)).catch(() => setNeedsTap(true));
     } catch { setNeedsTap(true); }
+  };
+
+  // "She is / is not speaking", written to the ref SYNCHRONOUSLY as well as to state.
+  // The mic is armed from callbacks and rAF loops, which would otherwise read the previous
+  // render's `audioPlaying` — and one stale read is a recording that starts on top of the
+  // question it is supposed to be answering.
+  const setSpeaking = (on) => { audioPlayingRef.current = on; setAudioPlaying(on); };
+
+  // The ONE way the interviewer gets a new line into the room. It marks her speech as
+  // QUEUED before React has even re-rendered, closing the window between "her reply
+  // arrived" and "playback started" — which is precisely the window an arming callback
+  // would otherwise slip through and open the mic in.
+  const sayNext = (msg) => {
+    speechQueuedRef.current = !!(msg.audio_segments?.length || msg.audio_url);
+    setMessages(m => [...m, msg]);
   };
 
   // ── E2: pacing ──
@@ -1697,7 +1722,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     speakTokenRef.current = token;
     bargedRef.current = false;
     spokenSoFarRef.current = "";
-    setAudioPlaying(true);
+    setSpeaking(true);
 
     const restP = segments.some(s => s.pending)
       ? fetchSpeechRest(sessionId, voicePref || "female", 1).catch(() => null)
@@ -1725,21 +1750,37 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       else await sleep(650);                              // TTS failed for this line
     }
     if (speakTokenRef.current !== token) return;
-    setAudioPlaying(false);
+    setSpeaking(false);
     setSpokenLine("");
     audioEndedRef.current?.();                            // hand the floor to the learner
   };
 
   // Autoplay the newest interviewer message when it arrives (once per message).
+  // This is the ONLY thing that plays an interviewer line. The re-ask and the mute fork used
+  // to ALSO play their own clip explicitly, which meant the same audio was started twice on
+  // the same element — and the second start tore the first out mid-word.
   useEffect(() => {
     const idx = messages.length - 1;
     const last = messages[idx];
     if (!last || last.role !== "assistant") return;
     if (idx === playedIdxRef.current) return;
-    if (!last.audio_segments?.length && !last.audio_url) return;
+    if (!last.audio_segments?.length && !last.audio_url) {
+      speechQueuedRef.current = false;   // nothing to say aloud — she is not holding the floor
+      return;
+    }
     playedIdxRef.current = idx;
+    speechQueuedRef.current = false;     // no longer QUEUED: it is in the air as of now
     if (last.audio_segments?.length) playSegments(last.audio_segments);
-    else (async () => { setAudioPlaying(true); await playOne(last.audio_url); setAudioPlaying(false); audioEndedRef.current?.(); })();
+    // A single-clip line (the re-ask, the mute fork). Same contract as a reply: the
+    // caption shows what is in the air, and the mic does not open until it is over.
+    else (async () => {
+      setSpeaking(true);
+      setSpokenLine(last.content || "");
+      await playOne(last.audio_url);
+      setSpeaking(false);
+      setSpokenLine("");
+      audioEndedRef.current?.();
+    })();
   }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const lastAssistantIdx = (() => {
@@ -1815,6 +1856,10 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   useEffect(() => { awaitingRatingRef.current = awaitingRating; }, [awaitingRating]);
   useEffect(() => { ratingPillsRef.current = ratingPills; }, [ratingPills]);
   useEffect(() => { endedRef.current = ended; }, [ended]);
+  useEffect(() => { connectingRef.current = connecting; }, [connecting]);
+  // A turn in flight means her reply is on its way. The mic must not open into the gap —
+  // that gap is the thinking pause, and it belongs to her, not to their answer.
+  useEffect(() => { loadingRef.current = loading; }, [loading]);
   // The transcript drawer auto-opens at the readout. (It no longer force-opens at the
   // rating, because the rating is now ASKED ALOUD and answered by voice.)
   useEffect(() => {
@@ -1859,7 +1904,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       p.volume = from;                        // restore it for her next reply
     }
     playAbortRef.current?.();                 // a paused clip fires no 'ended' — settle it
-    setAudioPlaying(false);
+    setSpeaking(false);
     setSpokenLine("");
 
     // The caption keeps ONLY what she actually said aloud. Showing the sentences she was
@@ -1873,7 +1918,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
 
     // Their turn began a second ago. Record on the mic that is ALREADY live rather than
     // spending another getUserMedia on it — that round trip is their opening word.
-    if (canAnswerRef.current) beginRecording(warmStreamRef.current);
+    //
+    // This goes through the SAME gate as everything else, and passes it honestly: she has
+    // been stopped and the rest of her reply ABANDONED (not postponed) a few lines above,
+    // so by now she really does have nothing left to say. Barge-in is not an exception to
+    // the invariant — it is the one path that satisfies it by force.
+    armCapture({ stream: warmStreamRef.current });
   };
 
   const startBargeMonitor = async () => {
@@ -1972,10 +2022,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     busyRef.current = true;
     try {
       const r = await reaskTurn(sessionId, voicePref || "female");
-      setMessages(m => [...m, { role: "assistant", content: r.reply, audio_url: r.audio_url }]);
+      sayNext({ role: "assistant", content: r.reply, audio_url: r.audio_url });
       busyRef.current = false;
-      if (r.audio_url) playAudio(r.audio_url, true);   // its 'ended' reopens the mic
-      else startGrace();                               // TTS off -> just reopen the mic
+      // Playback (and the hand-off back to the mic when it finishes) is the autoplay
+      // sequencer's job — see the effect below. This used to ALSO play the clip itself,
+      // which started the same audio twice on the same element.
+      if (!r.audio_url) startGrace();                  // TTS off -> just reopen the mic
     } catch {
       busyRef.current = false;
       voiceFallback();
@@ -2071,19 +2123,17 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     setGraceMs(AUTO_LISTEN_GRACE_MS);
     const step = () => {
       const left = AUTO_LISTEN_GRACE_MS - (performance.now() - started);
-      if (left <= 0) { graceRafRef.current = null; setGraceMs(0); beginRecording(); return; }
+      if (left <= 0) { graceRafRef.current = null; setGraceMs(0); armCapture(); return; }
       setGraceMs(left);
       graceRafRef.current = requestAnimationFrame(step);
     };
     graceRafRef.current = requestAnimationFrame(step);
   };
   const maybeAutoListen = () => {
-    if (!voiceModeRef.current) return;
-    if (!micOnRef.current) return;        // MUTED: no capture EVER. Never auto-unmute.
-    if (!consentRef.current) return;      // consent stays explicit — never implied
-    if (!canAnswerRef.current) return;    // e.g. a confidence rating is due first
-    if (recordingRef.current || transcribingRef.current || busyRef.current) return;
-    if (typedInVoiceRef.current) return;
+    // One gate, asked once. (This used to be seven hand-written checks that had drifted out
+    // of step with the other five arming sites — which is how three of them ended up
+    // opening the mic while the interviewer was still talking.)
+    if (!canArmCapture(captureState())) return;
     startGrace();
   };
 
@@ -2094,10 +2144,9 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     if (ratingSilenceRef.current) { clearTimeout(ratingSilenceRef.current); ratingSilenceRef.current = null; }
   };
   const startRatingCapture = () => {
-    if (!voiceModeRef.current || recordingRef.current || transcribingRef.current) return;
-    ratingListeningRef.current = true;
+    ratingListeningRef.current = true;    // finishRecording reads this: a rating, not an answer
     setRatingPills(false);
-    beginRecording();
+    if (!armCapture({ ratingDue: true })) { ratingListeningRef.current = false; return; }
     clearRatingSilence();
     ratingSilenceRef.current = setTimeout(() => {
       // 8s and they haven't said anything usable -> stop listening and offer the pills.
@@ -2123,10 +2172,10 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
         // Speak the rating ask, then open the mic for it. Sequenced explicitly (E2) —
         // we no longer bounce off the audio element's 'ended' event.
         ratingAskedRef.current = true;
-        setAudioPlaying(true);
+        setSpeaking(true);
         setSpokenLine(ratingPromptRef.current || "");
         await playOne(ratingAudioRef.current);
-        setAudioPlaying(false);
+        setSpeaking(false);
         setSpokenLine("");
       }
       if (micOnRef.current && consentRef.current && !ratingPillsRef.current) startRatingCapture();
@@ -2141,11 +2190,49 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const audioEndedRef = useRef(null);
   useEffect(() => { audioEndedRef.current = onAudioEnded; });
 
-  // Actually acquire the mic and start capturing (consent already handled).
+  // ── THE ONLY DOOR TO THE MICROPHONE ──────────────────────────────────────
+  // Everything that wants to capture — auto-listen, unmuting, the mic button, accepting the
+  // consent modal, the spoken rating, barge-in — comes through here, and here asks
+  // roomPolicy.canArmCapture. Nothing else may call openMicUnsafe: a test (captureInvariant
+  // .test.mjs) fails the build if anything does.
+  //
+  // The reason this is structural rather than a convention is that the convention had
+  // already failed. Three of the six arming sites were opening the mic mid-reply — unmuting,
+  // tapping the mic, and accepting the consent modal — so the recorder was capturing the
+  // interviewer's own voice and submitting it as the candidate's answer.
+  const captureState = (extra = {}) => ({
+    inRoom: voiceModeRef.current,
+    micOn: micOnRef.current,
+    consented: consentRef.current,
+    answerDue: canAnswerRef.current,
+    ratingDue: awaitingRatingRef.current && voiceModeRef.current && !ratingPillsRef.current,
+    connecting: connectingRef.current,
+    speaking: audioPlayingRef.current,
+    speechQueued: speechQueuedRef.current,
+    recording: recordingRef.current,
+    transcribing: transcribingRef.current,
+    busy: busyRef.current || loadingRef.current,
+    typing: typedInVoiceRef.current,
+    ended: endedRef.current,
+    ...extra,
+  });
+
+  /** Open the mic IF AND ONLY IF the interviewer has finished and it is genuinely their
+   *  turn. Returns whether it did, so a caller can undo any state it set in anticipation. */
+  const armCapture = ({ stream, ...extra } = {}) => {
+    if (!canArmCapture(captureState(extra))) return false;
+    openMicUnsafe(stream);
+    return true;
+  };
+
+  // Actually acquire the mic and start capturing. NEVER call this directly — call
+  // armCapture(). It is named `unsafe` because it asks no questions: it will happily record
+  // straight over the top of a question the candidate has not finished hearing.
+  //
   // `existing` is the barge-in monitor's already-live mic, handed over rather than
   // re-acquired: a second getUserMedia here would cost ~200ms, and those 200ms are the
   // first word of whatever they cut in to say.
-  const beginRecording = async (existing) => {
+  const openMicUnsafe = async (existing) => {
     if (recording || transcribing) return;
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       voiceFallback(); return;
@@ -2283,8 +2370,16 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     if (recording) { stopRecording(); return; }
     if (transcribing) return;
     if (!voiceConsented) { setShowVoiceConsent(true); return; }
+    // She is still talking. Reaching for the mic mid-question IS an interruption, so treat
+    // it as one: stop her (she does not re-say the rest) and hand them the floor. What we do
+    // NOT do is record over her and submit her own question back to us as their answer.
+    if (audioPlayingRef.current && canAnswerRef.current && !bargedRef.current) {
+      bargedRef.current = true;
+      onBargeIn();
+      return;
+    }
     if (awaitingRating && voiceMode) { startRatingCapture(); return; }   // spoken rating
-    beginRecording();
+    armCapture();
   };
 
   // ── MIC = MEET SEMANTICS ──
@@ -2312,9 +2407,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     setMicOn(true);
     clearMuteFork();
     // If an answer (or a rating) is already due, start capturing right now — no extra tap.
-    if (transcribing || loading || recording) return;
+    // ...unless the interviewer is still speaking, in which case the gate holds the mic shut
+    // and auto-listen opens it the moment she finishes. Unmuting mid-question used to start
+    // recording instantly, straight over the top of her.
     if (awaitingRating && voiceMode && !ratingPills) startRatingCapture();
-    else if (canAnswer) beginRecording();
+    else armCapture();
   };
 
   // Muted with an answer due -> after ~5s the interviewer offers the fork ALOUD
@@ -2340,14 +2437,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       muteForkedForRef.current = questionKey;
       try {
         const r = await reaskTurn(sessionId, voicePref || "female", "mute");
-        setMessages(m => [...m, { role: "assistant", content: r.reply, audio_url: r.audio_url }]);
-        if (r.audio_url) {
-          setAudioPlaying(true);
-          setSpokenLine(r.reply);
-          await playOne(r.audio_url);
-          setAudioPlaying(false);
-          setSpokenLine("");
-        }
+        sayNext({ role: "assistant", content: r.reply, audio_url: r.audio_url });
       } catch { /* a nudge must never break the interview */ }
     }, MUTE_FORK_DELAY_MS);
     return clearMuteFork;
@@ -2496,7 +2586,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     setConsentBusy(false);
     setVoiceConsented(true);
     setShowVoiceConsent(false);
-    beginRecording();
+    consentRef.current = true;   // the gate reads the ref, and setState has not landed yet
+    armCapture();
   };
 
   const declineVoiceConsent = () => { setShowVoiceConsent(false); };
@@ -2563,7 +2654,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
 
     try {
       const res = await sendTurn(sessionId, textVal, sstate?.current_stage, voicePref || "female", spoken ? metrics : null, timeout);
-      setMessages(m => [...m, { role: "assistant", content: res.reply, audio_segments: res.audio_segments || [] }]);
+      sayNext({ role: "assistant", content: res.reply, audio_segments: res.audio_segments || [] });
       setSstate(res.state);
       // The engagement floor: a check-in is a direct question and carries its own short
       // clock (45s), not the round's full three-minute budget.

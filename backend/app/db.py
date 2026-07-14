@@ -14,6 +14,13 @@ engine = create_engine(
     pool_recycle=280,
     pool_size=5,
     max_overflow=10,
+    # An EXPLICIT connect timeout, rather than whatever the driver happens to default to.
+    # The boot-time schema check (app.schema_check) opens a connection during the ASGI
+    # lifespan — i.e. before the server accepts its first request — so an unreachable
+    # database must fail FAST and bounded rather than sitting on a TCP connect while a
+    # Hugging Face Space waits to become healthy. Ten seconds, then the check logs
+    # "skipped" and the app comes up anyway.
+    connect_args={"connect_timeout": 10},
 )
 
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)

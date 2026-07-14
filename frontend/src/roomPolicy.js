@@ -83,6 +83,54 @@ export function shouldArmAbandon({ inRoom = false, answerDue = false, micOn = tr
   return !(Number(typedChars) > 0);
 }
 
+// ── THE CAPTURE INVARIANT ────────────────────────────────────────────────────
+// THE MIC NEVER OPENS WHILE THE INTERVIEWER STILL HAS WORDS SHE HAS NOT SAID.
+//
+// This is one rule with several names. "Don't record over her." "Don't start the answer
+// before the question finished." "Don't submit half a question's worth of her own voice as
+// their answer." They are all the same invariant, and it had been enforced by CONVENTION —
+// every arming site remembering to check — which is exactly the kind of rule that holds
+// until someone adds a seventh arming site. Three of the six already got it wrong: unmuting,
+// tapping the mic, and accepting the consent modal all began capture mid-reply.
+//
+// So it is a function now, and it is the ONLY door to the microphone. `armCapture()` in
+// App.jsx is the single call site of the recorder; everything else asks this.
+//
+// The three states that mean "she is not finished":
+//   connecting   — FAST START: the room is up but her opening has not arrived yet. The
+//                  session row already says it is the candidate's turn. It is not.
+//   speaking     — a clip is in the air right now.
+//   speechQueued — her reply has ARRIVED but playback has not begun. A tiny window, and
+//                  exactly the one a state update can slip through.
+//
+// Barge-in is NOT an exception to this. When the candidate talks over her, she is STOPPED
+// first — the remaining clips are abandoned, not merely postponed — and only then does the
+// mic open. By the time capture is armed she genuinely has nothing left to say, so barge-in
+// passes this gate honestly rather than going around it.
+export function canArmCapture({
+  inRoom = false,        // the voice stage (the mic is the primary channel here)
+  micOn = false,         // the mute toggle. Muted means muted — no capture, ever.
+  consented = false,     // explicit, always
+  answerDue = false,     // it is their turn to answer...
+  ratingDue = false,     // ...or to speak their confidence rating
+  connecting = false,    // ─┐
+  speaking = false,      //  ├─ THE INVARIANT
+  speechQueued = false,  // ─┘
+  recording = false,     // already capturing
+  transcribing = false,  // the last answer is still in flight
+  busy = false,          // a re-ask / nudge is in flight
+  typing = false,        // they chose the composer; do not also open the mic on them
+  ended = false,
+} = {}) {
+  if (!inRoom || !micOn || !consented) return false;
+  if (!(answerDue || ratingDue)) return false;
+  if (ended || typing) return false;
+  if (recording || transcribing || busy) return false;
+  // THE INVARIANT. Everything above is "is it their turn?"; this is "has she finished?".
+  if (connecting || speaking || speechQueued) return false;
+  return true;
+}
+
 // ── Listening backchannels (the REALISM pack) ────────────────────────────────
 // A person who is listening to you makes noise. Not much — an "mm-hmm" at the moment you
 // pause for breath — but its ABSENCE is loud, and a panel that sits in perfect silence for
