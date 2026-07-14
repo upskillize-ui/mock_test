@@ -138,6 +138,97 @@ def test_cache_hit_does_not_recall_vendor():
         t._session_synth_counts.pop(sid, None)
 
 
+# ── The cost meter: the sentence-split is billed in SECONDS, so measure seconds ──
+
+def _mp3(seconds: float) -> bytes:
+    """A synthetic CBR MPEG1 Layer III clip of a known duration.
+
+    Header FF FB 90 00 = MPEG1 / Layer III / 128 kbps / 44.1 kHz, so 16 000 bytes is
+    exactly one second of audio and the duration maths is checkable by hand.
+    """
+    return b"\xff\xfb\x90\x00" + b"\x00" * (int(16_000 * seconds) - 4)
+
+
+def test_mp3_duration_is_measured_from_the_frame_header():
+    assert t.mp3_duration_seconds(_mp3(1)) == 1.0
+    assert t.mp3_duration_seconds(_mp3(3.5)) == 3.5
+    # An ID3 tag in front must not be counted as audio.
+    tagged = b"ID3\x04\x00\x00\x00\x00\x00\x0a" + b"\x00" * 10 + _mp3(2)
+    assert t.mp3_duration_seconds(tagged) == 2.0
+
+
+def test_an_unparseable_clip_is_never_a_crash_and_never_a_guess():
+    for junk in (b"", b"not-audio", None, b"\x00" * 50):
+        assert t.mp3_duration_seconds(junk) is None
+
+
+def test_the_meter_separates_what_we_paid_for_from_what_the_cache_gave_us():
+    async def _fake(text, speaker):
+        return _mp3(4)                      # every clip is 4 seconds of audio
+    orig = t.synthesize
+    t.synthesize = _fake
+    sid = "sess-meter"
+    t._session_synth_counts.pop(sid, None)
+    t._session_seconds.pop(sid, None)
+    keys = []
+    try:
+        # Two DIFFERENT sentences (the E2 split), then a repeat of the first — which is
+        # exactly the shape of a real session: unique questions, repeated greetings.
+        keys.append(asyncio.run(t.get_audio_hash(sid, "meter sentence one", "ritu")))
+        keys.append(asyncio.run(t.get_audio_hash(sid, "meter sentence two", "ritu")))
+        asyncio.run(t.get_audio_hash(sid, "meter sentence one", "ritu"))
+
+        cost = t.session_cost(sid)
+        assert cost["vendor_calls"] == 2          # only the two we actually bought
+        assert cost["vendor_seconds"] == 8.0      # ...and THAT is the billable number
+        assert cost["cache_hits"] == 1
+        assert cost["cached_seconds"] == 4.0      # what the cache saved us
+        assert cost["total_seconds"] == 12.0
+        assert cost["cache_saved_pct"] == 33
+        assert cost["unmeasured_clips"] == 0
+    finally:
+        t.synthesize = orig
+        for k in keys:
+            try:
+                t.cache_path(k).unlink()
+            except Exception:
+                pass
+        t._session_synth_counts.pop(sid, None)
+        t._session_seconds.pop(sid, None)
+
+
+def test_the_meter_reads_zero_for_a_session_that_synthesised_nothing():
+    cost = t.session_cost("sess-never-spoke")
+    assert cost["vendor_seconds"] == 0.0
+    assert cost["total_seconds"] == 0.0
+    assert cost["cache_saved_pct"] == 0          # no division by zero
+    t._session_seconds.pop("sess-never-spoke", None)
+
+
+def test_an_unparseable_clip_is_counted_but_not_invented():
+    async def _fake(text, speaker):
+        return b"definitely-not-an-mp3"
+    orig = t.synthesize
+    t.synthesize = _fake
+    sid = "sess-unmeasured"
+    t._session_synth_counts.pop(sid, None)
+    t._session_seconds.pop(sid, None)
+    try:
+        k = asyncio.run(t.get_audio_hash(sid, "an unmeasurable clip", "ritu"))
+        cost = t.session_cost(sid)
+        assert cost["vendor_calls"] == 1         # we still paid for it
+        assert cost["vendor_seconds"] == 0.0     # but we do not make a number up
+        assert cost["unmeasured_clips"] == 1     # we say so instead
+    finally:
+        t.synthesize = orig
+        try:
+            t.cache_path(k).unlink()
+        except Exception:
+            pass
+        t._session_synth_counts.pop(sid, None)
+        t._session_seconds.pop(sid, None)
+
+
 # ── Bulbul v3 upgrade: payload params + cache-key versioning ────────────────
 
 def test_v3_payload_params():

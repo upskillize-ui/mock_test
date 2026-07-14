@@ -294,7 +294,7 @@ def _delivery_profile(db: Session, session_id: str) -> dict:
     on migration 004), and any DB error degrades to an empty profile rather than
     breaking the billed debrief."""
     if not settings.DELIVERY_METRICS_ENABLED:
-        return delivery.aggregate([])
+        return _with_tts_cost(delivery.aggregate([]), session_id)
     try:
         rows = db.execute(
             text("SELECT delivery_metrics FROM vyom_messages "
@@ -303,9 +303,37 @@ def _delivery_profile(db: Session, session_id: str) -> dict:
         ).mappings().all()
     except Exception as e:
         log.warning("delivery profile query skipped: %s", type(e).__name__)
-        return delivery.aggregate([])
+        return _with_tts_cost(delivery.aggregate([]), session_id)
     spoken = [_as_obj(r["delivery_metrics"], None) for r in rows]
-    return delivery.aggregate([m for m in spoken if isinstance(m, dict)])
+    return _with_tts_cost(
+        delivery.aggregate([m for m in spoken if isinstance(m, dict)]), session_id
+    )
+
+
+def _with_tts_cost(profile: dict, session_id: str) -> dict:
+    """Attach this session's TTS cost meter to the delivery block.
+
+    INTERNAL, not candidate-facing: the readout never renders it. It rides here because
+    the delivery block is the one place we already aggregate per-session voice data, and
+    because the E2 sentence-split (2-3x the vendor calls) has to be MEASURED in seconds
+    before anyone can argue about it. This is the number that feeds the Sarvam credits
+    application and the fallback decision on the 2-call lever.
+    """
+    if not settings.TTS_ENABLED:
+        return profile
+    try:
+        cost = tts.session_cost(session_id)
+    except Exception as e:
+        log.warning("tts cost meter unavailable: %s", type(e).__name__)
+        return profile
+    profile["tts"] = cost
+    log.info(
+        "tts cost: session=%s billed_seconds=%.1f billed_clips=%d "
+        "cached_seconds=%.1f cache_hits=%d unmeasured=%d",
+        session_id, cost["vendor_seconds"], cost["vendor_calls"],
+        cost["cached_seconds"], cost["cache_hits"], cost["unmeasured_clips"],
+    )
+    return profile
 
 
 def _save_message(db: Session, session_id: str, role: str, content: str) -> None:

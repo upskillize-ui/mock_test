@@ -52,6 +52,94 @@ ACRONYMS = {
 # process restart, which is fine for a cost guard. No DB — vyom_ tables untouched.
 _session_synth_counts: dict[str, int] = {}
 
+# ── The cost meter (E2 sentence-splitting is billed per SECOND, not per call) ──
+# Splitting a reply into one clip per sentence is what buys human pacing, and it costs
+# roughly 2-3x the vendor calls of a single-shot synth. Calls are the wrong unit to argue
+# about, though: Sarvam bills AUDIO. So we measure the SECONDS we actually had
+# synthesised, per session, split into what we PAID for and what the content-addressed
+# cache gave us free. That number is the input to the Sarvam credits application and to
+# the decision on whether to fall back to the 2-call lever.
+#
+# In-process, like the cap above: a restart mid-session under-counts that session, which
+# is acceptable for a measurement (and honest — it is never used for billing).
+_session_seconds: dict[str, dict] = {}
+
+
+def _cost_row(session_id: str) -> dict:
+    return _session_seconds.setdefault(session_id, {
+        "vendor_calls": 0,        # clips we actually paid Sarvam for
+        "vendor_seconds": 0.0,    # audio we paid for — THE number
+        "cache_hits": 0,          # clips the cache served free
+        "cached_seconds": 0.0,    # audio we would have paid for without the cache
+        "unmeasured_clips": 0,    # clips whose duration we could not parse
+    })
+
+
+def _note_clip(session_id: str, audio: bytes, *, billed: bool) -> None:
+    """Record one synthesised clip against this session's cost meter."""
+    row = _cost_row(session_id)
+    seconds = mp3_duration_seconds(audio)
+    if seconds is None:
+        row["unmeasured_clips"] += 1
+    if billed:
+        row["vendor_calls"] += 1
+        row["vendor_seconds"] += seconds or 0.0
+    else:
+        row["cache_hits"] += 1
+        row["cached_seconds"] += seconds or 0.0
+
+
+def session_cost(session_id: str) -> dict:
+    """This session's synthesised-seconds meter. Zeroed shape when nothing was synthesised,
+    so a caller can always read the keys."""
+    row = dict(_cost_row(session_id))
+    row["vendor_seconds"] = round(row["vendor_seconds"], 1)
+    row["cached_seconds"] = round(row["cached_seconds"], 1)
+    row["total_seconds"] = round(row["vendor_seconds"] + row["cached_seconds"], 1)
+    # What the cache saved us, as a share of the audio we'd otherwise have bought.
+    row["cache_saved_pct"] = (
+        round(100.0 * row["cached_seconds"] / row["total_seconds"])
+        if row["total_seconds"] else 0
+    )
+    return row
+
+
+# MPEG audio frame header tables (Layer III only — that is all Bulbul returns).
+_L3_BITRATES = {
+    3: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0],  # MPEG 1
+    2: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],      # MPEG 2
+    0: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],      # MPEG 2.5
+}
+
+
+def mp3_duration_seconds(data: bytes) -> float | None:
+    """Duration of an MP3 clip, from its first frame header. None if it isn't parseable.
+
+    Assumes CBR — which is what Bulbul returns, and what makes bytes/bitrate exact. A VBR
+    clip would make this an estimate, so the number is reported as MEASURED SECONDS, never
+    as a bill: we are sizing a credits application, not invoicing anybody.
+    """
+    if not data or len(data) < 4:
+        return None
+    i = 0
+    # Skip an ID3v2 tag if the encoder wrote one (its size is syncsafe: 7 bits per byte).
+    if data[:3] == b"ID3" and len(data) > 10:
+        i = 10 + ((data[6] & 0x7F) << 21 | (data[7] & 0x7F) << 14
+                  | (data[8] & 0x7F) << 7 | (data[9] & 0x7F))
+    n = len(data)
+    while i + 4 <= n:
+        if data[i] == 0xFF and (data[i + 1] & 0xE0) == 0xE0:
+            b1, b2 = data[i + 1], data[i + 2]
+            version = (b1 >> 3) & 0x03      # 3=MPEG1, 2=MPEG2, 0=MPEG2.5 (1 is reserved)
+            layer = (b1 >> 1) & 0x03        # 1 = Layer III
+            br_idx = (b2 >> 4) & 0x0F       # 0 = free, 15 = bad
+            if version != 1 and layer == 1 and 0 < br_idx < 15:
+                bitrate = _L3_BITRATES[version][br_idx] * 1000
+                if bitrate:
+                    return round(((n - i) * 8) / bitrate, 2)
+        i += 1
+    return None
+
 
 def _tts_cap() -> int:
     return settings.MAX_ANSWERS_PER_SESSION + 5
@@ -249,8 +337,11 @@ async def get_audio_hash(session_id: str, text: str, speaker: str) -> str | None
 
     key = cache_key(text, speaker)
 
-    # 1) Cache hit — no vendor call, no counter increment.
-    if read_cache(key) is not None:
+    # 1) Cache hit — no vendor call, nothing billed. Still METERED: the seconds it saved
+    #    us are exactly what the cache is worth, and that is worth knowing.
+    cached = read_cache(key)
+    if cached is not None:
+        _note_clip(session_id, cached, billed=False)
         return key
 
     # 2) Cost guard — cap actual vendor calls per session.
@@ -259,11 +350,12 @@ async def get_audio_hash(session_id: str, text: str, speaker: str) -> str | None
         log.info("TTS cap reached for session; serving text only")
         return None
 
-    # 3) Vendor synth.
+    # 3) Vendor synth — billed, and metered in seconds.
     audio = await synthesize(text, speaker)
     if audio is None:
         return None
 
     _write_cache(key, audio)
     _session_synth_counts[session_id] = used + 1
+    _note_clip(session_id, audio, billed=True)
     return key
