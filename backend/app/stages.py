@@ -111,6 +111,19 @@ def is_rating_gated(stage: str) -> bool:
 
 MIN_SUBSTANTIVE_CHARS = 15
 
+# E7.7 — the per-question clock. When it expires with NOTHING captured (no partial
+# transcript, no typed draft), the turn is recorded as a SKIP: this exact text is stored
+# as the answer so the transcript stays honest about what happened, and every downstream
+# reader (the substantive gate, the debrief) recognises it. The learner never types it
+# and the client never sends it — the SERVER writes it, so it cannot be forged or varied.
+TIMEOUT_SKIP_TEXT = "(No answer — the time on this question ran out.)"
+# The two ways a question can hit its deadline.
+#   "partial" — something WAS captured (a partial transcript or a typed draft): it is
+#               submitted as the answer and scored like any other short answer.
+#   "skip"    — nothing was captured: no slot spent, no rating, the interviewer
+#               acknowledges it neutrally and moves on.
+TIMEOUT_KINDS = ("partial", "skip")
+
 # Obvious non-answers. Anchored so we only fire on a message that is *entirely* a
 # non-answer, not one that merely contains the phrase ("I don't know why, but the
 # reason we chose Kafka was ..." is a real answer and must still be rated).
@@ -149,6 +162,10 @@ def is_non_substantive(text: str) -> bool:
     if not text:
         return True
     stripped = text.strip()
+    # A timed-out question is a non-answer by construction — it reads like a sentence, so
+    # the length/phrase heuristics below would otherwise wave it through as real content.
+    if stripped == TIMEOUT_SKIP_TEXT:
+        return True
     if _NONMEANINGFUL_RX.sub("", stripped.lower()).__len__() < MIN_SUBSTANTIVE_CHARS:
         return True
     return bool(_NONANSWER_RX.match(stripped) or _CLARIFY_RX.match(stripped))
@@ -163,12 +180,22 @@ def should_await_rating(stage: str, is_substantive: bool) -> bool:
     return is_rating_gated(stage) and is_substantive
 
 
-def consumes_question_slot(stage: str, is_substantive: bool) -> bool:
+def consumes_question_slot(stage: str, is_substantive: bool, timed_out_skip: bool = False) -> bool:
     """FIX 2 — a non-substantive answer in a scored, rating-gated stage does NOT
     consume a planned question slot: the interviewer steps down / re-asks on the
     same topic instead, so 'a round of 4' still means 4 substantive questions.
     Every other turn (WARMUP, REVERSE, and all substantive answers) advances normally.
+
+    E7.7 — a question whose clock ran out with nothing captured spends no slot EITHER,
+    in any scored stage (WARMUP included: running out of time is not an answer, and a
+    round of 2 warm-ups still means 2 real warm-ups).
+
+    REVERSE is the one exception: there is no question of ours to re-ask — the slot is
+    the candidate's own question. If they let the clock run out we let the round advance,
+    otherwise a silent candidate could never reach the close.
     """
+    if timed_out_skip:
+        return stage == "REVERSE"
     if is_rating_gated(stage) and not is_substantive:
         return False
     return True

@@ -141,6 +141,58 @@ def camera_directive(action: str) -> str:
     return ""
 
 
+# ── The device-policy CLOCKS (the half the ladder was missing) ───────────────
+# The ladder above says WHAT happens at each step. These say WHEN a step is reached, so
+# a candidate who simply stops responding is not left sitting in a room forever.
+#
+#   Camera:  each rung of the camera ladder carries a 60s grace. Turn the camera back on
+#            inside it and nothing escalates. Let the grace lapse with the camera still
+#            off and it counts again — nudge -> warn -> wrap.
+#   Silence: if an answer is due and BOTH channels are dead — mic off (or muted) and not
+#            one character typed — for 90s, that is abandonment, and we wrap courteously
+#            rather than burn their session clock in silence.
+#
+# Both are enforced client-side (the client owns the wall clock) but DECIDED here, so the
+# thresholds are one number in one place and are covered by tests.
+CAMERA_GRACE_SECONDS = 60
+SILENT_ABANDON_SECONDS = 90
+
+# The wrap reasons /session/wrap will accept and persist. Kept as constants so the client,
+# the server and the readout copy can never drift apart on a spelling.
+WRAP_CAMERA_OFF = "camera_off"
+WRAP_NO_ANSWER = "no_answer_timeout"
+WRAP_SESSION_TIME_UP = "session_time_up"
+
+
+def camera_grace_expired(seconds_camera_off) -> bool:
+    """True once the camera has been off for the full grace and is STILL off.
+
+    The client re-reports `camera_off` at that point, which walks the camera ladder one
+    rung (nudge -> warn -> wrap). Turning the camera back on inside the grace clears the
+    timer and nothing escalates — the grace is a real second chance, not a countdown.
+    """
+    try:
+        return float(seconds_camera_off) >= CAMERA_GRACE_SECONDS
+    except (TypeError, ValueError):
+        return False
+
+
+def is_abandonment(seconds_since_question, mic_live: bool, typed_chars: int = 0) -> bool:
+    """Abandonment = an answer is due and BOTH channels have been silent for 90s.
+
+    `mic_live` is True when the mic could actually capture (unmuted AND consented) —
+    muting is the candidate's right, so a MUTED mic with typing is not abandonment, and
+    neither is a live mic (they may simply be thinking; the per-question clock handles
+    that, and it ends in a skip, not a wrap). Only the total dead end wraps.
+    """
+    if mic_live or int(typed_chars or 0) > 0:
+        return False
+    try:
+        return float(seconds_since_question) >= SILENT_ABANDON_SECONDS
+    except (TypeError, ValueError):
+        return False
+
+
 def wrap_directive() -> str:
     """Closing line when the interview ends early. Courteous — we are ending the
     session, not punishing the person."""

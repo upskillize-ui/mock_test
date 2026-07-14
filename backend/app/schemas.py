@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Literal, Annotated, Optional
 from datetime import date, datetime
 
@@ -86,7 +86,10 @@ class StartSessionResponse(BaseModel):
 
 class TurnRequest(BaseModel):
     session_id: str = Field(..., max_length=36)
-    message: str = Field(..., min_length=1, max_length=4000)
+    # Empty ONLY for timeout="skip" (the question's clock ran out with nothing captured);
+    # the server writes the skip marker itself. Enforced below, so an ordinary empty turn
+    # is still rejected.
+    message: str = Field("", max_length=4000)
     # INT-04: the stage the client believes it is answering; a mismatch with the
     # server's current_stage is rejected with 409. Optional for backward-compat.
     stage: Optional[str] = Field(None, max_length=20)
@@ -96,6 +99,16 @@ class TurnRequest(BaseModel):
     # /session/stt response so they persist on this answer's message row. Absent for
     # typed answers. Server re-validates the shape; informational only (not scored).
     delivery_metrics: Optional[dict] = None
+    # E7.7: this turn was forced by the per-question clock, not by the candidate pressing
+    # send. "partial" — we cut them off mid-answer and submitted what we had. "skip" —
+    # nothing at all was captured. Absent on every ordinary turn.
+    timeout: Optional[Literal["partial", "skip"]] = None
+
+    @model_validator(mode="after")
+    def _message_required_unless_skipped(self):
+        if self.timeout != "skip" and not self.message.strip():
+            raise ValueError("message must not be empty")
+        return self
 
 
 class TurnResponse(BaseModel):
@@ -159,7 +172,9 @@ class FocusEventResponse(BaseModel):
 
 class WrapRequest(BaseModel):
     session_id: str = Field(..., max_length=36)
-    # camera_off | no_answer_timeout
+    # camera_off        — the camera ladder reached "wrap" (Phase E device policy).
+    # no_answer_timeout — both channels silent for 90s with an answer due (abandonment).
+    # session_time_up   — the session clock expired (E7.7): wrap, then score what we have.
     reason: str = Field(..., max_length=40)
 
 

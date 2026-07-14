@@ -725,10 +725,21 @@ async def session_turn(
     if answer_count >= settings.MAX_ANSWERS_PER_SESSION:
         raise HTTPException(409, "You've reached the maximum number of answers for one session.")
 
+    # E7.7: the per-question clock expired. "skip" means NOTHING was captured — the
+    # SERVER writes the marker text (never the client), so the transcript is honest about
+    # what happened and cannot be forged. "partial" means we cut them off mid-answer and
+    # what we had was submitted; it is scored like any other short answer.
+    timed_out = body.timeout or ""
+    skipped = timed_out == "skip"
+    content = stages.TIMEOUT_SKIP_TEXT if skipped else body.message.strip()
+
     # Phase 3 Part C: a spoken answer carries delivery metrics echoed from
     # /session/stt. Re-validate the client payload and store it on the answer's row
-    # (typed answers stay NULL). Informational only — never affects scoring.
-    dm = delivery.sanitize(body.delivery_metrics) if settings.DELIVERY_METRICS_ENABLED else None
+    # (typed answers stay NULL). Informational only — never affects scoring. A skip has
+    # no recording behind it, so it carries no metrics either.
+    dm = None
+    if settings.DELIVERY_METRICS_ENABLED and not skipped:
+        dm = delivery.sanitize(body.delivery_metrics)
 
     # Persist the answer and capture its id (used later as the rating target). Only a
     # spoken answer with metrics touches the additive delivery_metrics column, so the
@@ -737,12 +748,12 @@ async def session_turn(
         res = db.execute(
             text("INSERT INTO vyom_messages (session_id, role, content, delivery_metrics) "
                  "VALUES (:s, 'user', :c, :dm)"),
-            {"s": body.session_id, "c": body.message.strip(), "dm": json.dumps(dm)},
+            {"s": body.session_id, "c": content, "dm": json.dumps(dm)},
         )
     else:
         res = db.execute(
             text("INSERT INTO vyom_messages (session_id, role, content) VALUES (:s, 'user', :c)"),
-            {"s": body.session_id, "c": body.message.strip()},
+            {"s": body.session_id, "c": content},
         )
     db.commit()
     answer_id = int(res.lastrowid)
@@ -754,9 +765,14 @@ async def session_turn(
     # does not consume one of the round's questions (the interviewer steps down /
     # re-asks on the same topic instead). WARMUP and REVERSE are unaffected: they
     # are never rating-gated, so consumes_question_slot() returns True for them.
-    substantive = not stages.is_non_substantive(body.message)
+    #
+    # E7.7: a skip is a non-answer by construction (we never ask them to rate a question
+    # they never got to answer), and it spends no slot in any scored round.
+    substantive = False if skipped else not stages.is_non_substantive(content)
     round_index_after = (
-        round_index + 1 if stages.consumes_question_slot(st, substantive) else round_index
+        round_index + 1
+        if stages.consumes_question_slot(st, substantive, timed_out_skip=skipped)
+        else round_index
     )
 
     cfg = _session_to_cfg(session_row)
@@ -770,8 +786,11 @@ async def session_turn(
         cfg, st, round_index_after, substantive=substantive,
         presence_note=_presence_note(db, session_row),
         # PART 1: what they ACTUALLY just said. No summarisation call — the raw answer
-        # (clamped) is the cheapest and most faithful thing to react to.
-        prior_answer_summary=body.message.strip()[:600],
+        # (clamped) is the cheapest and most faithful thing to react to. A skip has no
+        # answer to react to, so we pass nothing rather than the marker: "react to
+        # something specific in it" must not be aimed at our own placeholder.
+        prior_answer_summary="" if skipped else content[:600],
+        timeout=timed_out,
     )
 
     reply = await call_claude(

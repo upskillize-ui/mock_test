@@ -609,6 +609,37 @@ REASK_DIRECTIVE = (
 )
 
 
+# ── E7.7: the per-question clock ran out ─────────────────────────────────────
+# Two shapes, and neither of them is a dead end. The candidate must always hear the
+# interviewer move the interview on, in their own voice — never sit in silence watching
+# a clock they've already lost.
+TIMEOUT_DIRECTIVES = {
+    # Something WAS captured — a partial spoken answer or a half-typed draft. It has
+    # already been submitted as their answer; respond to what is actually there.
+    "partial": (
+        "TIME NOTE — THE CLOCK RAN OUT MID-ANSWER: their last answer is INCOMPLETE — we cut "
+        "them off at the time limit for that question, they did not choose to stop. Open with "
+        "ONE short line acknowledging exactly that (in your own words — the shape of "
+        "\"we're out of time on that one, let's move on\"), engage briefly and fairly with "
+        "the part they DID get out, and then move on. Do NOT ask them to finish it, do NOT "
+        "hold it against them, and do NOT remark on how little they said."
+    ),
+    # Nothing was captured at all: no speech, no draft. Not a refusal — silence.
+    "skip": (
+        "TIME NOTE — THE CLOCK RAN OUT WITH NO ANSWER: they did not answer that question "
+        "before its time was up. Acknowledge it in ONE short, NEUTRAL line and move on — no "
+        "sympathy, no reprimand, no lecture, and no speculation about why. Do NOT re-ask it, "
+        "do NOT offer them another go at it, and do NOT comment on their silence. Then ask "
+        "your next question as planned."
+    ),
+}
+
+
+def timeout_directive(kind: str) -> str:
+    """The per-turn note for a question that hit its deadline ("partial" | "skip")."""
+    return TIMEOUT_DIRECTIVES.get(kind or "", "")
+
+
 def _ask_line(stage: str, plan: dict, role: str) -> str:
     if stage == "WARMUP":
         return "one light warm-up / rapport question"
@@ -631,12 +662,19 @@ def _ask_line(stage: str, plan: dict, role: str) -> str:
 
 def stage_turn_directive(
     cfg: dict, current_stage: str, round_index_after: int, substantive: bool = True,
-    presence_note: str = "", prior_answer_summary: str = "",
+    presence_note: str = "", prior_answer_summary: str = "", timeout: str = "",
 ) -> str:
     """`presence_note` (Interview Room) is an attention/camera directive from
     app.presence. It is PREPENDED so the interviewer raises it ONCE, in their own
     improvised voice, and then continues the planned round untouched — the ladder
-    changes tone, never difficulty or structure."""
+    changes tone, never difficulty or structure.
+
+    `timeout` (E7.7, "partial" | "skip") means the question's clock ran out. It OUTRANKS
+    the non-answer step-down: a candidate who ran out of time was not refusing to engage,
+    so re-asking the same topic more simply would be a punishment for the clock. The
+    interviewer acknowledges it and moves on to the NEXT planned question — which is why
+    the base directive below is built as though the answer were substantive, even though
+    a skip is scored as a non-answer and spends no question slot."""
     """Per-turn instruction (a small, un-cached system block) that keeps the
     interviewer aligned with the server-authoritative stage machine (INT-04).
 
@@ -645,7 +683,10 @@ def stage_turn_directive(
     steps difficulty DOWN on the SAME topic (one clarifier only), never pivoting to
     biography or small-talk. The stage machine has held round_index, so this turn does
     not consume a planned question slot."""
-    base = _stage_directive_base(cfg, current_stage, round_index_after, substantive)
+    timed_out = (timeout or "").strip()
+    base = _stage_directive_base(
+        cfg, current_stage, round_index_after, substantive or bool(timed_out)
+    )
 
     # PART 1 (per-turn half): the round you're in, what it's FOR, and what they just
     # said — so the follow-up can pick up a specific detail instead of acknowledging
@@ -658,7 +699,7 @@ def stage_turn_directive(
                 f"a generic acknowledgement is forbidden):\n\"{prior}\"")
 
     note = (presence_note or "").strip()
-    parts = [p for p in (note, ctx, base) if p]
+    parts = [p for p in (note, timeout_directive(timed_out), ctx, base) if p]
     return "\n\n".join(parts)
 
 
@@ -797,6 +838,7 @@ CRITICAL for perAnswerScores (used for confidence calibration — get this exact
 - Include ONE entry for EACH scored answer the candidate gave, in the SAME ORDER they were answered.
 - Only WARMUP, DOMAIN, BEHAVIOURAL and CASE answers count — do NOT include reverse-round questions here.
 - "score" is that single answer's quality on a 1-5 scale (1 = very weak, 5 = excellent).
+- A turn whose text is exactly "(No answer — the time on this question ran out.)" is the SYSTEM recording that the question's clock expired before the candidate answered. It is always "substantive": false. Score it honestly as an unanswered question, but do not editorialise about it anywhere in the report — they ran out of time, they did not refuse.
 - "substantive" is true when the candidate genuinely attempted the question, false when the turn was a NON-ANSWER — an "I don't know" / "skip" / "no idea", a blank or near-blank reply, or a pure clarification request ("what do you mean?") — OR when what they were responding to was itself a clarifier / rapport / small-talk turn rather than a real scored interview question. When in doubt, mark true.
 - A non-substantive (substantive:false) answer must NOT be counted against the candidate: still list it (with its honest low score) but EXCLUDE it from the round's aggregate — see roundScores.
 - If the candidate gave N scored answers, perAnswerScores MUST have exactly N entries in order.
