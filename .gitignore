@@ -9,3 +9,12 @@ scripts/_tts_probe_out.mp3
 # Interviewer avatar art is now BUILD-CRITICAL (InterviewerCharacter.jsx imports it),
 # so it must be in git. HF rejects raw binaries, so it is tracked via Git LFS —
 # see .gitattributes. Do NOT re-ignore these.
+
+# ...with ONE exception: art that no roster row imports. neo / rex / veda are leftovers
+# from the superseded robot roster — nothing in the build references them, so tracking
+# them is 3MB of LFS on every clone for files no page can ever show. They stay on disk.
+# The moment one of them enters the ROSTER in InterviewerCharacter.jsx, delete its line
+# here and commit it with its import — build-critical art belongs in git.
+frontend/src/interviewers/neo_warm_male.png
+frontend/src/interviewers/rex_stern_male.png
+frontend/src/interviewers/veda_formal_female.png
