@@ -4,7 +4,7 @@ Closing the gaps the last two reports left open. Six items, all six landed, suit
 
 | Suite | Before | After |
 |---|---|---|
-| Backend (`pytest`) | 127 | **161** |
+| Backend (`pytest`) | 127 | **163** |
 | Frontend (`npm test`) | 9 | **24** |
 | `npm run build` | clean | clean |
 
@@ -126,27 +126,35 @@ Validated against the **59 real Bulbul clips already in the UAT cache: 59/59 par
 825.8s of audio.** Distribution splits cleanly into two populations — 19 clips ≥20s (449s,
 mean 23.6s: whole replies) and 40 clips <20s (377s: sentences).
 
-**Projected for one full 20-min session** (greeting + ~13 turns, at the measured 23.6s
-mean reply): **≈660 billed seconds — roughly 11 minutes of synthesized audio per
-20-minute interview.**
+### The finding — the 2-call lever, and it was bigger than the sentence split
 
-### The finding — this is the 2-call lever, and it is bigger than the sentence split
-
-`/session/turn` and `/session/start` call **both** `_try_tts` (the whole reply, one clip)
-**and** `_try_tts_segments` (each sentence, N clips). Every multi-sentence reply is
+`/session/turn` and `/session/start` called **both** `_try_tts` (the whole reply, one
+clip) **and** `_try_tts_segments` (each sentence, N clips). Every multi-sentence reply was
 therefore synthesized **twice** — once whole, once split. In *seconds*, the sentence split
-is nearly free (same words); **the doubling comes from the redundant whole-reply clip,
-which is ~50% of the bill.** (Single-sentence replies escape it: identical preprocessed
-text → identical cache key → the second call is a free cache hit. The meter's
-`cache_hits` / `cached_seconds` will show exactly this in production.)
+is nearly free (same words); **the doubling came from the redundant whole-reply clip,
+worth ~50% of the bill.** (Single-sentence replies always escaped it: identical
+preprocessed text → identical cache key → the second call was a free cache hit.)
 
-The whole-reply `audio_url` is only ever *played* on the iOS autoplay-blocked
-"tap to hear the question" path and as a replay fallback — both of which can be served by
-replaying the segments instead. **Recommendation: drop the whole-reply synth from
-`/session/turn` and `/session/start` (keep it for the short reask / mute / rating lines,
-which have no segments). That is a ~50% TTS saving for a handful of lines.** Not pulled
-here — the sprint asked for the measurement to *inform* that decision, so it is yours to
-take.
+That whole-reply clip was only ever *played* on the iOS autoplay-blocked "tap to hear the
+question" path and as a replay fallback — both of which the segments serve perfectly well.
+
+### The lever is pulled
+
+The whole-reply synth is gone from `/session/turn` and `/session/start`. A reply is now
+spoken from its sentence clips and nothing else; tap-to-play and Replay replay the
+segments. `_try_tts` survives for the short one-off lines (re-ask, mute fork, the rating
+ask) — they have no sentences to split and are one clip by nature.
+
+`audio_url` is **removed from `TurnResponse` and `StartSessionResponse`** rather than
+left null: re-adding it is how the duplicate bill would creep back (the client would have
+something to prefer over the segments again), so it now has to be a deliberate act. Two
+tests hold the line — a 3-sentence reply must cost exactly 3 clips, not 4, and the field
+must stay off both responses.
+
+**Effect: ≈50% off every session's TTS bill.** The projection for a full 20-min session
+(greeting + ~13 turns at the measured 23.6s mean reply) drops from **≈660 billed seconds
+to ≈330** — roughly 5.5 minutes of synthesized audio per 20-minute interview, and the
+human sentence pacing is untouched.
 
 ---
 
@@ -157,9 +165,11 @@ take.
   Sarvam, and I wasn't going to bill your Sarvam account uninvited. The instrument is in
   place — the true number is one line in the logs of the next session you run:
   `tts cost: session=… billed_seconds=… cached_seconds=…`.
-- **Nothing was exercised against a live backend.** Verification here is 185 tests, a clean
+- **Nothing was exercised against a live backend.** Verification here is 187 tests, a clean
   Vite build (which is what proves every roster image resolves), and an import-smoke of the
-  FastAPI app. The room's clocks are timing logic in a browser; they want one manual pass.
+  FastAPI app. The room's clocks are timing logic in a browser; they want one manual pass —
+  and so does the first spoken question after the 2-call lever, since the reply is now
+  spoken from its sentence clips and from nothing else.
 - **A skipped question still costs an `answer_count`**, so a pathological run of timeouts
   can reach `MAX_ANSWERS_PER_SESSION` and 409. The session clock wraps long before that in
   practice, but it is the one edge where a timeout could still surprise someone.

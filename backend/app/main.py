@@ -350,8 +350,14 @@ def _resolve_speaker(voice: str | None) -> str:
 
 
 async def _try_tts(session_id: str, text_out: str, voice: str | None) -> str | None:
-    """Best-effort synth → returns a relative audio_url or None. Never raises;
-    TTS must never block the interview (question text always goes out anyway)."""
+    """Best-effort synth of ONE clip → a relative audio_url, or None. Never raises;
+    TTS must never block the interview (question text always goes out anyway).
+
+    This is the SINGLE-LINE path: the re-ask, the mute fork, the confidence-rating ask.
+    Interviewer REPLIES do not come through here — they are synthesised sentence by
+    sentence by _try_tts_segments below, and synthesising them whole as well was billing
+    the same audio twice (see the 2-call lever in FIXUP_SPRINT_REPORT.md).
+    """
     if not settings.TTS_ENABLED:
         return None
     try:
@@ -374,9 +380,11 @@ async def _try_tts_segments(session_id: str, text_out: str, voice: str | None) -
     hold a human beat between them, and advance the caption in exact lockstep with the
     audio (no progress-bar interpolation).
 
-    COST: this is N vendor calls per turn instead of 1 (a 3-sentence turn = 3 calls).
-    The content-addressed cache absorbs repeats, but questions are mostly unique, so
-    budget roughly 2-3x the previous TTS spend. Flagged in the report.
+    This is the ONLY synth path for an interviewer reply. It is N vendor CALLS instead of
+    1 — but Sarvam bills AUDIO, and the sentences are the same words as the reply, so in
+    SECONDS the split is very nearly free. What was not free was the whole-reply clip we
+    used to synthesise alongside it and then almost never play (the tts cost meter put
+    that at ~50% of the bill), so that call is gone.
 
     Never blocks the interview: a sentence whose synth fails simply carries a null
     audio_url and the client shows its caption for a beat and moves on.
@@ -700,7 +708,6 @@ async def start_session(
     _save_message(db, session_id, "assistant", greeting)
     _update_session_counters(db, session_id)
 
-    audio_url = await _try_tts(session_id, greeting, body.voice)
     audio_segments = await _try_tts_segments(session_id, greeting, body.voice)
 
     state = _build_state({
@@ -712,7 +719,7 @@ async def start_session(
         "answer_count": 0,
     })
     return StartSessionResponse(
-        session_id=session_id, greeting=greeting, state=state, audio_url=audio_url,
+        session_id=session_id, greeting=greeting, state=state,
         stt_available=bool(settings.STT_ENABLED and settings.VOICE_ENABLED),
         audio_segments=audio_segments,
         # Dev/UAT only — lets the console prove each session invents a new interviewer.
@@ -864,7 +871,6 @@ async def session_turn(
     db.commit()
     _update_session_counters(db, body.session_id)
 
-    audio_url = await _try_tts(body.session_id, reply, body.voice)
     audio_segments = await _try_tts_segments(body.session_id, reply, body.voice)
 
     # Realism v2: when this answer is rating-gated, IQ asks for the confidence rating
@@ -887,7 +893,7 @@ async def session_turn(
     esc = _escalation_level(db, session_row)
     tone = turn_tone(cfg.get("difficulty"), new_stage, esc)
 
-    return TurnResponse(reply=reply, answer_id=answer_id, state=state, audio_url=audio_url,
+    return TurnResponse(reply=reply, answer_id=answer_id, state=state,
                         audio_segments=audio_segments, tone=tone, escalation_level=esc,
                         rating_prompt=rating_prompt, rating_audio_url=rating_audio_url)
 

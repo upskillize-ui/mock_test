@@ -229,6 +229,43 @@ def test_an_unparseable_clip_is_counted_but_not_invented():
         t._session_seconds.pop(sid, None)
 
 
+# ── The 2-call lever: a reply is synthesised ONCE, as its sentences ─────────
+
+def test_a_reply_is_billed_once_per_sentence_and_not_once_more_for_the_whole():
+    """The lever, pinned. We used to synthesise a reply BOTH whole and split — the same
+    audio, billed twice, and the whole clip was almost never played. A 3-sentence reply
+    must cost exactly 3 clips."""
+    import asyncio as _aio
+    from app import main as m
+
+    calls = []
+    async def _fake_hash(session_id, text, speaker):
+        calls.append(text)
+        return "a" * 64
+    orig = t.get_audio_hash
+    t.get_audio_hash = _fake_hash
+    try:
+        segs = _aio.run(m._try_tts_segments("sess", "First line. Second line. And the question?", "female"))
+        assert len(segs) == 3
+        assert len(calls) == 3          # NOT 4 — there is no whole-reply clip any more
+        assert [s["text"] for s in segs] == ["First line.", "Second line.", "And the question?"]
+    finally:
+        t.get_audio_hash = orig
+
+
+def test_the_response_no_longer_carries_a_whole_reply_audio_url():
+    # Re-adding this field is how the duplicate bill would creep back: the client would
+    # have something to prefer over the segments again. Make it a deliberate act.
+    from app.schemas import StartSessionResponse, TurnResponse
+    assert "audio_url" not in TurnResponse.model_fields
+    assert "audio_url" not in StartSessionResponse.model_fields
+    # The short one-off lines DO still carry one clip each — they have no sentences to
+    # split and are one line by nature.
+    assert "rating_audio_url" in TurnResponse.model_fields
+    from app.schemas import ReaskResponse
+    assert "audio_url" in ReaskResponse.model_fields
+
+
 # ── Bulbul v3 upgrade: payload params + cache-key versioning ────────────────
 
 def test_v3_payload_params():

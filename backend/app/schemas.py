@@ -68,9 +68,8 @@ class StartSessionResponse(BaseModel):
     session_id: str
     greeting: str
     state: SessionState
-    # Voice Phase 1: relative URL to spoken greeting audio; null when TTS is off/failed.
-    audio_url: Optional[str] = None
-    # E2 pacing: per-sentence clips (see TurnResponse.audio_segments).
+    # E2 pacing: per-sentence clips (see TurnResponse.audio_segments). There is no
+    # whole-greeting `audio_url` any more — see TurnResponse.
     audio_segments: list[dict] = []
     # POSES: the greeting is always warm (see TurnResponse.tone).
     tone: str = "warm"
@@ -115,10 +114,15 @@ class TurnResponse(BaseModel):
     reply: str
     answer_id: int
     state: SessionState
-    # Voice Phase 1: relative URL to spoken question audio; null when TTS off/failed.
-    audio_url: Optional[str] = None
     # E2 pacing: ONE clip per sentence — [{text, audio_url, pause_before_ms}] — so the
     # client can hold a human beat between sentences and advance captions in lockstep.
+    #
+    # The whole-reply `audio_url` that used to ride alongside this is GONE (the 2-call
+    # lever). It was the same audio as the segments, billed a second time, and the client
+    # only ever played it on the iOS tap-to-play fallback — which now replays the segments
+    # instead. Replies are spoken from `audio_segments` and nowhere else. Single short
+    # lines (re-ask, mute fork, the rating ask) still carry their own audio_url: they have
+    # no segments, and are one clip by nature.
     audio_segments: list[dict] = []
     # POSES: the register this turn carries — "warm" | "neutral" | "probing". The server
     # decides it (it knows the round and the focus ladder); the client maps it onto the

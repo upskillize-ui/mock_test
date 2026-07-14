@@ -1178,10 +1178,10 @@ function StageSettingsMenu({ onClose, voiceStage, setVoiceStage,
   );
 }
 
-function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greetingSegments, initialState, initialMessages, startedAt, onEnd, onRestart }) {
+function InterviewScreen({ config, sessionId, greeting, greetingSegments, initialState, initialMessages, startedAt, onEnd, onRestart }) {
   // INT-06: on resume we hydrate from server history; on a fresh start we seed with the greeting.
   const [messages, setMessages] = useState(
-    initialMessages && initialMessages.length ? initialMessages : [{ role: "assistant", content: greeting, audio_url: greetingAudioUrl, audio_segments: greetingSegments || [] }]
+    initialMessages && initialMessages.length ? initialMessages : [{ role: "assistant", content: greeting, audio_segments: greetingSegments || [] }]
   );
   // Voice Phase 1: playback state.
   // E2: the interviewer is ALWAYS audible — there is no mute control. Accessibility
@@ -1441,21 +1441,20 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
     else (async () => { setAudioPlaying(true); await playOne(last.audio_url); setAudioPlaying(false); audioEndedRef.current?.(); })();
   }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const latestAudioUrl = (() => {
-    for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "assistant" && messages[i].audio_url) return messages[i].audio_url;
-    return null;
-  })();
   const lastAssistantIdx = (() => {
     for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "assistant") return i;
     return -1;
   })();
+  // A reply is spoken from its SENTENCE CLIPS; only the short one-off lines (re-ask, mute
+  // fork) carry a single audio_url. Both are replayable, so ask the message, not the shape.
+  const lastAssistant = lastAssistantIdx >= 0 ? messages[lastAssistantIdx] : null;
+  const canReplay = !!(lastAssistant?.audio_segments?.length || lastAssistant?.audio_url);
 
   // E2: no toggleMute — the interviewer is always audible. Replay stays (re-hear a
   // question), and CC captions carry accessibility.
   const replay = () => {
-    const last = messages[lastAssistantIdx];
-    if (last?.audio_segments?.length) playSegments(last.audio_segments);
-    else if (latestAudioUrl) playAudio(latestAudioUrl, true);
+    if (lastAssistant?.audio_segments?.length) playSegments(lastAssistant.audio_segments);
+    else if (lastAssistant?.audio_url) playAudio(lastAssistant.audio_url, true);
   };
 
   // ── Voice Phase 2/3: record → transcribe → drop editable text into the input ──
@@ -2070,7 +2069,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
     setMessages(m => [...m, { role: "user", content: skipped ? SKIP_MARKER : textVal, meta: skipped ? "SKIPPED" : spoken ? "SPOKEN" : "TYPED" }]); setInput(""); setLoading(true); setError(null);
     try {
       const res = await sendTurn(sessionId, textVal, sstate?.current_stage, voicePref || "female", spoken ? metrics : null, timeout);
-      setMessages(m => [...m, { role: "assistant", content: res.reply, audio_url: res.audio_url, audio_segments: res.audio_segments || [] }]);
+      setMessages(m => [...m, { role: "assistant", content: res.reply, audio_segments: res.audio_segments || [] }]);
       setSstate(res.state);
       // Realism v2: if this answer is rating-gated, IQ asks for the rating ALOUD once
       // the reply finishes playing (see onAudioEnded).
@@ -2080,9 +2079,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
       ratingPromptRef.current = res.rating_prompt || "";
       ratingAskedRef.current = false;
       setRatingPills(false);
-      // With TTS off there is no 'ended' event to drive the flow — nudge it manually
-      // so the hands-free loop still works.
-      if (voiceModeRef.current && !res.audio_url) setTimeout(() => audioEndedRef.current?.(), 300);
+      // With TTS off there is no audio, so no sequencer finish to drive the flow — nudge
+      // it manually so the hands-free loop still works. This MUST test the segments: they
+      // are the only thing a reply is spoken from now, and keying it off the old
+      // whole-reply audio_url would hand the floor back while IQ was still asking.
+      if (voiceModeRef.current && !res.audio_segments?.length) setTimeout(() => audioEndedRef.current?.(), 300);
     } catch (e) {
       setError(e.message);
       try { setSstate(await fetchSessionState(sessionId)); } catch { /* noop */ }
@@ -2173,9 +2174,9 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
           <div className="iq-hud-right" style={{ position: "relative" }}>
             {/* E2: NO interviewer-mute control — the panel is always audible. Replay
                 stays (re-hear a question); accessibility is carried by CC captions. */}
-            {latestAudioUrl && (
+            {canReplay && (
               <div className="iq-hud-audio">
-                <button className="iq-audio-btn" onClick={replay} disabled={!latestAudioUrl} title="Replay question" aria-label="Replay question">
+                <button className="iq-audio-btn" onClick={replay} title="Replay question" aria-label="Replay question">
                   <IconReplay />
                 </button>
               </div>
@@ -2273,8 +2274,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
                     Your turn to interview us. Ask us two questions.
                   </div>
                 )}
-                {needsTap && latestAudioUrl && !muted && (
-                  <button onClick={() => playAudio(latestAudioUrl, true)} className="iq-ghostbtn">
+                {/* Autoplay was blocked (iOS). Replaying the SENTENCE CLIPS is what this
+                    does now — there is no separate whole-reply clip to fall back to, and
+                    there never needed to be. */}
+                {needsTap && canReplay && !muted && (
+                  <button onClick={replay} className="iq-ghostbtn">
                     <IconSpeaker size={15} /> Tap to hear the question
                   </button>
                 )}
@@ -2392,8 +2396,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
               </div>
             </div>); })}
           {loading && <div style={{ display: "flex", gap: 10 }}><div style={{ width: 32, height: 32, borderRadius: "50%", background: T.navy, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ color: "#fff", fontWeight: 800, fontSize: 11 }}>IQ</span></div><div style={{ padding: "14px 18px", borderRadius: "2px 12px 12px 12px", background: T.white, border: "1px solid " + T.border }}><div style={{ display: "flex", gap: 5 }}>{[0,1,2].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: T.subtle, animation: "iqPulse 1.2s ease-in-out infinite", animationDelay: i * 0.15 + "s" }} />)}</div></div></div>}
-          {needsTap && latestAudioUrl && !muted && (
-            <button onClick={() => playAudio(latestAudioUrl, true)} style={{ alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 14px", borderRadius: 20, border: "1px solid " + IQ.teal, background: "#fff", color: IQ.navy, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: T.font }}>
+          {needsTap && canReplay && !muted && (
+            <button onClick={replay} style={{ alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 14px", borderRadius: 20, border: "1px solid " + IQ.teal, background: "#fff", color: IQ.navy, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: T.font }}>
               <span style={{ color: IQ.teal, display: "inline-flex" }}><IconSpeaker size={16} /></span> Tap to hear the question
             </button>
           )}
@@ -2998,8 +3002,7 @@ export default function App() {
   const [config, setConfig] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const [greeting, setGreeting] = useState("");
-  const [greetingAudioUrl, setGreetingAudioUrl] = useState(null);
-  const [greetingSegments, setGreetingSegments] = useState([]);   // E2: per-sentence greeting
+  const [greetingSegments, setGreetingSegments] = useState([]);   // E2: the greeting, one clip per sentence — the only shape a reply is spoken in
   const [initialState, setInitialState] = useState(null);
   const [initialMessages, setInitialMessages] = useState(null);
   const [startedAt, setStartedAt] = useState(null);
@@ -3060,9 +3063,9 @@ export default function App() {
     setScreen("setup");
   };
 
-  const handleStart = (cfg, id, gr, st, audioUrl, segments) => {
+  const handleStart = (cfg, id, gr, st, segments) => {
     const now = Date.now();
-    setConfig(cfg); setSessionId(id); setGreeting(gr); setGreetingAudioUrl(audioUrl || null);
+    setConfig(cfg); setSessionId(id); setGreeting(gr);
     setGreetingSegments(segments || []); setInitialState(st);
     setInitialMessages(null); setStartedAt(now);
     saveActiveSession(id, cfg, now);   // INT-06: persist the instant the session starts
@@ -3103,7 +3106,7 @@ export default function App() {
 
       handleStart(
         { ...payload, roomSeed, mic: !!mic, camera: !!camera, interviewerName: iv.name },
-        r.session_id, r.greeting, r.state, r.audio_url, r.audio_segments || [],
+        r.session_id, r.greeting, r.state, r.audio_segments || [],
       );
     } catch (e) {
       setJoinError(e.message);
@@ -3155,7 +3158,7 @@ export default function App() {
         </>
       )}
       {screen === "resume" && <ResumePrompt config={resumeCfg} onResume={doResume} onDiscard={restart} />}
-      {screen === "interview" && <InterviewScreen config={config} sessionId={sessionId} greeting={greeting} greetingAudioUrl={greetingAudioUrl} greetingSegments={greetingSegments} initialState={initialState} initialMessages={initialMessages} startedAt={startedAt} onEnd={() => setScreen("debrief")} onRestart={restart} />}
+      {screen === "interview" && <InterviewScreen config={config} sessionId={sessionId} greeting={greeting} greetingSegments={greetingSegments} initialState={initialState} initialMessages={initialMessages} startedAt={startedAt} onEnd={() => setScreen("debrief")} onRestart={restart} />}
       {screen === "debrief" && <DebriefScreen config={config} sessionId={sessionId} onRestart={restart} onViewHistory={() => { setHistoryDetailId(null); setScreen("history"); }} />}
       {screen === "history" && !historyDetailId && <HistoryScreen onPickSession={(sid) => { setHistoryDetailId(sid); }} onStartNew={restart} />}
       {screen === "history" && historyDetailId && <HistoryDetail sessionId={historyDetailId} onBack={() => setHistoryDetailId(null)} />}
