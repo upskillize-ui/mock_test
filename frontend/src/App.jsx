@@ -266,6 +266,15 @@ const CALIBRATION_COPY = {
 
 const ROUND_BAND_LABELS = { warmup: "Warm-up", domain: "Domain", behavioural: "Behavioural", case: "Case", reverse: "Your Questions" };
 
+// When an interview ended early, the readout SAYS so — plainly, in neutral language, and
+// with the one thing the learner most needs to hear: nothing was zeroed as a punishment.
+// We score what happened and mark what didn't.
+const EARLY_WRAP_NOTE = {
+  camera_off: "This interview ended early because the camera stayed off. What you covered is scored below exactly as it stood — nothing was zeroed.",
+  no_answer_timeout: "This interview ended early after a long silence with no answer. What you covered is scored below exactly as it stood — nothing was zeroed.",
+  session_time_up: "Time ran out before the last rounds. What you covered is scored below exactly as it stood — nothing was zeroed.",
+};
+
 // ── Markdown rendering ─────────────────────────────────────────────────────
 function fmt(text) {
   const parts = [];
@@ -2523,6 +2532,49 @@ function DeliveryBlock({ delivery }) {
   );
 }
 
+// E6: a strength used to be a bare string. It is now {strength, evidence} — the mentor
+// quotes the candidate back to themselves, because a readout that could have been written
+// without listening to THIS person is worthless. Sessions scored before the change (and
+// every row in History) still hold strings, so normalise instead of crashing on them.
+const asStrength = (s) => (typeof s === "string" ? { strength: s, evidence: "" } : (s || {}));
+
+// Interview Room: the presence card. It reports COUNTS of observable behaviour and one
+// coaching line — never an emotion, never a judgement about the person. Absent entirely
+// for a camera-off join (those signals were never measured, so they are never reported).
+function PresenceBlock({ presence }) {
+  if (!presence || !presence.band) return null;
+  const bs = BAND_STYLE[presence.band] || BAND_STYLE["Not Ready"];
+  const counts = Object.entries(presence.by_type || {});
+  const LABELS = {
+    tab_hidden: "Left the interview tab", window_blur: "Switched window",
+    no_face: "Out of frame", multiple_faces: "Someone else in frame",
+    looking_away: "Looked away from camera",
+  };
+  return (
+    <div className="vc" style={{ marginBottom: 16 }}>
+      <div className="vc-h" style={{ display: "flex", alignItems: "center" }}>
+        <span className="vc-t">Presence Profile</span>
+        <span style={{ marginLeft: "auto", padding: "3px 12px", borderRadius: 8, background: bs.bg, color: bs.fg, fontFamily: IQ.display, fontWeight: 700, fontSize: 13 }}>{presence.band}</span>
+      </div>
+      <div className="vc-b">
+        {counts.length > 0 && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            {counts.map(([k, v]) => (
+              <span key={k} className="mba-pill mba-pill-warn">{LABELS[k] || k} ×{v}</span>
+            ))}
+          </div>
+        )}
+        <div style={{ fontSize: 13, lineHeight: 1.6, color: T.text, fontFamily: IQ.sans }}>{presence.coaching_note}</div>
+        {presence.camera_signals_disabled && (
+          <div style={{ fontSize: 11, color: T.subtle, fontStyle: "italic", marginTop: 10 }}>
+            You joined with your camera off, so camera cues were never measured — and are never counted against you.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
   const [d, setD] = useState(null);
   const [error, setError] = useState(null);
@@ -2546,19 +2598,89 @@ function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
   const pk = (k) => ({ communication:"Communication",roleKnowledge:"Role Knowledge",clarity:"Clarity",confidence:"Confidence",structure:"Structure",problemSolving:"Problem Solving" })[k] || k;
   const currentRound = ROUNDS.find(r => r.v === config.round) || ROUNDS[ROUNDS.length - 1];
 
+  // E6 — the readout is read top to bottom, and the ORDER is the coaching:
+  //   what went well (in their own words) -> how they came across (delivery, presence)
+  //   -> the 2-3 fixes that matter -> and only then the verdict.
+  // The band used to open the page, which meant the first thing a struggling learner saw
+  // was a label, and everything after it was noise. Nobody hears a correction until they
+  // have been met. The evidence (sub-scores, STAR, what the interviewer was thinking)
+  // now sits UNDER the verdict, where it belongs: it is the working, not the message.
+  const strengths = (d.strengths || []).map(asStrength).filter(s => s.strength);
+  const gaps = d.gaps || [];
+
   return (
     <div style={{ fontFamily: T.font, margin: "-24px -28px", padding: "24px 28px" }}>
-      <div style={{ background: T.navy, borderRadius: 12, padding: "28px 32px", marginBottom: 16 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.3)" }}>Readiness</div>
+      {/* The opening line, in the interviewer's own voice. No band yet. */}
+      <div style={{ background: T.navy, borderRadius: 12, padding: "24px 32px", marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.3)" }}>Your readout</div>
           <div style={{ padding: "3px 10px", borderRadius: 10, background: "rgba(184,150,11,.2)", border: "1px solid rgba(184,150,11,.3)", fontSize: 10, fontWeight: 700, color: T.gold }}>{currentRound.l}</div>
         </div>
+        <div style={{ fontSize: 17, fontWeight: 700, color: "#fff", lineHeight: 1.45 }}>{d.one_line}</div>
+        <div style={{ fontSize: 12, color: "rgba(255,255,255,.3)", marginTop: 8 }}>{config.role} — {config.level} — {config.company || "General"} — {currentRound.l} — {config.duration_min} min</div>
+        {d.early_wrap && (
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,.55)", marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.12)" }}>
+            {EARLY_WRAP_NOTE[d.early_wrap] || "This interview ended early. What you did cover is scored below, exactly as it stood."}
+          </div>
+        )}
+      </div>
+
+      {/* 1. WHAT WENT WELL — first, and in their own words. */}
+      {strengths.length > 0 && (
+        <div className="vc" style={{ marginBottom: 16, borderLeft: "3px solid " + T.green }}>
+          <div className="vc-h"><span className="vc-t" style={{ color: T.green }}>What went well</span></div>
+          <div className="vc-b">
+            {strengths.map((s, i) => (
+              <div key={i} style={{ marginBottom: i < strengths.length - 1 ? 14 : 0, paddingLeft: 14, borderLeft: "2px solid " + T.green }}>
+                <div style={{ fontSize: 13, lineHeight: 1.65 }}>{s.strength}</div>
+                {s.evidence && (
+                  <div style={{ fontSize: 12, color: T.muted, fontStyle: "italic", marginTop: 5, lineHeight: 1.55 }}>
+                    Your words: &ldquo;{s.evidence}&rdquo;
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 2. HOW YOU CAME ACROSS. */}
+      <DeliveryBlock delivery={d.delivery || {}} />
+      <PresenceBlock presence={d.professional_presence} />
+
+      {/* 3. THE FIXES THAT MATTER — each with something to do about it tomorrow. */}
+      {gaps.length > 0 && (
+        <div className="vc" style={{ marginBottom: 16, borderLeft: "3px solid " + T.gold }}>
+          <div className="vc-h"><span className="vc-t" style={{ color: "#7a5e00" }}>The {gaps.length} {gaps.length === 1 ? "fix" : "fixes"} that matter</span></div>
+          <div className="vc-b">
+            {gaps.map((g, i) => (
+              <div key={i} style={{ marginBottom: 16, paddingBottom: i < gaps.length - 1 ? 14 : 0, borderBottom: i < gaps.length - 1 ? "1px solid " + T.border : "none" }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+                  <span style={{ fontFamily: IQ.mono, fontSize: 12, fontWeight: 800, color: T.gold, flexShrink: 0 }}>{String(i + 1).padStart(2, "0")}</span>
+                  <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.5, color: T.text }}>{g.gap}</div>
+                </div>
+                {g.cost && <div style={{ fontSize: 13, lineHeight: 1.6, color: T.muted, marginTop: 5, paddingLeft: 32 }}>{g.cost}</div>}
+                {g.tryThisNextTime && (
+                  <div style={{ marginTop: 10, marginLeft: 32, padding: "10px 14px", borderRadius: 8, background: IQ.cream, border: "1px solid " + T.gold }}>
+                    <div style={{ fontFamily: IQ.mono, fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "#7a5e00", marginBottom: 4 }}>Try this next time</div>
+                    <div style={{ fontSize: 13, lineHeight: 1.6, color: "#5a4500", fontWeight: 600 }}>{g.tryThisNextTime}</div>
+                  </div>
+                )}
+                {g.upskillizeCourse && <div style={{ fontSize: 12, color: T.navy, fontWeight: 700, marginTop: 8, paddingLeft: 32 }}>Study: {g.upskillizeCourse}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 4. THE VERDICT — the band, and one sentence on what their own ratings said. */}
+      <div style={{ background: T.navy, borderRadius: 12, padding: "28px 32px", marginBottom: 16 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.3)", marginBottom: 14 }}>Readiness</div>
         <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
           <div style={{ display: "inline-flex", alignItems: "center", padding: "10px 24px", borderRadius: 10, background: bandStyle.bg, color: bandStyle.fg, fontFamily: IQ.display, fontWeight: 700, letterSpacing: "-0.01em", fontSize: 26 }}>{band}</div>
-          <div style={{ flex: 1, minWidth: 240 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: "#fff", lineHeight: 1.4 }}>{d.one_line}</div>
-            <div style={{ fontSize: 12, color: "rgba(255,255,255,.3)", marginTop: 8 }}>{config.role} — {config.level} — {config.company || "General"} — {currentRound.l} — {config.duration_min} min</div>
-          </div>
+          {cal.sentence && (
+            <div style={{ flex: 1, minWidth: 240, fontSize: 14, color: "rgba(255,255,255,.9)", lineHeight: 1.6 }}>{cal.sentence}</div>
+          )}
         </div>
         {Object.keys(roundBands).length > 0 && (
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 18 }}>
@@ -2572,21 +2694,15 @@ function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
         )}
       </div>
 
-      <CalibrationBlock cal={cal} />
-
-      <DeliveryBlock delivery={d.delivery || {}} />
-
+      {/* ── The working, under the verdict: the evidence behind all of the above. ── */}
       <div className="mba-grid-3" style={{ marginBottom: 16 }}>{Object.entries(ss).map(([k, v]) => {
         const co = v >= 7 ? T.green : v >= 5 ? T.gold : T.red;
         return <div key={k} className={"mba-metric " + (v >= 7 ? "mba-metric-green" : v >= 5 ? "mba-metric-gold" : "mba-metric-red")}><div className="mba-metric-label">{pk(k)}</div><div className="mba-metric-value">{v}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle }}>/10</span></div><div className="mba-bar-track"><div className="mba-bar-fill" style={{ width: (v * 10) + "%", background: co }} /></div></div>;
       })}</div>
 
-      <div className="mba-grid-2" style={{ marginBottom: 16 }}>
-        <div className="vc" style={{ borderLeft: "3px solid " + T.green }}><div className="vc-h"><span className="vc-t" style={{ color: T.green }}>What went well</span></div><div className="vc-b">{(d.strengths || []).map((s, i) => <div key={i} style={{ fontSize: 13, lineHeight: 1.65, marginBottom: 8, paddingLeft: 14, borderLeft: "2px solid " + T.green }}>{s}</div>)}</div></div>
-        <div className="vc" style={{ borderLeft: "3px solid " + T.gold }}><div className="vc-h"><span className="vc-t" style={{ color: "#7a5e00" }}>Where to improve</span></div><div className="vc-b">{(d.gaps || []).map((g, i) => <div key={i} style={{ marginBottom: 12 }}><div style={{ fontSize: 13, lineHeight: 1.65, paddingLeft: 14, borderLeft: "2px solid " + T.gold }}>{g.gap}</div><div style={{ fontSize: 12, color: T.navy, fontWeight: 700, marginTop: 4, paddingLeft: 14 }}>Study: {g.upskillizeCourse}</div></div>)}</div></div>
-      </div>
+      <CalibrationBlock cal={cal} />
 
-      {d.star_breakdown?.length > 0 && <div className="vc" style={{ marginBottom: 16 }}><div className="vc-h"><span className="vc-t">Answer-by-answer analysis (STAR)</span></div><div className="vc-b">{d.star_breakdown.map((q, i) => <div key={i} style={{ marginBottom: 16, paddingBottom: 14, borderBottom: i < d.star_breakdown.length - 1 ? "1px solid " + T.border : "none" }}><div style={{ fontSize: 13, fontWeight: 700, color: T.navy, marginBottom: 8 }}>{q.question}</div><div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>{["situation","task","action","result"].map(key => { const val = q[key] || 0; return <span key={key} className={"mba-pill " + (val >= 2 ? "mba-pill-pass" : val === 1 ? "mba-pill-warn" : "mba-pill-fail")}>{key[0].toUpperCase()} {val}/2</span>; })}</div><div style={{ fontSize: 12, color: T.muted, fontStyle: "italic" }}>{q.note}</div></div>)}</div></div>}
+      {d.star_breakdown?.length > 0 &&<div className="vc" style={{ marginBottom: 16 }}><div className="vc-h"><span className="vc-t">Answer-by-answer analysis (STAR)</span></div><div className="vc-b">{d.star_breakdown.map((q, i) => <div key={i} style={{ marginBottom: 16, paddingBottom: 14, borderBottom: i < d.star_breakdown.length - 1 ? "1px solid " + T.border : "none" }}><div style={{ fontSize: 13, fontWeight: 700, color: T.navy, marginBottom: 8 }}>{q.question}</div><div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>{["situation","task","action","result"].map(key => { const val = q[key] || 0; return <span key={key} className={"mba-pill " + (val >= 2 ? "mba-pill-pass" : val === 1 ? "mba-pill-warn" : "mba-pill-fail")}>{key[0].toUpperCase()} {val}/2</span>; })}</div><div style={{ fontSize: 12, color: T.muted, fontStyle: "italic" }}>{q.note}</div></div>)}</div></div>}
 
       {d.interviewer_thoughts?.length > 0 && <div className="vc" style={{ marginBottom: 16, borderLeft: "3px solid " + T.navy }}><div className="vc-h"><span className="vc-t">What the interviewer was thinking</span></div><div className="vc-b">{d.interviewer_thoughts.map((t, i) => <div key={i} style={{ marginBottom: 12 }}><div style={{ fontSize: 11, color: T.subtle, textTransform: "uppercase" }}>Re: {t.answer}</div><div style={{ fontSize: 13, fontStyle: "italic", marginTop: 2, paddingLeft: 12, borderLeft: "2px solid " + T.navy }}>"{t.thought}"</div></div>)}</div></div>}
 
@@ -2749,7 +2865,7 @@ function HistoryDetail({ sessionId, onBack }) {
 
           {(d.strengths?.length > 0 || d.gaps?.length > 0) && (
             <div className="mba-grid-2" style={{ marginBottom: 16 }}>
-              {d.strengths?.length > 0 && <div className="vc" style={{ borderLeft: "3px solid " + T.green }}><div className="vc-h"><span className="vc-t" style={{ color: T.green }}>What went well</span></div><div className="vc-b">{d.strengths.map((x, i) => <div key={i} style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 6 }}>• {x}</div>)}</div></div>}
+              {d.strengths?.length > 0 && <div className="vc" style={{ borderLeft: "3px solid " + T.green }}><div className="vc-h"><span className="vc-t" style={{ color: T.green }}>What went well</span></div><div className="vc-b">{d.strengths.map(asStrength).map((x, i) => <div key={i} style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 6 }}>• {x.strength}</div>)}</div></div>}
               {d.gaps?.length > 0 && <div className="vc" style={{ borderLeft: "3px solid " + T.gold }}><div className="vc-h"><span className="vc-t" style={{ color: "#7a5e00" }}>Where to improve</span></div><div className="vc-b">{d.gaps.map((g, i) => <div key={i} style={{ marginBottom: 8 }}><div style={{ fontSize: 13 }}>{g.gap}</div>{g.upskillizeCourse && <div style={{ fontSize: 11, color: T.navy, fontWeight: 700, marginTop: 3 }}>Study: {g.upskillizeCourse}</div>}</div>)}</div></div>}
             </div>
           )}

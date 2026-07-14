@@ -394,6 +394,39 @@ def gate_round_scores(round_scores: dict, sub_stages: set) -> dict:
     return out
 
 
+def calibration_sentence(cal: dict) -> str:
+    """E6 — ONE sentence explaining the calibration delta, for the readiness-band block.
+
+    The delta is the distance between how good they THOUGHT an answer was and how good it
+    actually was, and that distance is a skill in itself: an interviewer can hear it. This
+    says what the two numbers mean and what to do about the gap. It is never a claim about
+    the person — it describes two numbers and the distance between them, nothing more.
+    """
+    cal = cal or {}
+    profile = cal.get("profile")
+    conf, score, delta = cal.get("avg_confidence"), cal.get("avg_score"), cal.get("calibration_delta")
+    if profile in (None, "insufficient_data") or conf is None or score is None or delta is None:
+        return ""
+    gap = abs(delta)
+    if profile == "over_confident":
+        return (
+            f"You rated your answers {gap} points above where they actually landed "
+            f"({conf}/5 against {score}/5) — so the work is not only the answers, it is "
+            f"catching yourself in the room when one is thinner than it feels."
+        )
+    if profile == "under_confident":
+        return (
+            f"You rated your answers {gap} points below where they actually landed "
+            f"({conf}/5 against {score}/5) — you are marking yourself down harder than we "
+            f"did, and an interviewer hears that discount before they hear the answer."
+        )
+    return (
+        f"Your ratings tracked your actual performance closely ({conf}/5 against "
+        f"{score}/5) — knowing what you know is worth as much in the room as the "
+        f"knowledge itself."
+    )
+
+
 def calibration_profile(pairs: list[tuple]) -> dict:
     """pairs: ordered list of (rating_or_None, score_1_5) for scored answers.
 
@@ -408,6 +441,7 @@ def calibration_profile(pairs: list[tuple]) -> dict:
             "calibration_delta": None,
             "per_answer": [],
             "rated_count": 0,
+            "sentence": "",
         }
 
     per_answer = []
@@ -436,7 +470,7 @@ def calibration_profile(pairs: list[tuple]) -> dict:
     else:
         profile = "over_confident"
 
-    return {
+    out = {
         "profile": profile,
         "avg_confidence": round(avg_conf, 1),
         "avg_score": round(avg_score, 1),
@@ -444,3 +478,5 @@ def calibration_profile(pairs: list[tuple]) -> dict:
         "per_answer": per_answer,
         "rated_count": n,
     }
+    out["sentence"] = calibration_sentence(out)
+    return out

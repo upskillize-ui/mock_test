@@ -236,7 +236,11 @@ class DebriefResponse(BaseModel):
     round_bands: dict
     one_line: str
     sub_scores: dict
-    strengths: list[str]
+    # E6: a strength is now {strength, evidence} — the mentor quotes them back to
+    # themselves. Sessions scored before that change hold plain strings, and history must
+    # keep rendering them, so both shapes are valid here.
+    strengths: list[dict | str]
+    # E6: {gap, cost, tryThisNextTime, upskillizeCourse}. Older rows lack the last two.
     gaps: list[dict]
     star_breakdown: list[dict]
     interviewer_thoughts: list[dict]
