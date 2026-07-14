@@ -18,20 +18,19 @@ import { useEffect, useRef, useState } from "react";
  * voice, size; optional difficulty ("Easy"|"Realistic"|"Stretch") and seed
  * (pass session_id).
  *
- * ASSETS: the portraits live in frontend/src/interviewers/.
- * NOTE — ananya_warm_human_female.png and kavya_composed_human_female.png are
- * NOT yet in the repo, so their roster rows are commented out (an unresolved
- * import is a hard Vite build failure). Drop the two PNGs in and uncomment the
- * import + the roster row to restore the full six.
+ * ASSETS: the portraits live in frontend/src/interviewers/. EVERY roster row below
+ * imports a file that is actually on disk — an unresolved import is a hard Vite build
+ * failure, so a character whose art has not landed must stay OUT of the roster, not sit
+ * in it hoping. (Ananya and Kavya were dropped at the design review; their replacements
+ * will arrive as full pose-grid characters and get added then.)
  */
 import priyaImg from "./interviewers/priya_warm_human_female.png";
-// import ananyaImg from "./interviewers/ananya_warm_human_female.png";   // TODO: art pending
-// import kavyaImg  from "./interviewers/kavya_composed_human_female.png"; // TODO: art pending
+import riyaImg from "./interviewers/riya_warm_human_female.png";
 import meeraImg from "./interviewers/meera_confident_human_female.png";
 import arjunImg from "./interviewers/arjun_warm_human_male.png";
 import vikramImg from "./interviewers/vikram_formal_human_male.png";
 
-import { choosePose, hasPoseSet, resolvePose, POSES } from "./posePolicy.js";
+import { choosePose, hasPoseSet, resolvePose, nextEmphasis, POSES } from "./posePolicy.js";
 
 // ── Pose set (four stills of the same person: listening / smile / intense / thinking).
 // FEATURE-DETECTED, never hard-imported: a missing file must not break the build, and a
@@ -84,8 +83,10 @@ const TEAL = "#00C4A0";
 
 const ROSTER = [
   { id: "priya", name: "Priya", img: priyaImg, voice: "female", temperaments: ["Easy", "Realistic"] },
-  // { id: "ananya", name: "Ananya", img: ananyaImg, voice: "female", temperaments: ["Easy"], objectPosition: "center 35%" },
-  // { id: "kavya",  name: "Kavya",  img: kavyaImg,  voice: "female", temperaments: ["Realistic", "Stretch"], objectPosition: "center 22%" },
+  // Riya is the first character with a full pose set on disk (listening / smile /
+  // intense / thinking). Her `img` is the base portrait, used only if a pose file is
+  // ever missing — POSE_MAP resolves the four frames at build time.
+  { id: "riya", name: "Riya", img: riyaImg, voice: "female", temperaments: ["Easy", "Realistic"] },
   { id: "meera", name: "Meera", img: meeraImg, voice: "female", temperaments: ["Realistic", "Stretch"] },
   { id: "arjun", name: "Arjun", img: arjunImg, voice: "male", temperaments: ["Easy", "Realistic"] },
   { id: "vikram", name: "Vikram", img: vikramImg, voice: "male", temperaments: ["Realistic", "Stretch"] },
@@ -216,7 +217,27 @@ export default function InterviewerCharacter({
   }, [c?.id]);
 
   const posed = hasPoseSet(POSE_MAP, c.id);
-  const pose = choosePose({ state, tone, escalationLevel, stage, difficulty, group });
+
+  // Emphasis: while she is speaking warmly or neutrally, a sustained loud passage brings
+  // the emphatic-gesture frame up and a settled voice drops it again. Driven by the REAL
+  // Bulbul amplitude, so the gesture lands on the words she actually stresses.
+  const [emphatic, setEmphatic] = useState(false);
+  const emphSwitchRef = useRef(0);
+  const emphasisEligible = posed && speaking && (tone === "warm" || tone === "neutral");
+  useEffect(() => {
+    if (!emphasisEligible) {
+      if (emphatic) { setEmphatic(false); emphSwitchRef.current = 0; }
+      return;
+    }
+    const now = performance.now();
+    const since = emphSwitchRef.current ? now - emphSwitchRef.current : Infinity;
+    const next = nextEmphasis(emphatic, amp, since);
+    if (next !== emphatic) { emphSwitchRef.current = now; setEmphatic(next); }
+  }, [amp, emphasisEligible, emphatic]);
+
+  const pose = (emphasisEligible && emphatic)
+    ? "intense"
+    : choosePose({ state, tone, escalationLevel, stage, difficulty, group });
   const src = resolvePose(POSE_MAP, c.id, pose, c.img);
 
   // Crossfade: two stacked layers, opacity only. Never a hard swap. Opacity fades are

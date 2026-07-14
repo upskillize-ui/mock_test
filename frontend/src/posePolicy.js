@@ -51,6 +51,30 @@ export function choosePose({
   return group % 2 === 0 ? "listening" : "smile";
 }
 
+// ── Emphasis (amplitude-driven) ──────────────────────────────────────────────
+// While the interviewer speaks warmly/neutrally, a loud, emphatic passage swaps in the
+// `intense` frame — the one where her hands are up mid-gesture — and it drops back when
+// her voice settles. The effect is that her hands move with her voice. Hysteresis (a
+// high ON threshold, a lower OFF threshold) plus a minimum hold stops the face
+// strobing on every syllable: the amplitude has to STAY up, not merely spike.
+export const EMPHASIS_ON = 0.65;
+export const EMPHASIS_OFF = 0.4;
+export const EMPHASIS_MIN_HOLD_MS = 1500;
+
+/**
+ * nextEmphasis — should the emphatic frame be showing on the next tick?
+ *
+ * @param emphatic      is it showing right now?
+ * @param amp           current TTS amplitude, 0..1
+ * @param msSinceSwitch ms since the last switch (Infinity if we've never switched)
+ */
+export function nextEmphasis(emphatic, amp, msSinceSwitch) {
+  if (!(msSinceSwitch >= EMPHASIS_MIN_HOLD_MS)) return emphatic;   // too soon; also guards NaN
+  if (!emphatic && amp > EMPHASIS_ON) return true;
+  if (emphatic && amp < EMPHASIS_OFF) return false;
+  return emphatic;
+}
+
 /** True only when EVERY pose exists for this character (robots / un-regenerated humans false). */
 export function hasPoseSet(poseMap, characterId) {
   if (!poseMap || !characterId) return false;

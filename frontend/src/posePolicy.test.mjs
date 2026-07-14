@@ -6,7 +6,10 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { choosePose, hasPoseSet, resolvePose, POSES } from "./posePolicy.js";
+import {
+  choosePose, hasPoseSet, resolvePose, nextEmphasis, POSES,
+  EMPHASIS_ON, EMPHASIS_OFF, EMPHASIS_MIN_HOLD_MS,
+} from "./posePolicy.js";
 
 const FULL_SET = {
   priya_listening: "L.png",
@@ -84,4 +87,32 @@ test("without a tone hint: greeting/warm-up smiles, Stretch leans in", () => {
   assert.equal(choosePose({ state: "speaking", stage: "CASE", difficulty: "Stretch" }), "intense");
   // Ordinary round, no hint -> alternate rather than freeze.
   assert.equal(choosePose({ state: "speaking", stage: "DOMAIN", difficulty: "Realistic", group: 0 }), "listening");
+});
+
+// ── Emphasis: her hands move with her voice ───────────────────────────────
+// The whole point of the hysteresis is that a single loud syllable must NOT flip the
+// face, and a brief dip mid-sentence must NOT drop the gesture.
+
+test("a sustained loud passage raises the emphatic frame; a settled voice drops it", () => {
+  const long = EMPHASIS_MIN_HOLD_MS + 1;
+  assert.equal(nextEmphasis(false, 0.9, long), true);    // loud -> gesture up
+  assert.equal(nextEmphasis(true, 0.2, long), false);    // settled -> gesture down
+});
+
+test("between the thresholds nothing changes — no strobing on ordinary speech", () => {
+  const long = EMPHASIS_MIN_HOLD_MS + 1;
+  const mid = (EMPHASIS_ON + EMPHASIS_OFF) / 2;          // 0.525: above OFF, below ON
+  assert.equal(nextEmphasis(false, mid, long), false);   // not loud enough to raise
+  assert.equal(nextEmphasis(true, mid, long), true);     // not quiet enough to drop
+  // Exactly ON/OFF are not crossings — the amplitude must pass them.
+  assert.equal(nextEmphasis(false, EMPHASIS_ON, long), false);
+  assert.equal(nextEmphasis(true, EMPHASIS_OFF, long), true);
+});
+
+test("a switch is held for at least 1.5s, however the amplitude swings", () => {
+  assert.equal(nextEmphasis(false, 1.0, 0), false);                       // just switched
+  assert.equal(nextEmphasis(false, 1.0, EMPHASIS_MIN_HOLD_MS - 1), false);
+  assert.equal(nextEmphasis(true, 0.0, EMPHASIS_MIN_HOLD_MS - 1), true);
+  // First frame of a reply: nothing has switched yet, so the gesture may fire at once.
+  assert.equal(nextEmphasis(false, 0.9, Infinity), true);
 });
