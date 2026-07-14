@@ -180,10 +180,11 @@ def camera_grace_expired(seconds_camera_off) -> bool:
 def is_abandonment(seconds_since_question, mic_live: bool, typed_chars: int = 0) -> bool:
     """Abandonment = an answer is due and BOTH channels have been silent for 90s.
 
-    `mic_live` is True when the mic could actually capture (unmuted AND consented) —
-    muting is the candidate's right, so a MUTED mic with typing is not abandonment, and
-    neither is a live mic (they may simply be thinking; the per-question clock handles
-    that, and it ends in a skip, not a wrap). Only the total dead end wraps.
+    `mic_live` is True when the mic is UNMUTED — i.e. the candidate is still holding the
+    channel open. Muting is their right, so a muted candidate who is typing is not
+    abandoning; and neither is an unmuted candidate sitting quiet (they may simply be
+    thinking, which is the per-question clock's business, and that ends in a skip and the
+    next question — never in ending the session). Only the total dead end wraps.
     """
     if mic_live or int(typed_chars or 0) > 0:
         return False

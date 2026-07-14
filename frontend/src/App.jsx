@@ -6,6 +6,11 @@ import InterviewerCharacter, {
 } from "./InterviewerCharacter.jsx";
 import Lobby from "./Lobby.jsx";
 import { startFocusMonitor } from "./focusMonitor.js";
+import {
+  questionSeconds, expiryAction, shouldArmAbandon, SKIP_MARKER,
+  QUESTION_WARN_SECONDS, CAMERA_GRACE_MS, SILENT_ABANDON_MS,
+  WRAP_CAMERA_OFF, WRAP_NO_ANSWER, WRAP_SESSION_TIME_UP,
+} from "./roomPolicy.js";
 
 // Realism v2: spoken confidence rating. Accepts digits, English words, Hinglish
 // numerals, and an explicit "prefer not to say".
@@ -72,7 +77,10 @@ async function fetchAudioObjectUrl(path) {
 }
 
 const startSession = (c) => api("/session/start", { method: "POST", body: JSON.stringify(c) });
-const sendTurn = (sid, msg, stage, voice, deliveryMetrics) => api("/session/turn", { method: "POST", body: JSON.stringify({ session_id: sid, message: msg, stage, voice, delivery_metrics: deliveryMetrics || null }) });
+// `timeout` (E7.7) is set only when the per-question clock forced this turn:
+// "partial" — we cut them off and are submitting what we captured; "skip" — nothing was
+// captured, and the server writes the marker itself (we send no text for it).
+const sendTurn = (sid, msg, stage, voice, deliveryMetrics, timeout) => api("/session/turn", { method: "POST", body: JSON.stringify({ session_id: sid, message: msg, stage, voice, delivery_metrics: deliveryMetrics || null, timeout: timeout || null }) });
 const submitRating = (sid, answerId, rating) => api("/session/turn/rating", { method: "POST", body: JSON.stringify({ session_id: sid, answer_id: answerId, rating }) });
 // Realism v2: transcription failed -> IQ says so in character and the mic reopens.
 // Consumes NO question slot (the backend inserts no message and changes no state).
@@ -1099,7 +1107,7 @@ function TranscriptDrawer({ open, onClose, messages, name, onEditLast, editBusy 
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 3 }}>
                     {m.meta && (
                       <span style={{ fontSize: 10, color: T.subtle, fontFamily: IQ.mono }}>
-                        {m.meta === "SPOKEN" ? "Spoken" : "Typed"}
+                        {m.meta === "SPOKEN" ? "Spoken" : m.meta === "SKIPPED" ? "Time ran out" : "Typed"}
                       </span>
                     )}
                     {isLastAnswer && (
@@ -1252,6 +1260,23 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
     if (!startedAt) return total;
     return Math.max(0, total - Math.floor((Date.now() - startedAt) / 1000));
   });
+  // ── E7.7: the per-question clock ──
+  // Every question carries its own budget, and it is ALWAYS on screen — a clock the
+  // candidate cannot see is a trap. When it runs out, something always happens: whatever
+  // they got out is submitted, or the question is skipped and the interview moves on.
+  // The mic never sits waiting on a question whose time is gone.
+  const [qLeft, setQLeft] = useState(null);      // seconds left; null = no clock running
+  const qDeadlineRef = useRef(0);                // absolute ms deadline
+  const qKeyRef = useRef("");                    // the question that deadline belongs to
+  const expiredForRef = useRef("");              // the question we have already expired
+  const timeoutPendingRef = useRef(false);       // a capture the clock cut off -> "partial"
+  const expireRef = useRef(null);
+  // Device policy (Phase E): the two clocks the meetroom sprint left open.
+  const abandonRef = useRef(null);               // 90s both-channels-silent
+  const abandonedRef = useRef(false);            // fire once per session, never twice
+  const cameraGraceRef = useRef(null);           // 60s camera grace
+  const endedRef = useRef(false);                // read by the capture's async onstop
+
   const [sstate, setSstate] = useState(initialState || null);
   const [ratingBusy, setRatingBusy] = useState(false);
   const [ended, setEnded] = useState(false);
@@ -1264,7 +1289,20 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
   const uc = messages.filter(m => m.role === "user").length;
 
   useEffect(() => { if (secondsLeft <= 0 || ended) return; const t = setInterval(() => setSecondsLeft(s => s - 1), 1000); return () => clearInterval(t); }, [secondsLeft, ended]);
-  useEffect(() => { if (secondsLeft <= 0 && !ended && !loading) { setEnded(true); if (uc > 0) onEnd(); } }, [secondsLeft, ended, loading, uc, onEnd]);
+  // E7.7 — the SESSION clock expiring is an EARLY WRAP, not a dead screen. We wrap
+  // server-side (so a refresh cannot dodge it) and go straight to the readout, which
+  // scores what actually happened. A session where nothing was answered gets a real,
+  // honest readout that says so — it no longer parks the learner on "no answers given"
+  // with a Try Again button and no record of the attempt. We wait out an in-flight turn
+  // (!loading) so the wrap can never race the stage machine.
+  useEffect(() => {
+    if (secondsLeft > 0 || ended || loading) return;
+    endedRef.current = true;                   // set before we stop the mic: the capture's
+    setEnded(true);                            // onstop must know the session is over
+    clearGrace();                              // no "Listening in 0.4s…" on a dead clock
+    if (recordingRef.current) stopRecording();
+    (async () => { await doEarlyWrap(WRAP_SESSION_TIME_UP); onEnd(); })();
+  }, [secondsLeft, ended, loading]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, loading, awaitingRating]);
 
   // Backend is the source of truth: when it reports the interview is done, move to the readout.
@@ -1451,6 +1489,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
   useEffect(() => { typedInVoiceRef.current = typeOpen; }, [typeOpen]);
   useEffect(() => { awaitingRatingRef.current = awaitingRating; }, [awaitingRating]);
   useEffect(() => { ratingPillsRef.current = ratingPills; }, [ratingPills]);
+  useEffect(() => { endedRef.current = ended; }, [ended]);
   // The transcript drawer auto-opens at the readout. (It no longer force-opens at the
   // rating, because the rating is now ASKED ALOUD and answered by voice.)
   useEffect(() => {
@@ -1686,6 +1725,9 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
   const finishRecording = async (mimeType) => {
     stopMediaStream();
     const chunks = recChunksRef.current; recChunksRef.current = [];
+    // The session clock died while they were still talking. Their words can no longer
+    // become a turn, so we do not upload them, and IQ does not pipe up after the wrap.
+    if (endedRef.current) { timeoutPendingRef.current = false; return; }
     if (!chunks.length) { voiceFallback(); return; }
     const type = mimeType || "audio/webm";
     const blob = new Blob(chunks, { type });
@@ -1693,6 +1735,17 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
     const durationSeconds = recStartRef.current ? (Date.now() - recStartRef.current) / 1000 : 0;
     // A rating capture is NOT an answer — it never becomes a turn.
     const isRating = ratingListeningRef.current;
+    // E7.7: the per-question clock cut this capture off. Whatever it heard is their
+    // answer — a partial one — and it gets submitted rather than thrown away. The flag is
+    // consumed here so a later, ordinary recording can never inherit it.
+    const forcedTimeout = timeoutPendingRef.current;
+    timeoutPendingRef.current = false;
+    // The clock ran out and the capture yielded nothing usable: fall back to a typed
+    // draft if one is sitting there, else skip the question. Never a dead end.
+    const submitExpiry = () => {
+      const { timeout, text } = expiryAction({ draft: inputRef.current?.value || "" });
+      send(text, { timeout });
+    };
     setTranscribing(true); transcribingRef.current = true;
     try {
       const res = await sttTranscribe(sessionId, blob, `answer.${ext}`, durationSeconds);
@@ -1712,7 +1765,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
         // Phase 3: mark this answer as SPOKEN and stash its delivery metrics for Send.
         answeredByVoiceRef.current = true;
         pendingDeliveryRef.current = res.delivery_metrics || null;
-        if (voiceModeRef.current) {
+        if (forcedTimeout) {
+          // Cut off mid-answer: submit what they DID get out. The interviewer responds to
+          // an incomplete answer in persona — it is never silently dropped.
+          flashHeard(transcript);
+          send(transcript.slice(0, 4000), { timeout: "partial" });
+        } else if (voiceModeRef.current) {
           // INSTANT FLOW: no review card, no Send. Flash what we heard and submit now;
           // the answer is correctable afterwards from the transcript drawer.
           flashHeard(transcript);
@@ -1722,11 +1780,14 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
           setInput(prev => ((prev ? prev.trimEnd() + " " : "") + transcript).slice(0, 4000));
           setTimeout(() => inputRef.current?.focus(), 50);
         }
+      } else if (forcedTimeout) {
+        submitExpiry();
       } else {
         await handleSttFailure();
       }
     } catch {
       if (isRating) failRatingToPills();
+      else if (forcedTimeout) submitExpiry();
       else await handleSttFailure();
     } finally { setTranscribing(false); transcribingRef.current = false; }
   };
@@ -1776,6 +1837,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
   // unmutes anyone.
   const clearMuteFork = () => {
     if (muteForkRef.current) { clearTimeout(muteForkRef.current); muteForkRef.current = null; }
+  };
+  const clearAbandon = () => {
+    if (abandonRef.current) { clearTimeout(abandonRef.current); abandonRef.current = null; }
+  };
+  const clearCameraGrace = () => {
+    if (cameraGraceRef.current) { clearTimeout(cameraGraceRef.current); cameraGraceRef.current = null; }
   };
   const questionKey = `${sstate?.current_stage || ""}|${sstate?.round_index ?? 0}|${sstate?.answer_count ?? 0}`;
   useEffect(() => {
@@ -1836,6 +1903,95 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
     } catch { /* noop */ }
   };
 
+  // ══ THE ROOM'S CLOCKS ═════════════════════════════════════════════════════
+  // The answer window is open once the interviewer has stopped talking and it is
+  // genuinely the candidate's turn. That is when a question's clock starts — never while
+  // IQ is still asking, and never while a rating is due.
+  const answerWindowOpen = canAnswer && !loading && !audioPlaying && !transcribing
+    && !ended && secondsLeft > 0;
+
+  // ── E7.7: the per-question clock ──
+  // The deadline is stamped ONCE per question and is absolute, so a re-render, a replayed
+  // question or a mute nudge can't quietly hand them extra time.
+  useEffect(() => {
+    if (!answerWindowOpen || qKeyRef.current === questionKey) return;
+    qKeyRef.current = questionKey;
+    const budget = questionSeconds(sstate?.current_stage);
+    qDeadlineRef.current = Date.now() + budget * 1000;
+    setQLeft(budget);
+  }, [answerWindowOpen, questionKey, sstate?.current_stage]);
+
+  useEffect(() => {
+    if (!answerWindowOpen || qKeyRef.current !== questionKey) { setQLeft(null); return; }
+    const tick = () => {
+      const left = Math.ceil((qDeadlineRef.current - Date.now()) / 1000);
+      setQLeft(Math.max(0, left));
+      if (left <= 0) expireRef.current?.();
+    };
+    tick();
+    const t = setInterval(tick, 500);
+    return () => clearInterval(t);
+  }, [answerWindowOpen, questionKey]);
+
+  // Expiry. Exactly two outcomes, and neither of them is a dead end: submit what they
+  // got out, or skip the question and let the interviewer move the interview on. The
+  // "waiting for an answer that can no longer be given" state is gone.
+  const expireQuestion = () => {
+    if (expiredForRef.current === questionKey) return;   // once per question, ever
+    expiredForRef.current = questionKey;
+    clearGrace();          // the mic must never sit counting into a question that is over
+    clearMuteFork();
+    clearAbandon();
+    if (recordingRef.current || transcribingRef.current) {
+      // A capture is in flight. Let it land: finishRecording submits whatever it heard as
+      // the partial answer (and skips only if it heard nothing at all).
+      timeoutPendingRef.current = true;
+      if (recordingRef.current) stopRecording();
+      return;
+    }
+    const { timeout, text } = expiryAction({ draft: input });
+    send(text, { timeout });
+  };
+  useEffect(() => { expireRef.current = expireQuestion; });
+
+  // ── Device policy: 90s of two dead channels is abandonment ──
+  // Muted mic AND an empty composer, with an answer due. An unmuted candidate sitting
+  // quiet is thinking (that is the per-question clock's business, and it ends in a skip);
+  // a muted candidate who is typing is answering. Only the total dead end wraps, once.
+  useEffect(() => {
+    clearAbandon();
+    if (abandonedRef.current) return;
+    if (!shouldArmAbandon({
+      inRoom: voiceMode, answerDue: answerWindowOpen, micOn, typedChars: input.trim().length,
+    })) return;
+    abandonRef.current = setTimeout(() => {
+      abandonedRef.current = true;
+      // The server persists the wrap; its state comes back with next_action "readout",
+      // and the effect above routes us to the scored readout.
+      doEarlyWrap(WRAP_NO_ANSWER);
+    }, SILENT_ABANDON_MS);
+    return clearAbandon;
+  }, [voiceMode, answerWindowOpen, micOn, input, questionKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Device policy: the 60s camera grace ──
+  // Turn the camera back on inside the grace and NOTHING escalates — it is a real second
+  // chance, not a countdown. Let it lapse with the camera still off and we report it
+  // again, which walks the server's ladder one rung (nudge -> warn -> wrap). The server
+  // owns the ladder and the wrap decision; all we own here is the clock.
+  useEffect(() => {
+    clearCameraGrace();
+    if (!config.camera || camOn || ended) return;   // a camera-off JOIN is never policed
+    const stillOff = async () => {
+      try {
+        const r = await postFocusEvent(sessionId, "camera_off");
+        if (r?.device_action === "wrap") { await doEarlyWrap(WRAP_CAMERA_OFF); return; }
+      } catch { /* a dropped signal must never break the interview */ }
+      cameraGraceRef.current = setTimeout(stillOff, CAMERA_GRACE_MS);
+    };
+    cameraGraceRef.current = setTimeout(stillOff, CAMERA_GRACE_MS);
+    return clearCameraGrace;
+  }, [camOn, ended, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Esc: cancel the auto-listen beat, else stop an in-flight recording.
   useEffect(() => {
     const onKey = (e) => {
@@ -1866,6 +2022,9 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
     if (graceRafRef.current) cancelAnimationFrame(graceRafRef.current);
     if (heardTimerRef.current) clearTimeout(heardTimerRef.current);
     if (ratingSilenceRef.current) clearTimeout(ratingSilenceRef.current);
+    if (muteForkRef.current) clearTimeout(muteForkRef.current);
+    if (abandonRef.current) clearTimeout(abandonRef.current);
+    if (cameraGraceRef.current) clearTimeout(cameraGraceRef.current);
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     recordingRef.current = false;
     const ctx = audioCtxRef.current;
@@ -1884,18 +2043,24 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
     }
   }, [sstate]);
 
-  const send = async (overrideText) => {
+  const send = async (overrideText, opts = {}) => {
     // overrideText comes from the Voice Stage review card; otherwise use the composer.
+    // `opts.timeout` (E7.7) is set only when the per-question clock forced this turn.
+    const timeout = opts.timeout || null;
     const textVal = (overrideText !== undefined ? overrideText : input).trim();
-    if (!textVal || loading || ended || awaitingRating) return;
+    if (loading || ended || awaitingRating) return;
+    // A skip is the ONE turn allowed to carry no text — the server writes the marker.
+    if (!textVal && timeout !== "skip") return;
     // Phase 3: this answer is SPOKEN if it came from the mic, else TYPED. Consume the
-    // pending metrics/flag so a later typed answer doesn't inherit them.
-    const spoken = answeredByVoiceRef.current;
+    // pending metrics/flag so a later typed answer doesn't inherit them. A skip has no
+    // recording behind it, so it is neither.
+    const skipped = timeout === "skip";
+    const spoken = !skipped && answeredByVoiceRef.current;
     const metrics = pendingDeliveryRef.current;
     answeredByVoiceRef.current = false; pendingDeliveryRef.current = null;
-    setMessages(m => [...m, { role: "user", content: textVal, meta: spoken ? "SPOKEN" : "TYPED" }]); setInput(""); setLoading(true); setError(null);
+    setMessages(m => [...m, { role: "user", content: skipped ? SKIP_MARKER : textVal, meta: skipped ? "SKIPPED" : spoken ? "SPOKEN" : "TYPED" }]); setInput(""); setLoading(true); setError(null);
     try {
-      const res = await sendTurn(sessionId, textVal, sstate?.current_stage, voicePref || "female", spoken ? metrics : null);
+      const res = await sendTurn(sessionId, textVal, sstate?.current_stage, voicePref || "female", spoken ? metrics : null, timeout);
       setMessages(m => [...m, { role: "assistant", content: res.reply, audio_url: res.audio_url, audio_segments: res.audio_segments || [] }]);
       setSstate(res.state);
       // Realism v2: if this answer is rating-gated, IQ asks for the rating ALOUD once
@@ -2035,6 +2200,15 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
             <span className="iq-hud-stage-dot" />
             <span className="iq-hud-stage-label">{stageLabel}</span>
           </span>
+          {/* E7.7: the clock on THIS question. Always visible while it runs — a countdown
+              the candidate cannot see is a trap, and when it hits zero we submit what they
+              have or move on, so it is never a cliff either. */}
+          {qLeft != null && (
+            <span aria-live="off" title="Time left on this question"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 10, padding: "2px 10px", borderRadius: 999, background: "rgba(255,255,255,0.10)", fontFamily: IQ.mono, fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", fontVariantNumeric: "tabular-nums", color: qLeft <= 10 ? "#ff6b6b" : qLeft <= QUESTION_WARN_SECONDS ? T.gold : "rgba(255,255,255,.75)" }}>
+              This question {mmss(qLeft)}
+            </span>
+          )}
           {/* On the stage the ORB is the state indicator, so the chip is removed there. */}
           {!voiceMode && voiceChip && (
             <span aria-live="polite" style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 10, padding: "2px 10px", borderRadius: 999, background: "rgba(255,255,255,0.10)", fontFamily: IQ.mono, fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", color: "#fff" }}>
@@ -2097,14 +2271,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
                 )}
                 {error && <div style={{ padding: "10px 14px", borderRadius: 8, background: "rgba(232,82,26,.16)", color: "#ffbda6", fontSize: 13, textAlign: "center" }}>{error}</div>}
                 {sttToast && <div style={{ fontSize: 12, color: IQ.orange, fontWeight: 700 }}>{sttToast}</div>}
+                {/* The session clock ran out. There is no "no answers given" cul-de-sac
+                    any more: we wrap the interview server-side and score what happened,
+                    however little of it there was. */}
                 {secondsLeft <= 0 && (
-                  <div style={{ color: "rgba(255,255,255,.85)", fontSize: 14, textAlign: "center" }}>
-                    {uc > 0 ? <span style={{ fontWeight: 700 }}>Time is up. Generating your report...</span> : (
-                      <div>
-                        <div style={{ fontWeight: 700, marginBottom: 10 }}>Time is up. No answers given.</div>
-                        <button onClick={onRestart} className="iq-ghostbtn">Try Again</button>
-                      </div>
-                    )}
+                  <div style={{ color: "rgba(255,255,255,.85)", fontSize: 14, textAlign: "center", fontWeight: 700 }}>
+                    That's time — wrapping up. Generating your report...
                   </div>
                 )}
               </div>
@@ -2207,7 +2379,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
               <div className={speaking ? "iq-avatar-speaking" : ""} style={{ width: 32, height: 32, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: isV ? T.navy : T.border, color: isV ? "#fff" : T.navy, fontWeight: 800, fontSize: 11 }}>{isV ? "IQ" : (config.name?.[0]?.toUpperCase() || "Y")}</div>
               <div style={{ display: "flex", flexDirection: "column", alignItems: isV ? "flex-start" : "flex-end", maxWidth: "78%" }}>
                 <div style={{ padding: "12px 16px", borderRadius: isV ? "2px 12px 12px 12px" : "12px 2px 12px 12px", fontSize: 14, lineHeight: 1.65, background: isV ? T.white : T.navy, color: isV ? T.text : "#fff", border: isV ? "1px solid " + T.border : "none", fontFamily: T.font }}>{isV ? renderMd(m.content) : m.content}</div>
-                {!isV && m.meta && <span style={{ fontSize: 10, color: T.subtle, marginTop: 3, fontFamily: IQ.mono, letterSpacing: "0.05em" }}>{m.meta === "SPOKEN" ? "Spoken" : "Typed"}</span>}
+                {!isV && m.meta && <span style={{ fontSize: 10, color: T.subtle, marginTop: 3, fontFamily: IQ.mono, letterSpacing: "0.05em" }}>{m.meta === "SPOKEN" ? "Spoken" : m.meta === "SKIPPED" ? "Time ran out" : "Typed"}</span>}
               </div>
             </div>); })}
           {loading && <div style={{ display: "flex", gap: 10 }}><div style={{ width: 32, height: 32, borderRadius: "50%", background: T.navy, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ color: "#fff", fontWeight: 800, fontSize: 11 }}>IQ</span></div><div style={{ padding: "14px 18px", borderRadius: "2px 12px 12px 12px", background: T.white, border: "1px solid " + T.border }}><div style={{ display: "flex", gap: 5 }}>{[0,1,2].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: T.subtle, animation: "iqPulse 1.2s ease-in-out infinite", animationDelay: i * 0.15 + "s" }} />)}</div></div></div>}
@@ -2219,7 +2391,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingAudioUrl, greeti
           {awaitingRating && !loading && <RatingWidget busy={ratingBusy} onRate={rate} />}
           {reverseMode && !loading && <div style={{ padding: "12px 16px", borderRadius: 10, background: IQ.cream, border: "1px solid " + IQ.gold, color: "#5a4500", fontSize: 13, fontWeight: 600, fontFamily: IQ.sans }}>Your turn to interview us. Ask us two questions.</div>}
           {error && <div style={{ padding: "10px 14px", borderRadius: 8, background: T.redSoft, color: T.red, fontSize: 13 }}>{error}</div>}
-          {secondsLeft <= 0 && <div style={{ padding: "14px 18px", borderRadius: 8, background: T.bg, border: "1px solid " + T.border, textAlign: "center", fontSize: 14, color: T.muted }}>{uc > 0 ? <span style={{ fontWeight: 700 }}>Time is up. Generating your report...</span> : <div><div style={{ fontWeight: 700, marginBottom: 8 }}>Time is up. No answers given.</div><button onClick={onRestart} className="vbtn" style={{ width: "auto", display: "inline-flex", fontSize: 13, padding: "8px 20px" }}>Try Again</button></div>}</div>}
+          {secondsLeft <= 0 && <div style={{ padding: "14px 18px", borderRadius: 8, background: T.bg, border: "1px solid " + T.border, textAlign: "center", fontSize: 14, color: T.muted }}><span style={{ fontWeight: 700 }}>That&apos;s time — wrapping up. Generating your report...</span></div>}
           {ended && uc === 0 && secondsLeft > 0 && <div style={{ padding: "14px 18px", borderRadius: 8, background: T.bg, border: "1px solid " + T.border, textAlign: "center" }}><div style={{ fontWeight: 700, marginBottom: 8, color: T.muted }}>Session ended.</div><button onClick={onRestart} className="vbtn" style={{ width: "auto", display: "inline-flex", fontSize: 13, padding: "8px 20px" }}>Start New Session</button></div>}
         </div>
       </div>

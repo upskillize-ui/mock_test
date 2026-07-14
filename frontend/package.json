@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:poses": "node --test src/posePolicy.test.mjs"
+    "test": "node --test src/*.test.mjs",
+    "test:poses": "node --test src/posePolicy.test.mjs",
+    "test:room": "node --test src/roomPolicy.test.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",
