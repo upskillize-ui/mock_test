@@ -1,34 +1,39 @@
 import { useEffect, useRef, useState } from "react";
 
 /**
- * InterviewerCharacter — InterviewIQ voice stage (v4.2, Indian human roster)
+ * InterviewerCharacter — InterviewIQ voice stage (v4.3, VECTORBOTS ONLY)
  * ──────────────────────────────────────────────────────────────────────────
- * SIX photoreal Indian professional interviewers (Canva-generated).
- * Selection filters by voice + difficulty, seeded by the session id —
- * random-feeling across sessions, stable across a refresh.
+ * Founder decision: the active roster is TWO animated androids — Nova (male)
+ * and Nia (female) — both rendered by RobotInterviewer via its `variant` prop.
+ * Both are eligible for every difficulty, Critical included.
  *
- * Expression system (video-call treatment, no face manipulation):
- *   SPEAKING  — card frame glows + a live waveform badge pulses under the
- *               portrait, driven by the REAL Bulbul amplitude
- *   THINKING  — teal arc rotates around the card
- *   LISTENING — soft pulse ring + slight lean-in
- *   IDLE      — calm resting card
+ * The photo-character machinery below (the roster `img`/`temperaments` shape,
+ * POSE_MAP glob, resolvePose, the amplitude-driven emphasis and the opacity
+ * crossfade) is KEPT INTACT but DORMANT: no photo rows sit in the roster today,
+ * so none of it renders. The pose/portrait PNGs stay on disk — the glob
+ * tolerates the extra files — and a future photo character lights up the whole
+ * path again the moment a `{ kind:"human", img, temperaments }` row returns.
+ *
+ * Expression system:
+ *   • kind:"vectorbot" — RobotInterviewer draws inside the same tile chrome
+ *     (card glow, name chip, thinking arc, listening ring). Its LED-waveform
+ *     mouth rides the SAME live Bulbul amplitude the pose badge used; the
+ *     server's tone_hint flows into its `tone` prop (brows/eyes/rest-mouth).
+ *   • kind:"human" (dormant) — video-call treatment, no face manipulation:
+ *     SPEAKING glows + a waveform badge pulses; THINKING a teal arc; LISTENING
+ *     a pulse ring + lean-in; IDLE a calm card. Poses crossfade; never a mouth
+ *     animated on a photograph.
  *
  * CONTRACT: named exports wireTtsAnalyser / resumeTtsAnalyser; props state,
- * voice, size; optional difficulty ("Easy"|"Realistic"|"Stretch") and seed
- * (pass session_id).
+ * voice, size; optional difficulty ("Easy"|"Realistic"|"Stretch"|"Critical"),
+ * seed (pass session_id), and tone (the server tone_hint).
  *
- * ASSETS: the portraits live in frontend/src/interviewers/. EVERY roster row below
- * imports a file that is actually on disk — an unresolved import is a hard Vite build
- * failure, so a character whose art has not landed must stay OUT of the roster, not sit
- * in it hoping. (Ananya and Kavya were dropped at the design review; their replacements
- * will arrive as full pose-grid characters and get added then.)
+ * ASSETS: photo portraits live in frontend/src/interviewers/. A human roster row
+ * must import a file that is actually on disk — an unresolved import is a hard
+ * Vite build failure. Vectorbot rows import nothing (they draw as SVG), so the
+ * photo imports are gone until a photo row returns.
  */
-import priyaImg from "./interviewers/priya_warm_human_female.png";
-import riyaImg from "./interviewers/riya_warm_human_female.png";
-import meeraImg from "./interviewers/meera_confident_human_female.png";
-import arjunImg from "./interviewers/arjun_warm_human_male.png";
-import vikramImg from "./interviewers/vikram_formal_human_male.png";
+import RobotInterviewer from "./RobotInterviewer.jsx";
 
 import {
   choosePose, hasPoseSet, resolvePose, nextEmphasis, weightedPool, POSES,
@@ -83,19 +88,16 @@ export function resumeTtsAnalyser() {
 // ── The roster ────────────────────────────────────────────────────────────
 const TEAL = "#00C4A0";
 
-// `temperaments` gates who can run which difficulty. Critical (the pressure panel) is
-// deliberately drawn from the characters who have an `intense` pose on disk — the mode's
-// whole face is that frame, and a character without it would run the pressure panel
-// smiling. Riya carries it today; the rest join as their pose grids land.
+// VECTORBOTS ONLY. Two animated androids, one per voice, each rendered by
+// RobotInterviewer via `variant`. A vectorbot carries no `temperaments` list —
+// it is eligible for EVERY difficulty, Critical included (its face hardens from
+// the server's tone_hint, not from an `intense` pose on disk). See eligibleFor.
+//
+// A future photo character re-enters as a `kind:"human"` row with an `img` import
+// and a `temperaments` gate; the pose engine below is kept intact for exactly that.
 const ROSTER = [
-  { id: "priya", name: "Priya", img: priyaImg, voice: "female", temperaments: ["Easy", "Realistic"] },
-  // Riya is the first character with a full pose set on disk (listening / smile /
-  // intense / thinking). Her `img` is the base portrait, used only if a pose file is
-  // ever missing — POSE_MAP resolves the four frames at build time.
-  { id: "riya", name: "Riya", img: riyaImg, voice: "female", temperaments: ["Easy", "Realistic", "Critical"] },
-  { id: "meera", name: "Meera", img: meeraImg, voice: "female", temperaments: ["Realistic", "Stretch", "Critical"] },
-  { id: "arjun", name: "Arjun", img: arjunImg, voice: "male", temperaments: ["Easy", "Realistic"] },
-  { id: "vikram", name: "Vikram", img: vikramImg, voice: "male", temperaments: ["Realistic", "Stretch", "Critical"] },
+  { id: "nova", name: "Nova", kind: "vectorbot", voice: "male", variant: "nova" },
+  { id: "nia", name: "Nia", kind: "vectorbot", voice: "female", variant: "nia" },
 ];
 
 function hashSeed(s) {
@@ -105,8 +107,13 @@ function hashSeed(s) {
   return Math.abs(h);
 }
 
+// A row with no `temperaments` (every vectorbot) is eligible for ANY difficulty;
+// a photo row is gated by its list. Keeps the founder's roster entries verbatim
+// while honouring "both eligible for ALL difficulties, Critical included."
+const eligibleFor = (c, difficulty) => !c.temperaments || c.temperaments.includes(difficulty);
+
 export function pickInterviewer(voice = "female", difficulty = "Realistic", seed) {
-  let pool = ROSTER.filter(c => c.voice === voice && c.temperaments.includes(difficulty));
+  let pool = ROSTER.filter(c => c.voice === voice && eligibleFor(c, difficulty));
   if (!pool.length) pool = ROSTER.filter(c => c.voice === voice);
   if (!pool.length) pool = ROSTER;
   // Posed characters are weighted up until the whole cast has pose grids — otherwise the
@@ -266,6 +273,7 @@ export default function InterviewerCharacter({
   const W = size;
   const H = Math.round(size * 1.25);
   const level = speaking ? Math.max(0.12, amp) : 0;
+  const isBot = c.kind === "vectorbot";
   const stateClass = speaking ? " iqv4--speaking" : listening ? " iqv4--listening" : "";
   // A shared object-position per character keeps the face anchored across fades — the
   // poses are cropped quadrants, so framing can shift a little between them.
@@ -290,22 +298,34 @@ export default function InterviewerCharacter({
       {listening && <div className="iqv4-ring iqv4-ring--listen" />}
 
       <div className="iqv4-card" style={{ width: W, height: H }}>
-        {/* Two stacked layers, opacity crossfade — never a hard swap. With no pose set
-            (robots / art pending) both layers hold the same single portrait and this
-            costs nothing. */}
-        <img className="iqv4-pose" src={front} alt="" draggable="false"
-          style={{ ...anchor, opacity: fading ? 0 : 1 }} />
-        {back && (
-          <img className="iqv4-pose" src={back} alt="" draggable="false"
-            style={{ ...anchor, opacity: fading ? 1 : 0 }} />
-        )}
-        <div className="iqv4-vignette" />
-        {speaking && (
-          <div className="iqv4-badge" aria-hidden="true">
-            {BADGE_MULT.map((m, i) => (
-              <span key={i} style={{ height: Math.max(3, 4 + level * 12 * m) }} />
-            ))}
-          </div>
+        {isBot ? (
+          /* Vectorbot: the android draws itself inside the SAME card chrome (glow,
+             arc, ring, name chip all unchanged, above/around this). Its LED-waveform
+             mouth rides `amp` — the very amplitude the pose badge used — and the
+             server tone_hint drives its brows/eyes/rest-mouth. It carries its own
+             desk scene, so no pose img, vignette or badge here. */
+          <RobotInterviewer variant={c.variant} state={state} amplitude={amp}
+            size={W} tone={tone || "neutral"} />
+        ) : (
+          <>
+            {/* Two stacked layers, opacity crossfade — never a hard swap. With no pose
+                set (art pending) both layers hold the same single portrait and this
+                costs nothing. */}
+            <img className="iqv4-pose" src={front} alt="" draggable="false"
+              style={{ ...anchor, opacity: fading ? 0 : 1 }} />
+            {back && (
+              <img className="iqv4-pose" src={back} alt="" draggable="false"
+                style={{ ...anchor, opacity: fading ? 1 : 0 }} />
+            )}
+            <div className="iqv4-vignette" />
+            {speaking && (
+              <div className="iqv4-badge" aria-hidden="true">
+                {BADGE_MULT.map((m, i) => (
+                  <span key={i} style={{ height: Math.max(3, 4 + level * 12 * m) }} />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
