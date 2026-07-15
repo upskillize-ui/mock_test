@@ -225,6 +225,17 @@ async function unlockAudioPlayback() {
   resumeTtsAnalyser();
 }
 
+// Embedded audio seatbelt: inside the same-origin LMS iframe, a programmatic .play() can be
+// refused by the browser's autoplay policy (or routed into a suspended AudioContext). When
+// that happens we must NEVER fail silently — log the reason (name + message) so it is
+// diagnosable, and let the caller raise the in-brand "Tap to enable audio" affordance. The
+// room stays usable regardless: captions carry the words; the chip lets the user unlock sound.
+function logAudioBlocked(where, err) {
+  try {
+    console.warn(`[InterviewIQ audio] play() blocked at ${where}:`, (err && err.name) || err || "unknown", (err && err.message) || "");
+  } catch { /* noop */ }
+}
+
 // Inline Lucide-style line icons (1.6px stroke). No emojis.
 const IconSpeaker = ({ size = 18 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z" /><path d="M15.5 8.5a5 5 0 0 1 0 7" /><path d="M19 5a9 9 0 0 1 0 14" /></svg>
@@ -1610,8 +1621,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       p.src = objUrl;
       resumeTtsAnalyser();   // a suspended context would route the audio into silence
       const pr = p.play();
-      if (pr && pr.then) pr.then(() => setNeedsTap(false)).catch(() => setNeedsTap(true));
-    } catch { setNeedsTap(true); }
+      if (pr && pr.then) pr.then(() => setNeedsTap(false)).catch((e) => { logAudioBlocked("playAudio", e); setNeedsTap(true); });
+    } catch (e) { logAudioBlocked("playAudio", e); setNeedsTap(true); }
   };
 
   // "She is / is not speaking", written to the ref SYNCHRONOUSLY as well as to state.
@@ -1661,9 +1672,9 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
         p.src = objUrl;
         resumeTtsAnalyser();
         const pr = p.play();
-        if (pr && pr.catch) pr.catch(() => { setNeedsTap(true); done(); });
+        if (pr && pr.catch) pr.catch((e) => { logAudioBlocked("playOne", e); setNeedsTap(true); done(); });
         else setNeedsTap(false);
-      } catch { done(); }
+      } catch (e) { logAudioBlocked("playOne", e); done(); }
     })();
   });
 
@@ -1681,7 +1692,10 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       p.pause();
       p.volume = volume;
       p.src = objUrl;
-      p.play()?.catch(() => { /* autoplay blocked — the room is fine without it */ });
+      // A blocked backchannel is harmless (it is a non-essential human noise, not the
+      // question), so this never raises the tap-to-enable chip — but it is logged, not
+      // swallowed, so "no acks are playing" is diagnosable rather than invisible.
+      p.play()?.catch((e) => logAudioBlocked("playClip(backchannel)", e));
     } catch { /* noop */ }
   };
 
@@ -1799,6 +1813,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     if (lastAssistant?.audio_segments?.length) playSegments(lastAssistant.audio_segments);
     else if (lastAssistant?.audio_url) playAudio(lastAssistant.audio_url, true);
   };
+
+  // Embedded audio seatbelt: the tap behind the "Tap to enable audio" chip. It is a user
+  // gesture, so it unlocks playback / resumes the AudioContext and then replays the current
+  // question — turning a silently-blocked autoplay into one tap to sound.
+  const enableAudio = async () => { await unlockAudioPlayback(); replay(); };
 
   // ── Voice Phase 2/3: record → transcribe → drop editable text into the input ──
   const sttAvailable = !!sstate?.stt_available;
@@ -2404,6 +2423,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     }
     // UNMUTE — an explicit act. Consent is still explicit and separate.
     if (!voiceConsented) { setShowVoiceConsent(true); return; }
+    // Embedded audio seatbelt: unmuting is a user gesture, so resume the AudioContext here.
+    // Inside the iframe the context can be suspended (or was never resumed if the room was
+    // deep-linked without the Start gesture); a suspended context routes the interviewer's
+    // voice into silence. This touches only the Web Audio context, never the mic gate.
+    resumeTtsAnalyser();
     micOnRef.current = true;
     setMicOn(true);
     clearMuteFork();
@@ -2864,12 +2888,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
                     Your turn to interview us. Ask us two questions.
                   </div>
                 )}
-                {/* Autoplay was blocked (iOS). Replaying the SENTENCE CLIPS is what this
-                    does now — there is no separate whole-reply clip to fall back to, and
-                    there never needed to be. */}
+                {/* Embedded audio seatbelt: playback was blocked (autoplay policy /
+                    suspended context inside the iframe). Rather than fail silently, we offer
+                    one in-brand tap that unlocks sound and replays the current question. */}
                 {needsTap && canReplay && !muted && (
-                  <button onClick={replay} className="iq-ghostbtn">
-                    <IconSpeaker size={15} /> Tap to hear the question
+                  <button onClick={enableAudio} className="iq-ghostbtn">
+                    <IconSpeaker size={15} /> Tap to enable audio
                   </button>
                 )}
                 {error && <div style={{ padding: "10px 14px", borderRadius: 8, background: "rgba(232,82,26,.16)", color: "#ffbda6", fontSize: 13, textAlign: "center" }}>{error}</div>}
@@ -3721,6 +3745,11 @@ export default function App() {
   const handleJoin = async ({ mic, camera }) => {
     const payload = pendingConfig;
     if (!payload) { restart(); return; }
+    // Embedded audio seatbelt: Join is the room-entry gesture, so unlock playback and
+    // create/resume the AudioContext HERE, synchronously in the click — before the await
+    // below breaks the user-gesture context. Same-origin iframes still enforce autoplay
+    // policy, and a room reached by deep-link may never have seen the Start gesture.
+    unlockAudioPlayback();
     setScreen("loading");
     // Seed the roster pick with a value we control and PERSIST, so the same interviewer
     // survives a refresh (session_id doesn't exist yet — we need the name to start).
