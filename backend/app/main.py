@@ -611,21 +611,33 @@ def check_schema_on_boot():
 async def warm_clip_pack_on_boot():
     """Synthesise the acknowledgment + backchannel clips for both voices, once, at boot.
 
-    Fire-and-forget: it must never delay the app becoming healthy, and a vendor outage at
-    boot must never stop it serving. The clips are content-addressed on disk, so this is a
-    no-op on every restart after the first.
+    Fire-and-forget AND hard-bounded: it must never delay the app becoming healthy, and a
+    dead/hanging TTS account at boot must never stop it serving or restart the Space. The
+    warm pass is time-boxed inside tts.warm_clip_pack (per-call ceiling + overall budget);
+    here we simply skip it outright when there is nothing to warm with. The clips are
+    content-addressed on disk, so this is a no-op on every restart after the first.
     """
     if not settings.TTS_ENABLED:
         return
+    if not settings.SARVAM_API_KEY:
+        log.warning(
+            "TTS enabled but SARVAM_API_KEY not set — skipping clip-pack warming; "
+            "the interviewer falls back to captions"
+        )
+        return
 
     async def _warm():
-        speakers = [settings.TTS_VOICE_FEMALE, settings.TTS_VOICE_MALE]
-        summary = await tts.warm_clip_pack(speakers)
-        log.info(
-            "clip pack: %d lines x %d voices -> warmed=%d cached=%d failed=%d (%.1f KB on disk)",
-            len(tts.clip_pack_lines()), len(speakers),
-            summary["warmed"], summary["cached"], summary["failed"], summary["bytes"] / 1024,
-        )
+        try:
+            speakers = [settings.TTS_VOICE_FEMALE, settings.TTS_VOICE_MALE]
+            summary = await tts.warm_clip_pack(speakers)
+            log.info(
+                "clip pack: %d lines x %d voices -> warmed=%d cached=%d failed=%d skipped=%d (%.1f KB on disk)",
+                len(tts.clip_pack_lines()), len(speakers),
+                summary["warmed"], summary["cached"], summary["failed"],
+                summary.get("skipped", 0), summary["bytes"] / 1024,
+            )
+        except Exception as e:  # warming must never take the app down
+            log.warning("clip-pack warming aborted: %s", type(e).__name__)
 
     asyncio.create_task(_warm())
 

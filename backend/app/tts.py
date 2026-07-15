@@ -15,10 +15,12 @@ Cost control:
   - Per-session vendor-call cap (in-process) so a single session can't run up cost.
 """
 
+import asyncio
 import base64
 import hashlib
 import logging
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -31,6 +33,14 @@ log = logging.getLogger(__name__)
 # ceiling timed out on essentially every call (RequestError -> None -> "silent TTS").
 # Give the vendor room; the caller still degrades to text-only if it genuinely stalls.
 _TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=5.0)
+# Boot-time clip-pack warming must be HARD-bounded: a dead or hanging TTS account can never
+# be allowed to delay the Space becoming healthy or to leave a multi-minute zombie task
+# behind. Each warm call gets a short hard ceiling (a one-word clip synthesises in ~1s), and
+# the whole pass gets an overall budget after which the remaining clips are simply left to
+# synthesise on first use. These are separate from the generous mid-session _TIMEOUT above,
+# which is deliberately long because a full-sentence v3 synth genuinely takes several seconds.
+_WARM_CALL_TIMEOUT = 8.0
+_WARM_BUDGET_SECONDS = 45.0
 _SARVAM_URL = "https://api.sarvam.ai/text-to-speech"
 # Sarvam Bulbul caps request text length; keep a safe margin under the limit.
 _MAX_TTS_CHARS = 1400
@@ -395,36 +405,58 @@ def clip_pack_lines() -> list[str]:
     return out
 
 
-async def warm_clip_pack(speakers: list[str]) -> dict:
+async def warm_clip_pack(
+    speakers: list[str],
+    *,
+    per_call_timeout: float = _WARM_CALL_TIMEOUT,
+    budget_seconds: float = _WARM_BUDGET_SECONDS,
+) -> dict:
     """Synthesise the whole shared clip pack for these voices, at startup.
 
-    Best-effort by construction: a vendor outage at boot must not stop the app from
-    serving, and a clip that fails to warm is simply synthesised on first use (or, in the
-    worst case, silently skipped — the interview never depends on an acknowledgment).
-    Returns a summary for the boot log so a cold cache is visible in one line.
+    HARD-bounded and best-effort by construction: a dead or hanging TTS account at boot must
+    never stop the app serving, never delay it becoming healthy, and never leave a zombie
+    task running for minutes. Every synth gets a hard per-call ceiling (via asyncio.wait_for,
+    so it holds even if the HTTP client's own timeout somehow does not); the whole pass gets
+    an overall budget, after which the remaining clips are LEFT to synthesise on first use.
+    A clip that fails or times out is skipped — the interview never depends on an ack.
+
+    Returns a one-line boot-log summary. Never raises.
     """
+    summary = {"warmed": 0, "cached": 0, "failed": 0, "skipped": 0, "bytes": 0}
     if not settings.TTS_ENABLED:
-        return {"warmed": 0, "cached": 0, "failed": 0, "bytes": 0}
-    warmed = cached = failed = total_bytes = 0
+        return summary
+
+    deadline = (time.monotonic() + budget_seconds) if budget_seconds else None
     for speaker in speakers:
         for line in clip_pack_lines():
             key = cache_key(line, speaker)
             hit = read_cache(key)
             if hit is not None:
-                cached += 1
-                total_bytes += len(hit)
+                summary["cached"] += 1
+                summary["bytes"] += len(hit)
+                continue
+            if deadline is not None and time.monotonic() >= deadline:
+                # Out of budget — leave the rest to first-use synth rather than block boot.
+                summary["skipped"] += 1
                 continue
             try:
-                if await get_shared_audio_hash(line, speaker):
-                    warmed += 1
-                    blob = read_cache(key)
-                    total_bytes += len(blob or b"")
-                else:
-                    failed += 1
-            except Exception as e:
-                failed += 1
+                # HARD per-call ceiling: wait_for cancels a hung synth (and closes its HTTP
+                # client) even if the client's own timeout somehow does not fire.
+                got = await asyncio.wait_for(
+                    get_shared_audio_hash(line, speaker),
+                    timeout=per_call_timeout,
+                )
+            except Exception as e:  # incl. asyncio.TimeoutError — warming NEVER raises
+                summary["failed"] += 1
                 log.warning("clip pack warm failed: %s", type(e).__name__)
-    return {"warmed": warmed, "cached": cached, "failed": failed, "bytes": total_bytes}
+                continue
+            if got:
+                summary["warmed"] += 1
+                blob = read_cache(key)
+                summary["bytes"] += len(blob or b"")
+            else:
+                summary["failed"] += 1
+    return summary
 
 
 async def get_audio_hash(session_id: str, text: str, speaker: str) -> str | None:

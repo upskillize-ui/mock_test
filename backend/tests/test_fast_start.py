@@ -298,6 +298,6 @@ def test_warming_is_a_no_op_once_the_clips_are_on_disk(monkeypatch):
 def test_the_clip_pack_is_empty_and_harmless_when_tts_is_off(monkeypatch):
     monkeypatch.setattr(settings, "TTS_ENABLED", False)
     assert asyncio.run(tts.warm_clip_pack(["ritu"])) == {
-        "warmed": 0, "cached": 0, "failed": 0, "bytes": 0,
+        "warmed": 0, "cached": 0, "failed": 0, "skipped": 0, "bytes": 0,
     }
     assert asyncio.run(m._try_tts_segments("s1", GREETING, "female", first_only=True)) == []
