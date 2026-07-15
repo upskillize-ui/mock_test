@@ -2750,7 +2750,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const inputDisabled = loading || ended || awaitingRating;
 
   return (
-    <div style={{ fontFamily: T.font, margin: "-24px -28px", display: "flex", flexDirection: "column", height: "calc(100vh - 70px)", minHeight: 500 }}>
+    <div style={{ fontFamily: T.font, width: "100%", maxWidth: "100%", boxSizing: "border-box", overflowX: "hidden", display: "flex", flexDirection: "column", height: "100%", minHeight: 500 }}>
       {/* Interview HUD — responsive header (replaces the legacy fixed-row header
           that clipped its title on narrow viewports). Wraps and truncates; no
           fixed heights; safe padding down to 360px. */}
