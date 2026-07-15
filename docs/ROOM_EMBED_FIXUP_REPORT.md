@@ -2,8 +2,10 @@
 
 Surgical fixes for the embedded meet room (serves same-origin inside the LMS shell at
 `lms.upskillize.com/student/mock-interview`, an embed of `/interview/`). Target container
-~1100–1400px wide. All four items landed as separate commits on `main`; the suite is green
-throughout (61 tests, incl. the 22 Critical guardrails and the capture-gate mutation checks).
+~1100–1400px wide. All items landed as separate commits on `main`; the frontend suite is
+green (61 tests, incl. the 22 Critical guardrails and the capture-gate mutation checks) and
+the backend suite is green (244 tests). Items 1–4 are frontend-only; item 5 is backend and
+ships to the Space via an **hf push that is pending your confirmation** (not pushed).
 
 ## Commits (in order)
 
@@ -13,9 +15,10 @@ throughout (61 tests, incl. the 22 Critical guardrails and the capture-gate muta
 | 1b | _this commit_ | App-wide: remove the same breakout from Setup / History / Settings |
 | 2 + 3 | `5c893ad` | Readout is one report: merge the verdict, and stop scoring no-shows |
 | 4 | `b689f02` | Embedded audio seatbelt: unlock on gesture, never fail a play() silently |
+| 5 | `77d8b31` | Startup survives a dead TTS account: hard-bounded warming, captions carry on |
 
 (Items 2 and 3 are the same `DebriefScreen` rewrite and are inseparable in one file, so they
-share a commit. Both are covered below.)
+share a commit. Both are covered below. Item 5 is backend — see the hf note at the end.)
 
 ---
 
@@ -125,15 +128,54 @@ the deployed backend + real Bulbul audio, which isn't runnable here.
 
 ---
 
+## Item 5 — Startup must survive a dead TTS account (backend)
+
+**Before.** Boot warming was already fire-and-forget and `tts.synthesize()` already returned
+`None` on any failure — but a *hung* vendor could leave a multi-minute zombie warm task
+(≈18 clips × the 30s mid-session read timeout), and warming fired a doomed vendor call per
+clip even when the key was absent.
+
+**Change (all in `backend/app/tts.py` + `backend/app/main.py`):**
+
+1. **Hard-bounded warming.** `warm_clip_pack` now gives each synth a hard per-call ceiling via
+   `asyncio.wait_for` (cancels a hung call — and closes its HTTP client — even if httpx's own
+   timeout doesn't fire), and the whole pass an overall **budget** after which the remaining
+   clips are *left to synthesise on first use* (new `skipped` count). It still never raises.
+2. **Skip + log when there's nothing to warm with.** The boot hook (`warm_clip_pack_on_boot`)
+   returns early — with a log — when TTS is enabled but `SARVAM_API_KEY` is missing, and wraps
+   the warm task so it can never take the app down. *"If TTS is unavailable at boot, log it,
+   skip warming, and start anyway."* Boot never awaits TTS, so the Space becomes healthy
+   immediately regardless of the vendor.
+3. **Mid-session unchanged and already correct.** A failed synth yields a null `audio_url`; the
+   reply text/captions go out regardless; the session completes. (`_try_tts` / `_try_tts_segments`
+   / the greeting/speech/turn handlers all degrade to text, never 500.)
+
+**Files touched:** `backend/app/tts.py`, `backend/app/main.py`, new
+`backend/tests/test_boot_resilience.py`, and `backend/tests/test_fast_start.py` (one existing
+warm-summary shape assertion updated for the new `skipped` key).
+
+**Test (the one the brief asked for), offline — no vendor, DB, or server:**
+`test_boot_resilience.py` pins that a **hanging vendor is bounded** in well under its hang, that
+**total vendor failure** warms nothing and never raises, that the **boot hook skips warming
+(and never calls it) with no key**, and that a **mid-session TTS failure is caption-only**, never
+a crash. The literal "boot with an invalid `SARVAM_API_KEY`" is the union of these:
+warming is skipped/best-effort and the reply path stays caption-only — a full live boot is in
+the UAT list.
+
 ## Test results
 
-`npm test` → **61 passing, 0 failing** (55 pre-existing + 6 new `readoutPolicy` cases).
-Includes the 22 Critical guardrail tests and the capture-gate structural/mutation checks.
-`npm run build` → clean (Vite production build succeeds).
+Frontend — `npm test` → **61 passing, 0 failing** (55 pre-existing + 6 new `readoutPolicy`
+cases); includes the 22 Critical guardrails and the capture-gate structural/mutation checks.
+`npm run build` → clean.
+Backend — `python -m pytest` → **244 passing, 0 failing** (incl. 5 new `test_boot_resilience`
+cases; the previously-failing warm-summary shape test updated and green).
 
-## Anything needing a backend (hf) change
+## Anything needing a backend (hf) change — **hf push PENDING your confirmation**
 
-**None required.** All four fixes are frontend-only; nothing was pushed to `hf`.
+**Item 5 is a backend change and reaches production only via an `hf` push, which I have NOT
+done.** Nothing was pushed to `hf`. On your go-ahead: `git push hf main` deploys it to the
+Space (the Space rebuilds from the Dockerfile and restarts on the new revision). Items 1–4 are
+frontend-only and unrelated to `hf`.
 
 - *Optional (not required):* item 3's empty-session detection is a frontend content heuristic
   (no strengths / STAR / sub-scores). A server-provided `substantive_answer_count` on the
@@ -156,9 +198,8 @@ embedded session:
    - If autoplay is blocked, the **"Tap to enable audio"** chip appears; one tap plays.
    - **Unmute** while muted resumes a suspended context (voice audible again).
    - Console shows a `[InterviewIQ audio] play() blocked at …` line on any block (not silent).
-   5. STARTUP MUST SURVIVE A DEAD TTS ACCOUNT: ack-clip warming and all Sarvam calls
-   get hard timeouts and a skip-on-failure path. If TTS is unavailable at boot,
-   log it, skip warming, and start anyway; if TTS fails mid-session, captions
-   continue and the session completes. The Space must never sit in "Restarting"
-   because a vendor account ran dry. Test: boot with an invalid SARVAM key →
-   server starts, session playable silently with captions.
+5. **Dead-TTS boot (item 5, needs the hf deploy):** start the Space with an invalid/empty
+   `SARVAM_API_KEY` (TTS_ENABLED=true) → `/health` returns 200 within seconds, the boot log
+   shows the "skipping clip-pack warming" or a hard-bounded warm summary (never a 9-minute
+   hang), the Space does **not** enter "Restarting", and a session runs silently with captions
+   through to the readout.
