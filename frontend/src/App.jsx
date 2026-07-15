@@ -759,7 +759,7 @@ function SetupScreen({ onStart, userName }) {
   };
 
   if (starting) return (
-    <div style={{ fontFamily: T.font, margin: "-24px -28px", padding: "100px 28px", textAlign: "center" }}>
+    <div style={{ fontFamily: T.font, width: "100%", boxSizing: "border-box", padding: "100px 28px", textAlign: "center" }}>
       <div style={{ fontSize: 22, fontWeight: 800, color: T.navy, marginBottom: 8 }}>Preparing your interview...</div>
       <div style={{ fontSize: 13, color: T.muted, marginBottom: 28 }}>Setting up personalized questions for {userName || "you"}</div>
       <div style={{ width: 200, height: 3, borderRadius: 2, background: T.border, overflow: "hidden", margin: "0 auto 32px" }}>
@@ -770,7 +770,7 @@ function SetupScreen({ onStart, userName }) {
   );
 
   return (
-    <div style={{ fontFamily: T.font, margin: "-24px -28px", padding: "24px 28px" }}>
+    <div style={{ fontFamily: T.font, width: "100%", boxSizing: "border-box", padding: "24px 28px" }}>
       <div style={{ background: T.navy, borderRadius: 12, padding: "22px 28px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div className="iq-hero">
           <div style={{ color: "#fff", fontWeight: 800, fontSize: 22, letterSpacing: "-.02em" }}>InterviewIQ</div>
@@ -3413,7 +3413,7 @@ function HistoryScreen({ onPickSession, onStartNew }) {
   const totalMinutes = Math.round((summary.total_seconds || 0) / 60);
 
   return (
-    <div style={{ fontFamily: T.font, margin: "-24px -28px", padding: "24px 28px" }}>
+    <div style={{ fontFamily: T.font, width: "100%", boxSizing: "border-box", padding: "24px 28px" }}>
       <div style={{ background: T.navy, borderRadius: 12, padding: "22px 28px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
           <div style={{ color: "#fff", fontWeight: 800, fontSize: 22, letterSpacing: "-.02em" }}>InterviewIQ History</div>
@@ -3498,7 +3498,7 @@ function HistoryDetail({ sessionId, onBack }) {
   const ss = d.subScores || {};
 
   return (
-    <div style={{ fontFamily: T.font, margin: "-24px -28px", padding: "24px 28px" }}>
+    <div style={{ fontFamily: T.font, width: "100%", boxSizing: "border-box", padding: "24px 28px" }}>
       <button onClick={onBack} style={{ background: "none", border: "none", color: T.navy, fontWeight: 700, fontSize: 13, cursor: "pointer", padding: 0, marginBottom: 14, fontFamily: T.font }}>← Back to history</button>
 
       <div style={{ background: T.navy, borderRadius: 12, padding: "22px 28px", marginBottom: 16 }}>
@@ -3592,7 +3592,7 @@ function SettingsScreen({ onBack }) {
   };
 
   return (
-    <div style={{ fontFamily: T.font, margin: "-24px -28px", padding: "24px 28px", maxWidth: 720 }}>
+    <div style={{ fontFamily: T.font, width: "100%", boxSizing: "border-box", padding: "24px 28px", maxWidth: 720, margin: "0 auto" }}>
       <button onClick={onBack} style={{ background: "none", border: "none", color: T.navy, fontWeight: 700, fontSize: 13, cursor: "pointer", padding: 0, marginBottom: 14, fontFamily: T.font }}>← Back</button>
 
       <div style={{ background: T.navy, borderRadius: 12, padding: "22px 28px", marginBottom: 16 }}>

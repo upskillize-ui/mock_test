@@ -10,6 +10,7 @@ throughout (61 tests, incl. the 22 Critical guardrails and the capture-gate muta
 | Item | Commit | Summary |
 |------|--------|---------|
 | 1 | `040d69e` | Room fits its container: kill the negative-margin breakout (no h-scroll) |
+| 1b | _this commit_ | App-wide: remove the same breakout from Setup / History / Settings |
 | 2 + 3 | `5c893ad` | Readout is one report: merge the verdict, and stop scoring no-shows |
 | 4 | `b689f02` | Embedded audio seatbelt: unlock on gesture, never fail a play() silently |
 
@@ -38,11 +39,16 @@ any width; the interviewer tile stays centred and the self-view stays docked.
 app's real CSS: `document.scrollWidth === clientWidth` at every width (no h-scroll), control
 bar + End + muted pill + docked self-view all visible.
 
-**Note / recommended follow-up (out of item-1 scope):** the *same* negative-margin breakout
-still exists on the Setup, History, and Settings screens (App.jsx ~761, ~3353, ~3438, ~3532).
-They overflow identically in the embed. The readout screen was fixed here (see item 2). The
-remaining three are the same one-line change but were left untouched because they can't be
-driven without the backend to verify; flagging rather than editing blind.
+**App-wide follow-up (done — commit `see table`):** the *same* negative-margin breakout was
+removed from every remaining screen that shares it — the Setup screen (and its "Preparing…"
+loading state), History, History Detail, and Settings (App.jsx: 5 sites). Each now lays out to
+its container (`width:100%; box-sizing:border-box`, existing padding kept; Settings keeps its
+`max-width:720` and is now centred). So the whole embedded app — not just the room and readout
+— is free of the horizontal scrollbar. Verified with a representative content-screen harness
+(navy header + grids + long-title list rows) at 1100px: `scrollWidth === clientWidth`, long
+row titles wrap rather than overflow. The live screens still warrant a UAT glance since they
+can't be driven here without the backend, but the container mechanism is identical to the
+room fix above.
 
 ---
 
@@ -150,3 +156,9 @@ embedded session:
    - If autoplay is blocked, the **"Tap to enable audio"** chip appears; one tap plays.
    - **Unmute** while muted resumes a suspended context (voice audible again).
    - Console shows a `[InterviewIQ audio] play() blocked at …` line on any block (not silent).
+   5. STARTUP MUST SURVIVE A DEAD TTS ACCOUNT: ack-clip warming and all Sarvam calls
+   get hard timeouts and a skip-on-failure path. If TTS is unavailable at boot,
+   log it, skip warming, and start anyway; if TTS fails mid-session, captions
+   continue and the session completes. The Space must never sit in "Restarting"
+   because a vendor account ran dry. Test: boot with an invalid SARVAM key →
+   server starts, session playable silently with captions.
