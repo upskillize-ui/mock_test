@@ -1,4 +1,7 @@
 # GOLIVE_PHASE_PROMPT.md — InterviewIQ: local → production → LMS
+# ⚠ READ WITH docs/GOLIVE_LMS_AMENDMENT.md — it SUPERSEDES Stages 2–3
+# (founder decision: no separate hosting; the app ships inside the LMS
+# at lms.upskillize.com/interview). Stage 1 and Stage 4 apply as written.
 # Run in a FRESH Claude Code session (previous one is at 97% context).
 # Goal: everything built so far running in production, reachable from the
 # LMS — deployed fully, gated for students until legal sign-off.
