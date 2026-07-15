@@ -12,6 +12,7 @@ import {
   WRAP_CAMERA_OFF, WRAP_NO_ANSWER, WRAP_SESSION_TIME_UP,
   shouldBackchannel, shouldBargeIn, canArmCapture, BARGE_IN_RMS, BARGE_IN_DUCK_MS,
 } from "./roomPolicy.js";
+import { isEmptyReadout } from "./readoutPolicy.js";
 
 // Realism v2: spoken confidence rating. Accepts digits, English words, Hinglish
 // numerals, and an explicit "prefer not to say".
@@ -3058,45 +3059,6 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   );
 }
 
-// INT-02: calibration profile — three summary tiles + a coaching pill (never punitive).
-function CalibrationBlock({ cal }) {
-  const profile = cal?.profile;
-  const hasData = profile && profile !== "insufficient_data" && cal.avg_confidence != null;
-  const copy = CALIBRATION_COPY[profile];
-  const delta = cal?.calibration_delta;
-  return (
-    <div className="vc" style={{ marginBottom: 16 }}>
-      <div className="vc-h"><span className="vc-t">Calibration Profile</span></div>
-      <div className="vc-b">
-        {!hasData ? (
-          <div style={{ fontSize: 13, color: T.muted, fontFamily: IQ.sans }}>Not enough data — rate your confidence on a few answers next time to see how your self-assessment compares with your performance.</div>
-        ) : (
-          <>
-            <div className="mba-grid-3" style={{ marginBottom: 14 }}>
-              {[
-                ["Your Average Confidence", cal.avg_confidence, "/5"],
-                ["Your Average Score", cal.avg_score, "/5"],
-                ["Your Calibration Delta", (delta > 0 ? "+" : "") + delta, ""],
-              ].map(([label, val, suffix], i) => (
-                <div key={i} className="mba-metric">
-                  <div className="mba-metric-label">{label}</div>
-                  <div className="mba-metric-value" style={{ fontFamily: IQ.mono }}>{val}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle, fontFamily: IQ.sans }}>{suffix}</span></div>
-                </div>
-              ))}
-            </div>
-            {copy && (
-              <div style={{ display: "inline-block", padding: "12px 18px", borderRadius: 10, background: copy.bg, color: IQ.cream, fontFamily: IQ.sans, maxWidth: 580 }}>
-                <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 3 }}>{copy.label}</div>
-                <div style={{ fontSize: 13, lineHeight: 1.5 }}>{copy.copy}</div>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // Voice Phase 3 Part D: Delivery Profile — informational, NOT counted in the band.
 // Colors follow the locked band semantics via BAND_STYLE (gold Offer-Ready, teal
 // Interview-Ready, navy Building, orange Not Ready). < 3 spoken answers → a nudge.
@@ -3199,6 +3161,10 @@ function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
   const cal = d.calibration || {};
   const ss = d.sub_scores || {};
   const pk = (k) => ({ communication:"Communication",roleKnowledge:"Role Knowledge",clarity:"Clarity",confidence:"Confidence",structure:"Structure",problemSolving:"Problem Solving" })[k] || k;
+  // Calibration + competency data folded into the single readiness block below (INT-02).
+  const calHasData = cal.profile && cal.profile !== "insufficient_data" && cal.avg_confidence != null;
+  const calCopy = CALIBRATION_COPY[cal.profile];
+  const ssEntries = Object.entries(ss);
   const currentRound = ROUNDS.find(r => r.v === config.round) || ROUNDS[ROUNDS.length - 1];
 
   // E6 — the readout is read top to bottom, and the ORDER is the coaching:
@@ -3211,8 +3177,42 @@ function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
   const strengths = (d.strengths || []).map(asStrength).filter(s => s.strength);
   const gaps = d.gaps || [];
 
+  // INT/embed fixup #3 — a session that ended before ANY substantive answer is SKIPPED,
+  // not failed. Show only the "ended before answering" card (plus Presence, if it was
+  // measured). Never a readiness band, never 0/10 tiles — that would score a no-show.
+  if (isEmptyReadout(d)) {
+    return (
+      <div style={{ fontFamily: T.font, width: "100%", maxWidth: 820, margin: "0 auto", padding: "24px 28px", boxSizing: "border-box" }}>
+        <div style={{ background: T.navy, borderRadius: 12, padding: "24px 32px", marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.3)", marginBottom: 12 }}>Session ended</div>
+          <div style={{ fontSize: 17, fontWeight: 700, color: "#fff", lineHeight: 1.45 }}>
+            {d.one_line || "This session ended before any substantive answers."}
+          </div>
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,.3)", marginTop: 8 }}>{config.role} — {config.level} — {config.company || "General"} — {config.duration_min} min</div>
+          {d.early_wrap && (
+            <div style={{ fontSize: 12, color: "rgba(255,255,255,.55)", marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.12)" }}>
+              {EARLY_WRAP_NOTE[d.early_wrap] || "This interview ended early."}
+            </div>
+          )}
+          <div style={{ fontSize: 13, color: "rgba(255,255,255,.7)", marginTop: 12, lineHeight: 1.6 }}>
+            Nothing was scored — a skipped session is not a failed one. There's no readiness band to read here; start another when you're ready and give it a full run.
+          </div>
+        </div>
+
+        {/* Presence is the ONE thing that can exist without an answer (camera cues), so it
+            stays — but only if it was actually measured. */}
+        <PresenceBlock presence={d.professional_presence} />
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onRestart} className="vbtn">Start Another Mock</button>
+          <button onClick={onViewHistory} className="vbtn" style={{ background: T.white, color: T.navy, border: "1.5px solid " + T.border }}>View History</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div style={{ fontFamily: T.font, margin: "-24px -28px", padding: "24px 28px" }}>
+    <div style={{ fontFamily: T.font, width: "100%", maxWidth: 820, margin: "0 auto", padding: "24px 28px", boxSizing: "border-box" }}>
       {/* The opening line, in the interviewer's own voice. No band yet. */}
       <div style={{ background: T.navy, borderRadius: 12, padding: "24px 32px", marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
@@ -3276,7 +3276,12 @@ function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
         </div>
       )}
 
-      {/* 4. THE VERDICT — the band, and one sentence on what their own ratings said. */}
+      {/* 5. THE READINESS VERDICT — stated ONCE, in a single block. The band, the per-round
+          pills, the calibration delta, and the competency /10s all live here, folded together
+          as the working. There is no second scorecard below it — the verdict is not repeated,
+          which is exactly what "two stacked reports" used to do. Band pill colours are the
+          locked brand semantics (BAND_STYLE): Offer-Ready gold, Interview-Ready teal, Building
+          navy, Not Ready orange. */}
       <div style={{ background: T.navy, borderRadius: 12, padding: "28px 32px", marginBottom: 16 }}>
         <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.3)", marginBottom: 14 }}>Readiness</div>
         <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
@@ -3285,6 +3290,7 @@ function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
             <div style={{ flex: 1, minWidth: 240, fontSize: 14, color: "rgba(255,255,255,.9)", lineHeight: 1.6 }}>{cal.sentence}</div>
           )}
         </div>
+
         {Object.keys(roundBands).length > 0 && (
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 18 }}>
             {Object.entries(roundBands).map(([k, v]) => { const bs = BAND_STYLE[v] || BAND_STYLE["Not Ready"]; return (
@@ -3295,15 +3301,48 @@ function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
             ); })}
           </div>
         )}
+
+        {/* Calibration delta — confidence vs. performance, in the SAME block. Never punitive. */}
+        {calHasData && (
+          <div style={{ marginTop: 22, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,.12)" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.35)", marginBottom: 12 }}>Calibration — confidence vs. performance</div>
+            <div className="mba-grid-3" style={{ marginBottom: calCopy ? 14 : 0 }}>
+              {[
+                ["Avg Confidence", cal.avg_confidence, "/5"],
+                ["Avg Score", cal.avg_score, "/5"],
+                ["Delta", (cal.calibration_delta > 0 ? "+" : "") + cal.calibration_delta, ""],
+              ].map(([label, val, suffix], i) => (
+                <div key={i} style={{ padding: "12px 14px", borderRadius: 10, background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.10)" }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,.5)", textTransform: "uppercase", letterSpacing: ".05em" }}>{label}</div>
+                  <div style={{ fontSize: 24, fontWeight: 800, color: "#fff", marginTop: 4, fontFamily: IQ.mono }}>{val}<span style={{ fontSize: 13, fontWeight: 400, color: "rgba(255,255,255,.5)", fontFamily: IQ.sans }}>{suffix}</span></div>
+                </div>
+              ))}
+            </div>
+            {calCopy && (
+              <div style={{ display: "inline-block", padding: "10px 16px", borderRadius: 10, background: calCopy.bg, color: IQ.cream }}>
+                <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 2 }}>{calCopy.label}</div>
+                <div style={{ fontSize: 13, lineHeight: 1.5 }}>{calCopy.copy}</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Competency /10 — the working, folded into the verdict rather than a separate card. */}
+        {ssEntries.length > 0 && (
+          <div style={{ marginTop: 22, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,.12)" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.35)", marginBottom: 12 }}>By competency</div>
+            <div className="mba-grid-3">
+              {ssEntries.map(([k, v]) => { const co = v >= 7 ? T.green : v >= 5 ? T.gold : T.red; return (
+                <div key={k} style={{ padding: "12px 14px", borderRadius: 10, background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.10)" }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,.5)", textTransform: "uppercase", letterSpacing: ".05em" }}>{pk(k)}</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: "#fff", marginTop: 4 }}>{v}<span style={{ fontSize: 13, fontWeight: 400, color: "rgba(255,255,255,.5)" }}>/10</span></div>
+                  <div style={{ height: 4, borderRadius: 2, background: "rgba(255,255,255,.12)", marginTop: 8, overflow: "hidden" }}><div style={{ height: "100%", borderRadius: 2, width: (v * 10) + "%", background: co }} /></div>
+                </div>
+              ); })}
+            </div>
+          </div>
+        )}
       </div>
-
-      {/* ── The working, under the verdict: the evidence behind all of the above. ── */}
-      <div className="mba-grid-3" style={{ marginBottom: 16 }}>{Object.entries(ss).map(([k, v]) => {
-        const co = v >= 7 ? T.green : v >= 5 ? T.gold : T.red;
-        return <div key={k} className={"mba-metric " + (v >= 7 ? "mba-metric-green" : v >= 5 ? "mba-metric-gold" : "mba-metric-red")}><div className="mba-metric-label">{pk(k)}</div><div className="mba-metric-value">{v}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle }}>/10</span></div><div className="mba-bar-track"><div className="mba-bar-fill" style={{ width: (v * 10) + "%", background: co }} /></div></div>;
-      })}</div>
-
-      <CalibrationBlock cal={cal} />
 
       {d.star_breakdown?.length > 0 &&<div className="vc" style={{ marginBottom: 16 }}><div className="vc-h"><span className="vc-t">Answer-by-answer analysis (STAR)</span></div><div className="vc-b">{d.star_breakdown.map((q, i) => <div key={i} style={{ marginBottom: 16, paddingBottom: 14, borderBottom: i < d.star_breakdown.length - 1 ? "1px solid " + T.border : "none" }}><div style={{ fontSize: 13, fontWeight: 700, color: T.navy, marginBottom: 8 }}>{q.question}</div><div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>{["situation","task","action","result"].map(key => { const val = q[key] || 0; return <span key={key} className={"mba-pill " + (val >= 2 ? "mba-pill-pass" : val === 1 ? "mba-pill-warn" : "mba-pill-fail")}>{key[0].toUpperCase()} {val}/2</span>; })}</div><div style={{ fontSize: 12, color: T.muted, fontStyle: "italic" }}>{q.note}</div></div>)}</div></div>}
 
