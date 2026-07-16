@@ -195,6 +195,31 @@ def recent_lines(db: Session, user_id: str, kind: str, limit: int = 5) -> list[s
 
 
 def get_student_context(user_id: str, db: Session) -> dict:
+    """Everything the LMS knows about this student. The GATHER half of the intake
+    boundary (see app/intake.py) — this function reads, intake merges and sanitises.
+
+    WHY THE QUERIES LOOK LIKE THIS — READ BEFORE "TIDYING" THEM.
+    These tables belong to the LMS team, not to us. They have moved before, and when they
+    moved, this function did not fail — it degraded to a dict of Nones and kept serving
+    interviews that knew nothing about the student. Three separate reads were dead for an
+    unknown number of weeks, and the only trace was a log.debug line:
+
+      * `student_profiles`      — GONE. Its columns are on `users` now.
+      * `student_ai_profiles`   — RENAMED to `ai_profiles` (ProfileIQ). Its `student_id`
+                                  is a `users.id`, verified against `student_email`.
+      * `enrollments.student_id`— NOT a user id. It is a `students.id`. The old query
+                                  joined it straight to the user id and matched 0 of 10
+                                  rows, every time, silently.
+
+    So: the per-block try/except stays (a missing LMS table must never break a live
+    interview), but every one of them now logs at WARNING, and `app.schema_check` probes
+    these tables at boot and says so loudly. Silence was the actual bug; the defensive
+    reads were only how it hid.
+
+    The `source` list is the honesty check: it names which feeds actually answered. An
+    empty `source` means we know nothing but the name, and callers can tell that apart
+    from "the student has no data".
+    """
     result = {
         "name": None,
         "ai_profile": None,
@@ -206,46 +231,126 @@ def get_student_context(user_id: str, db: Session) -> dict:
         "skills": None,
         "resume_url": None,
         "psycho": None,
+        # The ice-breaker's raw material. Sparse on purpose — most students have neither,
+        # and the persona SKIPS its beat rather than guessing. See prompts.build_kickoff.
+        "city": None,
+        "interests": None,
         "source": [],
     }
 
+    # ── users: identity, education, work, skills, résumé, psychometrics, city, interests ──
+    # One row, one read. These columns used to live on `student_profiles`.
     try:
         user = db.execute(
-            text("SELECT full_name FROM users WHERE id = :uid"),
-            {"uid": user_id},
-        ).fetchone()
-        if user and user.full_name:
-            result["name"] = user.full_name
-    except Exception as e:
-        log.warning("ctx.user failed for uid=%s: %s", user_id, e)
-
-    try:
-        ai = db.execute(
             text("""
-                SELECT ai_profile_text, ai_profile_json
-                FROM student_ai_profiles
-                WHERE user_id = :uid
-                ORDER BY created_at DESC LIMIT 1
+                SELECT full_name, city, hobbies,
+                       education_level, institution, graduation_year, field_of_study,
+                       work_experience_years, current_employer, current_designation,
+                       skills, resume_url, psycho_result
+                FROM users
+                WHERE id = :uid
             """),
             {"uid": user_id},
         ).fetchone()
-        if ai and (ai.ai_profile_text or ai.ai_profile_json):
-            result["ai_profile"] = ai.ai_profile_text or ai.ai_profile_json
+    except Exception as e:
+        log.warning("ctx.user failed for uid=%s (LMS `users` moved?): %s", user_id, e)
+        user = None
+
+    if user:
+        if user.full_name:
+            result["name"] = user.full_name
+
+        edu_parts = [
+            user.education_level,
+            user.field_of_study,
+            user.institution,
+            str(user.graduation_year) if user.graduation_year else None,
+        ]
+        edu = " · ".join([x for x in edu_parts if x])
+        if edu.strip(" ·"):
+            result["education"] = edu
+            result["source"].append("education")
+
+        yrs = (user.work_experience_years or "").lower()
+        if yrs in ["fresher", "< 1 year", "", "none"]:
+            result["current_status"] = "student_or_fresher"
+        else:
+            result["current_status"] = "working_professional"
+
+        if user.current_designation or user.current_employer:
+            result["current_role"] = user.current_designation
+            result["employer"] = user.current_employer
+            result["source"].append("work_profile")
+
+        if user.skills:
+            result["skills"] = user.skills
+
+        if user.resume_url:
+            result["resume_url"] = user.resume_url
+
+        # City and interests are for ONE thing: the opening ice-breaker. They are the only
+        # safe personal facts we hold — everything else on `users` (parents, bank details,
+        # caste-adjacent fields, salary) is off limits and must never be read here.
+        if user.city and str(user.city).strip():
+            result["city"] = str(user.city).strip()
+            result["source"].append("city")
+
+        if user.hobbies and str(user.hobbies).strip():
+            result["interests"] = str(user.hobbies).strip()
+            result["source"].append("interests")
+
+        if user.psycho_result:
+            raw = user.psycho_result
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except Exception:
+                    pass
+            if isinstance(raw, dict):
+                result["psycho"] = {
+                    "type": raw.get("type", ""),
+                    "top": raw.get("topDimensions", [])[:3],
+                    "desc": raw.get("desc", ""),
+                }
+                result["source"].append("psychometric")
+
+    # ── ai_profiles (ProfileIQ) ──────────────────────────────────────────────
+    # `student_id` here is a users.id despite the name. Confirmed against student_email:
+    # every row that joins to a user has that user's address. Rows whose student_id has no
+    # user are orphans from deleted accounts — the join drops them, which is correct.
+    try:
+        ai = db.execute(
+            text("""
+                SELECT professional_summary
+                FROM ai_profiles
+                WHERE student_id = :uid AND status = 'COMPLETED'
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+            """),
+            {"uid": user_id},
+        ).fetchone()
+        if ai and ai.professional_summary:
+            result["ai_profile"] = ai.professional_summary
             result["source"].append("ai_enhancer")
     except Exception as e:
-        log.debug("ctx.ai_profile skipped: %s", e)
+        log.warning("ctx.ai_profile failed for uid=%s (LMS `ai_profiles` moved?): %s",
+                    user_id, e)
 
+    # ── enrollments ──────────────────────────────────────────────────────────
+    # users.id → students.user_id → students.id → enrollments.student_id. The middle hop
+    # is the one the old query skipped, and skipping it matched nothing at all.
     try:
         enrollments = db.execute(
             text("""
                 SELECT c.course_name, e.progress_percentage,
                        cert.id AS has_cert
-                FROM enrollments e
-                JOIN courses c ON e.course_id = c.id
+                FROM students s
+                JOIN enrollments e ON e.student_id = s.id
+                JOIN courses c ON c.id = e.course_id
                 LEFT JOIN certificates cert
-                    ON cert.student_id = e.student_id
+                    ON cert.student_id = s.id
                     AND cert.course_id = c.id
-                WHERE e.student_id = :uid
+                WHERE s.user_id = :uid
                 ORDER BY e.created_at DESC
                 LIMIT 6
             """),
@@ -262,72 +367,7 @@ def get_student_context(user_id: str, db: Session) -> dict:
             ]
             result["source"].append("enrollments")
     except Exception as e:
-        log.debug("ctx.enrollments skipped: %s", e)
-
-    try:
-        profile = db.execute(
-            text("""
-                SELECT education_level, institution, graduation_year,
-                       field_of_study, work_experience_years,
-                       current_employer, current_designation,
-                       skills, resume_url
-                FROM student_profiles
-                WHERE user_id = :uid
-            """),
-            {"uid": user_id},
-        ).fetchone()
-
-        if profile:
-            edu_parts = [
-                profile.education_level,
-                profile.field_of_study,
-                profile.institution,
-                str(profile.graduation_year) if profile.graduation_year else None,
-            ]
-            edu = " · ".join([x for x in edu_parts if x])
-            if edu.strip(" ·"):
-                result["education"] = edu
-                result["source"].append("education")
-
-            yrs = (profile.work_experience_years or "").lower()
-            if yrs in ["fresher", "< 1 year", "", "none"]:
-                result["current_status"] = "student_or_fresher"
-            else:
-                result["current_status"] = "working_professional"
-
-            if profile.current_designation or profile.current_employer:
-                result["current_role"] = profile.current_designation
-                result["employer"] = profile.current_employer
-                result["source"].append("work_profile")
-
-            if profile.skills:
-                result["skills"] = profile.skills
-
-            if profile.resume_url:
-                result["resume_url"] = profile.resume_url
-    except Exception as e:
-        log.debug("ctx.profile skipped: %s", e)
-
-    try:
-        psycho = db.execute(
-            text("SELECT psycho_result FROM student_profiles WHERE user_id = :uid"),
-            {"uid": user_id},
-        ).fetchone()
-        if psycho and psycho.psycho_result:
-            raw = psycho.psycho_result
-            if isinstance(raw, str):
-                try:
-                    raw = json.loads(raw)
-                except Exception:
-                    pass
-            if isinstance(raw, dict):
-                result["psycho"] = {
-                    "type": raw.get("type", ""),
-                    "top": raw.get("topDimensions", [])[:3],
-                    "desc": raw.get("desc", ""),
-                }
-                result["source"].append("psychometric")
-    except Exception as e:
-        log.debug("ctx.psycho skipped: %s", e)
+        log.warning("ctx.enrollments failed for uid=%s (LMS `students`/`enrollments` moved?): %s",
+                    user_id, e)
 
     return result

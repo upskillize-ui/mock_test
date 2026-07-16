@@ -69,6 +69,60 @@ EXPECTED: list[tuple[str, str, str | None]] = [
 LATEST_MIGRATION = EXPECTED[-1][0]
 
 
+# ── The LMS half — TABLES WE READ BUT DO NOT OWN ─────────────────────────────
+# Everything above is ours: we wrote the migration, and a missing column means a human
+# forgot to run it. Everything HERE belongs to the LMS team. They may rename, move or
+# reshape these at any time, legitimately, without telling us — and when they do, it is
+# not "drift" and there is no migration of ours to run. It is a dependency that moved.
+#
+# WHY THIS LIST EXISTS AT ALL:
+#   `get_student_context` read `student_profiles`, `student_ai_profiles` and a direct
+#   `enrollments.student_id = user_id` join. The first was deleted, the second renamed to
+#   `ai_profiles`, and the third was never a user id (it is a `students.id`). All three
+#   reads sat inside try/except at log.debug. So the gather returned a dict of Nones, the
+#   interviewer opened every session knowing nothing but a first name, the ice-breaker
+#   skipped its beat every single time — and NOTHING said so. The features were not
+#   broken loudly; they were absent quietly, which is worse, and it lasted weeks.
+#   `EXPECTED` could never have caught it: _read_schema only ever looked at `vyom_%`.
+#
+# THE RULE (and it is the TTS seatbelt's rule, applied to a database):
+#   WARN LOUDLY, DEGRADE GRACEFULLY, NEVER BLOCK. The Space does not refuse to boot over
+#   a dependency it does not own. A missing LMS column costs us a richer opening; it must
+#   never cost a student their session. Every read of these is defensive at the call site
+#   and stays that way — this list exists so the degradation is ANNOUNCED, not silent.
+#
+# (table, column)  — column=None means "the TABLE itself must exist".
+LMS_EXPECTED: list[tuple[str, str | None]] = [
+    # Identity, education, work history, résumé, psychometrics — and the ice-breaker's
+    # only two safe personal facts. These columns used to live on `student_profiles`.
+    ("users", "full_name"),
+    ("users", "city"),
+    ("users", "hobbies"),
+    ("users", "education_level"),
+    ("users", "institution"),
+    ("users", "graduation_year"),
+    ("users", "field_of_study"),
+    ("users", "work_experience_years"),
+    ("users", "current_employer"),
+    ("users", "current_designation"),
+    ("users", "skills"),
+    ("users", "resume_url"),
+    ("users", "psycho_result"),
+    # ProfileIQ. `student_id` is a users.id despite the name — verified against
+    # student_email on every row that joins. Formerly `student_ai_profiles`.
+    ("ai_profiles", "student_id"),
+    ("ai_profiles", "professional_summary"),
+    ("ai_profiles", "status"),
+    # The middle hop the old enrollments query skipped: users.id → students.user_id →
+    # students.id → enrollments.student_id. Without `students`, courses cannot be read.
+    ("students", "user_id"),
+    ("enrollments", "student_id"),
+    ("enrollments", "course_id"),
+    ("courses", "course_name"),
+    ("certificates", "student_id"),
+]
+
+
 def missing_objects(tables: set[str], columns: set[tuple[str, str]]) -> list[tuple[str, str, str | None]]:
     """Which expected objects are absent. PURE — the DB round trip is the caller's job, so
     the interesting half of this is testable without a database.
@@ -94,21 +148,77 @@ def pending_migrations(missing: list[tuple[str, str, str | None]]) -> list[str]:
     return out
 
 
+def missing_lms_objects(tables: set[str], columns: set[tuple[str, str]]) -> list[tuple[str, str | None]]:
+    """Which LMS-owned objects we read are absent. PURE, like missing_objects.
+
+    Deliberately returns a DIFFERENT shape: there is no migration column, because there is
+    no migration. Nothing we can write fixes a table the LMS team moved — the only honest
+    outputs are a warning and a degraded gather.
+    """
+    missing = []
+    for table, column in LMS_EXPECTED:
+        if table not in tables:
+            missing.append((table, column))
+        elif column is not None and (table, column) not in columns:
+            missing.append((table, column))
+    return missing
+
+
 def _read_schema(db) -> tuple[set[str], set[tuple[str, str]]]:
-    """Every vyom_ table and column in the CURRENT database. Two reads, no writes, no DDL."""
+    """Every table and column we care about in the CURRENT database. Two reads, no writes,
+    no DDL.
+
+    This used to filter `LIKE 'vyom\\_%'`, and that filter was load-bearing in the worst
+    way: the LMS tables we depend on were structurally invisible to the only thing built to
+    notice a schema moving. It now reads our tables AND the LMS tables named in
+    LMS_EXPECTED, so both halves can be checked. Still two queries — the LMS names are
+    bound as a parameter list rather than fetched by a second round trip.
+    """
+    lms_tables = sorted({t for t, _c in LMS_EXPECTED})
+    params = {f"t{i}": name for i, name in enumerate(lms_tables)}
+    in_list = ", ".join(f":{k}" for k in params)
+
     tables = {
         r[0] for r in db.execute(text(
             "SELECT TABLE_NAME FROM information_schema.TABLES "
-            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE 'vyom\\_%'"
-        ))
+            "WHERE TABLE_SCHEMA = DATABASE() "
+            f"AND (TABLE_NAME LIKE 'vyom\\_%' OR TABLE_NAME IN ({in_list}))"
+        ), params)
     }
     columns = {
         (r[0], r[1]) for r in db.execute(text(
             "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS "
-            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE 'vyom\\_%'"
-        ))
+            "WHERE TABLE_SCHEMA = DATABASE() "
+            f"AND (TABLE_NAME LIKE 'vyom\\_%' OR TABLE_NAME IN ({in_list}))"
+        ), params)
     }
     return tables, columns
+
+
+def _report_lms(missing: list[tuple[str, str | None]]) -> None:
+    """The LMS banner. WARNING, not ERROR: nothing here is a deploy's fault, nothing here
+    is fixable by running a file, and nothing here may stop the app from serving.
+    """
+    if not missing:
+        log.info("lms schema: all %d expected object(s) present", len(LMS_EXPECTED))
+        return
+
+    log.warning("=" * 78)
+    log.warning("LMS SCHEMA MOVED — %d object(s) we read are not there.", len(missing))
+    log.warning("")
+    for table, column in missing:
+        what = f"{table}.{column}" if column else f"{table}  (TABLE)"
+        log.warning("    MISSING  %s", what)
+    log.warning("")
+    log.warning("These tables belong to the LMS team, not to us. There is NO migration to")
+    log.warning("run — if they moved something, this is the announcement, and the fix is a")
+    log.warning("conversation with them plus a change to app/db.get_student_context.")
+    log.warning("")
+    log.warning("The interview still runs. get_student_context degrades field by field, so")
+    log.warning("the cost is a thinner opening (a skipped ice-breaker, no course history),")
+    log.warning("never a failed session. This warning exists because the LAST time these")
+    log.warning("moved, nothing said so for weeks.")
+    log.warning("=" * 78)
 
 
 def check(db) -> list[str]:
@@ -124,6 +234,14 @@ def check(db) -> list[str]:
         log.warning("schema check skipped (could not read information_schema): %s",
                     type(e).__name__)
         return []
+
+    # The LMS half first, and on its own terms: it is reported, never returned. Folding it
+    # into the return value would put a table we cannot migrate onto a list captioned "run,
+    # in order" — an instruction nobody could follow.
+    try:
+        _report_lms(missing_lms_objects(tables, columns))
+    except Exception as e:  # a bug in OUR reporting must not cost the migration check
+        log.warning("lms schema check skipped: %s", type(e).__name__)
 
     missing = missing_objects(tables, columns)
     if not missing:

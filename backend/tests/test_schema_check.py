@@ -196,3 +196,120 @@ def test_health_defaults_to_ok_so_the_field_is_always_present():
     h = HealthResponse(status="ok", db="ok", model_interview="m", model_debrief="d")
     assert h.schema_status == "ok"
     assert h.pending_migrations == []
+
+
+# ── The LMS half — tables we read but do not own ─────────────────────────────
+# These tests exist because of a second, worse instance of the same disease. The vyom_
+# check above was already in place and still could not see it: `get_student_context` read
+# `student_profiles` (deleted), `student_ai_profiles` (renamed to `ai_profiles`) and joined
+# `enrollments.student_id` straight to a user id (it is a `students.id` — 0 of 10 rows ever
+# matched). Every read degraded at log.debug, so for weeks the interviewer opened sessions
+# knowing a first name and nothing else, and the ice-breaker skipped its beat every time.
+# _read_schema filtered `LIKE 'vyom\_%'`, so the only thing built to notice a schema moving
+# was structurally blind to it.
+
+
+def _full_lms():
+    """An LMS database that has everything we read."""
+    tables = {t for t, _c in sc.LMS_EXPECTED}
+    columns = {(t, c) for t, c in sc.LMS_EXPECTED if c is not None}
+    return tables, columns
+
+
+def test_nothing_missing_when_the_lms_has_everything_we_read():
+    tables, columns = _full_lms()
+    assert sc.missing_lms_objects(tables, columns) == []
+
+
+def test_a_renamed_lms_table_is_reported():
+    """The exact drift that actually happened: student_ai_profiles -> ai_profiles."""
+    tables, columns = _full_lms()
+    tables.discard("ai_profiles")
+    missing = sc.missing_lms_objects(tables, columns)
+    assert ("ai_profiles", "professional_summary") in missing
+
+
+def test_a_dropped_lms_column_is_reported():
+    tables, columns = _full_lms()
+    columns.discard(("users", "city"))
+    assert ("users", "city") in sc.missing_lms_objects(tables, columns)
+
+
+def test_the_ice_breakers_two_facts_are_watched():
+    """city and hobbies are the ONLY safe personal facts the opening may use. If either
+    silently vanishes the beat goes back to skipping every time — which is precisely the
+    failure this whole list exists to announce."""
+    watched = {(t, c) for t, c in sc.LMS_EXPECTED}
+    assert ("users", "city") in watched
+    assert ("users", "hobbies") in watched
+
+
+def test_the_enrollments_chain_is_watched_including_the_hop_that_was_skipped():
+    """users.id -> students.user_id -> students.id -> enrollments.student_id. `students` is
+    the hop the old query skipped, so it is the one most worth watching."""
+    watched = {(t, c) for t, c in sc.LMS_EXPECTED}
+    assert ("students", "user_id") in watched
+    assert ("enrollments", "student_id") in watched
+
+
+def test_lms_drift_never_becomes_a_pending_migration():
+    """THE contract. `pending_migrations` captions its output "run, in order" — putting a
+    table we cannot migrate on that list would be an instruction nobody could follow.
+    LMS findings are a different shape for exactly this reason, and they are reported,
+    never returned."""
+    tables, columns = _full_schema()
+    lms_t, lms_c = _full_lms()
+    lms_t.discard("ai_profiles")          # the LMS moved something...
+    tables |= lms_t
+    columns |= lms_c
+
+    class Fake:
+        def __init__(self):
+            self.n = 0
+
+        def execute(self, *a, **k):
+            self.n += 1
+            return [(t,) for t in tables] if self.n == 1 else list(columns)
+
+    # ...and our own migrations are fine, so there is nothing for a human to run.
+    assert sc.check(Fake()) == []
+
+
+def test_lms_drift_warns_but_never_blocks_boot(caplog):
+    """Same philosophy as the TTS seatbelt: the Space never refuses to boot over a
+    dependency it does not own. Warn loudly, degrade gracefully, keep serving."""
+    tables, columns = _full_lms()
+    tables.discard("students")
+    with caplog.at_level(logging.WARNING):
+        sc._report_lms(sc.missing_lms_objects(tables, columns))
+    assert "LMS SCHEMA MOVED" in caplog.text
+    assert "There is NO migration to" in caplog.text
+    assert "The interview still runs" in caplog.text
+    # Warning, not error: nothing here is a deploy's fault or a deploy's fix.
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def test_the_lms_read_is_no_longer_blind_to_non_vyom_tables():
+    """The regression guard for the root cause. If someone re-narrows _read_schema to
+    `vyom_%`, the LMS half silently reports everything missing forever.
+
+    The table names ride as BOUND PARAMETERS, not as literals in the SQL, so this asserts
+    on what was bound — checking the query string would pass a narrowed read by accident.
+    """
+    seen = []
+
+    class Fake:
+        def execute(self, q, params=None, *a, **k):
+            seen.append((str(q), params or {}))
+            return []
+
+    sc._read_schema(Fake())
+    assert len(seen) == 2, "two reads, no more: tables then columns"
+
+    for sql, params in seen:
+        bound = set((params or {}).values())
+        assert "users" in bound and "ai_profiles" in bound, \
+            "_read_schema must ask about LMS tables, not just vyom_ ones"
+        assert "vyom\\_%" in sql, "and it must still ask about ours"
+        # Every LMS table we depend on is bound, not just the two spot-checked above.
+        assert {t for t, _c in sc.LMS_EXPECTED} == bound
