@@ -258,7 +258,7 @@ def test_the_shared_clips_are_not_billed_to_whoever_happened_to_warm_them(monkey
     monkeypatch.setattr(tts, "read_cache", lambda k: b"\xff\xfb\x90\x00" + b"\x00" * 900)
     before = tts.session_cost("s-shared")
 
-    key = asyncio.run(tts.get_shared_audio_hash("Hmm.", "ritu"))
+    key = asyncio.run(tts.get_shared_audio_hash("Hmm.", tts.resolve_voice("female")))
     assert key                                  # served from cache
 
     after = tts.session_cost("s-shared")
@@ -276,7 +276,7 @@ def test_a_cold_clip_cache_never_stops_the_app_serving(monkeypatch):
         raise RuntimeError("vendor down")
 
     monkeypatch.setattr(tts, "get_shared_audio_hash", _dead)
-    summary = asyncio.run(tts.warm_clip_pack(["ritu"]))
+    summary = asyncio.run(tts.warm_clip_pack([tts.resolve_voice("female")]))
     assert summary["failed"] == len(tts.clip_pack_lines())
     assert summary["warmed"] == 0               # ...and it returned rather than raising
 
@@ -289,7 +289,8 @@ def test_warming_is_a_no_op_once_the_clips_are_on_disk(monkeypatch):
         raise AssertionError("a warm cache must never call the vendor again")
 
     monkeypatch.setattr(tts, "get_shared_audio_hash", _boom)
-    summary = asyncio.run(tts.warm_clip_pack(["ritu", "shubh"]))
+    summary = asyncio.run(tts.warm_clip_pack(
+        [tts.resolve_voice("female"), tts.resolve_voice("male")]))
     assert summary["cached"] == len(tts.clip_pack_lines()) * 2
     assert summary["warmed"] == 0 and summary["failed"] == 0
     assert summary["bytes"] > 0
@@ -297,7 +298,7 @@ def test_warming_is_a_no_op_once_the_clips_are_on_disk(monkeypatch):
 
 def test_the_clip_pack_is_empty_and_harmless_when_tts_is_off(monkeypatch):
     monkeypatch.setattr(settings, "TTS_ENABLED", False)
-    assert asyncio.run(tts.warm_clip_pack(["ritu"])) == {
+    assert asyncio.run(tts.warm_clip_pack([tts.resolve_voice("female")])) == {
         "warmed": 0, "cached": 0, "failed": 0, "skipped": 0, "bytes": 0,
     }
     assert asyncio.run(m._try_tts_segments("s1", GREETING, "female", first_only=True)) == []

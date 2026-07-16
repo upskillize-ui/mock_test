@@ -1,10 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 
 /**
- * RobotInterviewer — "Nova" & "Nia" (v2.1, animated android interviewers)
- * variant="nova" (male-voiced android, gold tie) | variant="nia"
- * (female-voiced android: metallic bob crown, lashes, hoop earrings,
- * gold chain + glowing teal pendant instead of the tie).
+ * RobotInterviewer — "Nova" & "Nia" (v2.3, animated android interviewers)
+ * variant="nova" (male-voiced android, gold tie) | variant="nia" (female-voiced
+ * android: metallic bob crown with a silver streak, lashes, NO jewelry).
+ *
+ * v2.3 — NIA IS THE SENIOR INTERVIEWER (40+). Five deliberate differences, all
+ * gated on `fem` so Nova is byte-for-byte what he was: a squarer cranium, angular
+ * "set" visor brows, a silver streak through the bob crown, a higher and sharper
+ * peak-lapel collar, and no jewelry (the teal pendant is gone — see the torso).
+ * Seniority had to read at 300px with no wrinkles and no grey filter, so it lives
+ * entirely in silhouette: harder edges, higher collar, one streak.
+ * (Earlier headers here described hoop earrings and a gold chain. Neither ever
+ * existed in this file. Only the pendant did, and now that is gone too.)
  * v2.2: tone prop ("warm"|"neutral"|"probing"|"critical") drives visor
  * brows, eye shape and rest-mouth; the gesture arm RIDES the live
  * amplitude (louder = bigger raise) atop a two-beat gesture cycle; the
@@ -167,35 +175,73 @@ export default function RobotInterviewer({ state = "idle", amplitude = 0, size =
           <path d="M146 292 L146 450 L214 450 L214 292 Z" fill={C.shirt} />
           <path d="M146 292 L146 450 L156 450 L156 292 Z" fill="#E2DFD3" />
           <path d="M214 292 L214 450 L204 450 L204 292 Z" fill="#E2DFD3" />
-          {/* collar points */}
-          <path d="M163 264 L180 284 L154 292 Z" fill={C.shirt} />
-          <path d="M197 264 L180 284 L206 292 Z" fill={C.shirt} />
+          {/* collar points — nia's sit HIGHER (y=252 vs 264) and cut SHARPER: a narrower
+              spread and a longer point. Nova's are untouched. A high, crisp collar is what
+              reads as "senior" at 300px without a single extra element on screen. */}
+          {fem ? (
+            <>
+              {/* The apexes sit at x=172/188 — INSIDE the neck joint's x-range (168-192),
+                  which is drawn after the torso and therefore covers them. That is what
+                  makes the collar read as rising from BEHIND the neck rather than as two
+                  wings pinned beside the jaw. (It did exactly that when the apexes were at
+                  x=167/193: a one-pixel sliver of each escaped past the neck's edge.)
+                  Higher (250 vs 264) and narrower than Nova's, so the V is a deeper, more
+                  vertical notch. */}
+              <path d="M172 250 L180 286 L156 292 Z" fill={C.shirt} />
+              <path d="M188 250 L180 286 L204 292 Z" fill={C.shirt} />
+            </>
+          ) : (
+            <>
+              <path d="M163 264 L180 284 L154 292 Z" fill={C.shirt} />
+              <path d="M197 264 L180 284 L206 292 Z" fill={C.shirt} />
+            </>
+          )}
           {/* open blazer panels */}
           <path d="M94 450 L94 302 Q94 292 104 292 L164 292 C156 330 148 390 144 450 Z" fill="url(#nvBlz)" />
           <path d="M266 450 L266 302 Q266 292 256 292 L196 292 C204 330 212 390 216 450 Z" fill="url(#nvBlz)" />
           <path d="M164 292 C156 330 148 390 144 450 L136 450 C140 388 147 328 155 292 Z" fill={C.blazerC} opacity="0.55" />
           <path d="M196 292 C204 330 212 390 216 450 L224 450 C220 388 213 328 205 292 Z" fill={C.blazerC} opacity="0.55" />
-          {/* notched lapels */}
-          <path d="M164 292 L150 324 L176 312 Z" fill={C.blazerA} />
-          <path d="M196 292 L210 324 L184 312 Z" fill={C.blazerA} />
-          <path d="M164 292 L150 324 L158 322 Z" fill={C.blazerC} opacity="0.5" />
-          <path d="M196 292 L210 324 L202 322 Z" fill={C.blazerC} opacity="0.5" />
+          {/* lapels — nia gets a PEAK lapel (a sharp upward point at the notch) against
+              nova's soft notch, and it starts higher to meet her raised collar. Same navy,
+              same palette; only the geometry is harder. Nova's four paths are unchanged. */}
+          {fem ? (
+            <>
+              {/* A PEAK lapel: the inner edge rises to a point (176/184, 300) instead of
+                  Nova's soft notch, and the outer edge runs longer and straighter to a
+                  sharper tip. Everything stays at or below the shoulder line (y=292) —
+                  an earlier attempt put the peak ABOVE it, and two navy spikes duly
+                  stabbed up through the white shirt and read as a bow tie. */}
+              <path d="M164 292 L148 326 L178 308 L176 300 Z" fill={C.blazerA} />
+              <path d="M196 292 L212 326 L182 308 L184 300 Z" fill={C.blazerA} />
+              <path d="M164 292 L148 326 L156 323 Z" fill={C.blazerC} opacity="0.5" />
+              <path d="M196 292 L212 326 L204 323 Z" fill={C.blazerC} opacity="0.5" />
+            </>
+          ) : (
+            <>
+              <path d="M164 292 L150 324 L176 312 Z" fill={C.blazerA} />
+              <path d="M196 292 L210 324 L184 312 Z" fill={C.blazerA} />
+              <path d="M164 292 L150 324 L158 322 Z" fill={C.blazerC} opacity="0.5" />
+              <path d="M196 292 L210 324 L202 322 Z" fill={C.blazerC} opacity="0.5" />
+            </>
+          )}
           {/* squared shoulder seams */}
           <path d="M104 292 L164 292" stroke="#33466B" strokeWidth="2" opacity="0.6" />
           <path d="M196 292 L256 292" stroke="#33466B" strokeWidth="2" opacity="0.6" />
           {/* teal pocket square */}
           <path d="M112 318 L132 318 L127 306 L120 312 L116 306 Z" fill={C.teal} />
-          {/* nova: gold tie + LED tie-pin · nia: gold chain + glowing pendant */}
-          {!fem ? (
+          {/* nova: gold tie + LED tie-pin · nia: NO JEWELRY, by design — see below */}
+          {!fem && (
             <g>
               <path d="M180 292 L171 302 L180 312 L189 302 Z" fill="url(#nvTie)" />
               <path d="M174 310 L180 378 L186 310 L180 316 Z" fill="url(#nvTie)" />
               <circle cx="180" cy="330" r="3.5" fill={C.teal} opacity={speaking ? 0.95 : 0.6} />
             </g>
-          ) : (
-            <circle cx="180" cy="300" r="3.5" fill={C.teal}
-                    opacity={speaking ? 0.95 : 0.6} />
           )}
+          {/* Nia wore a glowing teal pendant here. It is gone and must not come back: the
+              senior interviewer wears nothing decorative. Nova keeps the tie because a tie
+              is what he is wearing to work, not an ornament — the asymmetry is the point.
+              Her authority is in the cut of the collar and the set of the brows, and
+              anything sparkly at the throat pulls the eye straight off both. */}
 
           {/* left arm — structured square sleeve */}
           <path d="M94 306 L88 356 C86 388 92 406 102 416 L134 410 C126 392 124 366 128 344 L128 306 Z" fill="url(#nvBlz)" />
@@ -243,9 +289,12 @@ export default function RobotInterviewer({ state = "idle", amplitude = 0, size =
                     opacity={thinking ? 1 : 0.35} />
           </g>
 
-          {/* cranium */}
+          {/* cranium — nia's is SQUARER than it was: the crown flattens across the top
+              (the control points pull toward the corners instead of rounding through them)
+              and the temples run straighter before turning. Same width and height, so the
+              visor, bob and ear discs all still line up; only the silhouette hardens. */}
           <path d={fem
-                ? "M124 168 C120 108 146 88 180 88 C214 88 240 108 236 168 C236 208 214 234 180 234 C146 234 124 208 124 168 Z"
+                ? "M124 168 C122 106 144 90 180 90 C216 90 238 106 236 168 C236 210 214 234 180 234 C146 234 124 210 124 168 Z"
                 : "M116 168 C112 110 140 88 180 88 C220 88 248 110 244 168 C244 208 222 236 180 236 C138 236 116 208 116 168 Z"}
                 fill="url(#nvHead)" stroke={C.headEdge} strokeWidth="1.5" />
           {/* crown seam + bolt */}
@@ -267,6 +316,17 @@ export default function RobotInterviewer({ state = "idle", amplitude = 0, size =
                     fill="#6E7A8C" stroke={C.headEdge} strokeWidth="1" />
               <path d="M136 128 C148 112 164 106 180 106 C168 108 152 116 144 130 Z"
                     fill="#8B97A8" opacity="0.7" />
+              {/* THE SILVER STREAK — the one element that says 40+ without a wrinkle, a
+                  greyscale filter, or any of the other ways this could have gone wrong.
+                  It sweeps from the crown down the right of the parting, following the
+                  bob's own curve so it reads as hair and not as a scratch on the visor.
+                  C.headA (#EAEFF5) is the brand's lightest metal — deliberately ON
+                  palette, unlike the bob's own #6E7A8C, which predates it. */}
+              <path d="M186 88 C198 92 210 102 218 118 C222 128 224 140 224 152
+                       L216 152 C216 140 214 130 210 121 C203 106 194 97 183 93 Z"
+                    fill={C.headA} opacity="0.85" />
+              <path d="M186 88 C196 91 205 98 212 109 C205 100 195 94 184 91 Z"
+                    fill="#FFFFFF" opacity="0.5" />
             </g>
           )}
 
@@ -278,14 +338,28 @@ export default function RobotInterviewer({ state = "idle", amplitude = 0, size =
           <path d="M136 130 C150 120 176 117 180 117 C176 124 152 128 142 136 Z"
                 fill="#FFFFFF" opacity="0.08" />
 
-          {/* visor brows — tone-driven expression */}
+          {/* visor brows — tone-driven expression.
+              NIA'S ARE ANGULAR AND SET. Three differences from Nova's, and each one is
+              doing a job:
+                • rx 1.6 -> 0.3   a squared-off bar instead of a rounded lozenge. Rounded
+                                  ends read soft at any angle; this is the whole "angular".
+                • +4deg inward    a permanent slight converge, on TOP of the tone rotation.
+                                  This is "set": her neutral is already level-eyed and
+                                  unimpressed, where Nova's neutral is flat.
+                • dy +1           sits a touch closer to the eye. A low brow reads
+                                  attentive; a high one reads surprised, and she is never
+                                  surprised.
+              The tone response itself (probing/warm) is UNCHANGED and still applies to
+              both — a senior interviewer still warms up, she just starts from further in. */}
           {EYE_X.map((cx, i) => {
             const inward = i === 0 ? 1 : -1;
-            const rot = probing ? inward * 14 : warm ? -inward * 8 : 0;
-            const dy = probing ? 3 : warm ? -1 : 0;
+            const toneRot = probing ? inward * 14 : warm ? -inward * 8 : 0;
+            const rot = toneRot + (fem ? inward * 4 : 0);
+            const dy = (probing ? 3 : warm ? -1 : 0) + (fem ? 1 : 0);
             return (
               <rect key={"b" + i} className="nv-brow"
-                x={cx - 8} y={139 + dy} width="16" height="3.2" rx="1.6"
+                x={cx - 8} y={139 + dy} width="16" height={fem ? 3.6 : 3.2}
+                rx={fem ? 0.3 : 1.6}
                 fill={C.teal} opacity="0.75"
                 style={{ transform: `rotate(${rot}deg)`, transformOrigin: `${cx}px ${141 + dy}px` }} />
             );

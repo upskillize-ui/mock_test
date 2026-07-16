@@ -23,6 +23,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import tts as t  # noqa: E402
 
+# The two roster voices, resolved once. Tests that care about a SPECIFIC field build
+# their own Voice; everything else just needs "a female voice" / "a male voice".
+NIA = t.Voice(speaker="ritu", pace=0.93)
+NOVA = t.Voice(speaker="shubh", pace=1.0)
+
 
 # ── Preprocessing: acronyms + markdown ──────────────────────────────────────
 
@@ -57,23 +62,62 @@ def test_markdown_stripped():
 # ── Cache-key stability ─────────────────────────────────────────────────────
 
 def test_cache_key_stable_and_deterministic():
-    a = t.cache_key("Tell me about yourself.", "ritu")
-    b = t.cache_key("Tell me about yourself.", "ritu")
+    a = t.cache_key("Tell me about yourself.", NIA)
+    b = t.cache_key("Tell me about yourself.", NIA)
     assert a == b
     assert len(a) == 64 and all(c in "0123456789abcdef" for c in a)
 
 
 def test_cache_key_varies_by_speaker_and_text():
-    base = t.cache_key("Tell me about yourself.", "ritu")
-    assert base != t.cache_key("Tell me about yourself.", "shubh")   # speaker matters
-    assert base != t.cache_key("Tell me about your projects.", "ritu")  # text matters
+    base = t.cache_key("Tell me about yourself.", NIA)
+    assert base != t.cache_key("Tell me about yourself.", NOVA)   # speaker matters
+    assert base != t.cache_key("Tell me about your projects.", NIA)  # text matters
 
 
 def test_cache_key_ignores_markdown_noise():
     # Two inputs that preprocess to the same speech share a cache entry.
-    plain = t.cache_key("Explain your EMI strategy.", "ritu")
-    marked = t.cache_key("Explain your **EMI** strategy.", "ritu")
+    plain = t.cache_key("Explain your EMI strategy.", NIA)
+    marked = t.cache_key("Explain your **EMI** strategy.", NIA)
     assert plain == marked
+
+
+def test_cache_key_varies_by_pace_at_the_same_speaker():
+    """Re-pacing Nia MUST bust her cache.
+
+    The regression this pins: pace used to be read inside cache_key from the global
+    settings.TTS_PACE while the payload sent a per-voice pace. Retuning NIA_PACE would
+    then have kept serving the OLD read from disk — the config knob would appear dead.
+    Same speaker, different pace, therefore: different key.
+    """
+    slow = t.cache_key("Walk me through it.", t.Voice(speaker="ritu", pace=0.93))
+    fast = t.cache_key("Walk me through it.", t.Voice(speaker="ritu", pace=1.0))
+    assert slow != fast
+
+
+def test_cache_key_covers_every_voice_field():
+    """The Voice contract: every field that reaches the vendor is hashed into the key.
+
+    Enforced structurally rather than by eye. Add a field to Voice that changes the audio
+    and forget cache_fields(), and this fails — instead of shipping a cache that silently
+    serves audio from settings nobody is running any more.
+    """
+    import dataclasses
+
+    base = t.Voice(speaker="ritu", pace=0.93)
+    base_key = t.cache_key("Same words either way.", base)
+    # A deliberately different value per field type; each must move the key on its own.
+    bumped = {"speaker": "priya", "pace": 0.75}
+
+    for field in dataclasses.fields(t.Voice):
+        assert field.name in bumped, (
+            f"Voice.{field.name} is new: give it a distinct test value here, and make sure "
+            f"cache_fields() includes it — an unhashed field means stale audio."
+        )
+        variant = dataclasses.replace(base, **{field.name: bumped[field.name]})
+        assert t.cache_key("Same words either way.", variant) != base_key, (
+            f"Voice.{field.name} changes the audio but not the cache key — "
+            f"add it to Voice.cache_fields()."
+        )
 
 
 # ── Graceful None on vendor failure ─────────────────────────────────────────
@@ -82,7 +126,7 @@ def test_synthesize_none_without_api_key():
     old = t.settings.SARVAM_API_KEY
     t.settings.SARVAM_API_KEY = ""
     try:
-        assert asyncio.run(t.synthesize("hello", "ritu")) is None
+        assert asyncio.run(t.synthesize("hello", NIA)) is None
     finally:
         t.settings.SARVAM_API_KEY = old
 
@@ -94,7 +138,7 @@ def test_get_audio_hash_none_when_synth_fails(monkeypatch=None):
     orig = t.synthesize
     t.synthesize = _fail
     try:
-        res = asyncio.run(t.get_audio_hash("sess-fail", "a unique never-cached prompt", "ritu"))
+        res = asyncio.run(t.get_audio_hash("sess-fail", "a unique never-cached prompt", NIA))
         assert res is None
     finally:
         t.synthesize = orig
@@ -105,7 +149,7 @@ def test_cost_guard_blocks_after_cap():
     sid = "sess-capped"
     t._session_synth_counts[sid] = t._tts_cap()
     try:
-        res = asyncio.run(t.get_audio_hash(sid, "brand new uncached question xyz", "ritu"))
+        res = asyncio.run(t.get_audio_hash(sid, "brand new uncached question xyz", NIA))
         assert res is None
     finally:
         t._session_synth_counts.pop(sid, None)
@@ -123,8 +167,8 @@ def test_cache_hit_does_not_recall_vendor():
     sid = "sess-cache"
     t._session_synth_counts.pop(sid, None)
     try:
-        k1 = asyncio.run(t.get_audio_hash(sid, "a fresh cacheable question 42", "ritu"))
-        k2 = asyncio.run(t.get_audio_hash(sid, "a fresh cacheable question 42", "ritu"))
+        k1 = asyncio.run(t.get_audio_hash(sid, "a fresh cacheable question 42", NIA))
+        k2 = asyncio.run(t.get_audio_hash(sid, "a fresh cacheable question 42", NIA))
         assert k1 == k2 and k1 is not None
         assert calls["n"] == 1                       # vendor hit only once
         assert t._session_synth_counts[sid] == 1     # counter incremented once
@@ -174,9 +218,9 @@ def test_the_meter_separates_what_we_paid_for_from_what_the_cache_gave_us():
     try:
         # Two DIFFERENT sentences (the E2 split), then a repeat of the first — which is
         # exactly the shape of a real session: unique questions, repeated greetings.
-        keys.append(asyncio.run(t.get_audio_hash(sid, "meter sentence one", "ritu")))
-        keys.append(asyncio.run(t.get_audio_hash(sid, "meter sentence two", "ritu")))
-        asyncio.run(t.get_audio_hash(sid, "meter sentence one", "ritu"))
+        keys.append(asyncio.run(t.get_audio_hash(sid, "meter sentence one", NIA)))
+        keys.append(asyncio.run(t.get_audio_hash(sid, "meter sentence two", NIA)))
+        asyncio.run(t.get_audio_hash(sid, "meter sentence one", NIA))
 
         cost = t.session_cost(sid)
         assert cost["vendor_calls"] == 2          # only the two we actually bought
@@ -214,7 +258,7 @@ def test_an_unparseable_clip_is_counted_but_not_invented():
     t._session_synth_counts.pop(sid, None)
     t._session_seconds.pop(sid, None)
     try:
-        k = asyncio.run(t.get_audio_hash(sid, "an unmeasurable clip", "ritu"))
+        k = asyncio.run(t.get_audio_hash(sid, "an unmeasurable clip", NIA))
         cost = t.session_cost(sid)
         assert cost["vendor_calls"] == 1         # we still paid for it
         assert cost["vendor_seconds"] == 0.0     # but we do not make a number up
@@ -269,38 +313,38 @@ def test_the_response_no_longer_carries_a_whole_reply_audio_url():
 # ── Bulbul v3 upgrade: payload params + cache-key versioning ────────────────
 
 def test_v3_payload_params():
-    p = t.build_payload("Explain FOIR to me.", "ritu")
+    p = t.build_payload("Explain FOIR to me.", NIA)
     assert p["model"] == "bulbul:v3"
     assert p["speaker"] == "ritu"
     assert p["output_audio_codec"] == "mp3"
     assert p["speech_sample_rate"] == 44100
     assert p["temperature"] == 0.4
-    assert p["pace"] == 1.0
+    assert p["pace"] == 0.93          # NIA's own pace — pace is per-voice, not global
     # v3 does NOT accept pitch/loudness — they must never be sent.
     assert "pitch" not in p and "loudness" not in p
 
 
 def test_dict_id_only_when_configured():
     # Absent by default.
-    assert "dict_id" not in t.build_payload("hi", "ritu")
+    assert "dict_id" not in t.build_payload("hi", NIA)
     old = t.settings.TTS_DICT_ID
     t.settings.TTS_DICT_ID = "bfsi-terms-v1"
     try:
-        assert t.build_payload("hi", "ritu")["dict_id"] == "bfsi-terms-v1"
+        assert t.build_payload("hi", NIA)["dict_id"] == "bfsi-terms-v1"
     finally:
         t.settings.TTS_DICT_ID = old
 
 
 def test_cache_key_varies_by_model_and_sample_rate():
     # A model/sample-rate change MUST change the key so stale v2 audio can't serve.
-    base = t.cache_key("Tell me about yourself.", "ritu")
+    base = t.cache_key("Tell me about yourself.", NIA)
     old_model, old_sr = t.settings.TTS_MODEL, t.settings.TTS_SAMPLE_RATE
     try:
         t.settings.TTS_MODEL = "bulbul:v2"
-        assert t.cache_key("Tell me about yourself.", "ritu") != base   # model matters
+        assert t.cache_key("Tell me about yourself.", NIA) != base   # model matters
         t.settings.TTS_MODEL = old_model
         t.settings.TTS_SAMPLE_RATE = 22050
-        assert t.cache_key("Tell me about yourself.", "ritu") != base   # sample rate matters
+        assert t.cache_key("Tell me about yourself.", NIA) != base   # sample rate matters
     finally:
         t.settings.TTS_MODEL, t.settings.TTS_SAMPLE_RATE = old_model, old_sr
 

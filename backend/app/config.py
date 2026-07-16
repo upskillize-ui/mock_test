@@ -49,6 +49,12 @@ class Settings:
     DEBRIEF_RETENTION_DAYS: int = int(os.getenv("DEBRIEF_RETENTION_DAYS", "365"))
     # Right-to-erasure recovery grace: soft-delete now, hard-delete after N days.
     DELETE_GRACE_DAYS: int = int(os.getenv("DELETE_GRACE_DAYS", "30"))
+    # Student memory (migration 008) retention. DELIBERATELY LONGER than the transcript
+    # window: this table exists so the interviewer does not repeat a greeting it used a
+    # year ago, so purging it on the transcript's 90-day clock would defeat the feature
+    # while still holding the data for 90 days — the worst of both. Its own window, and
+    # it needs the same LEGAL sign-off as the other two before go-live.
+    MEMORY_RETENTION_DAYS: int = int(os.getenv("MEMORY_RETENTION_DAYS", "365"))
     # INT-06 resume: an active session idle this long is offered as resume-or-restart.
     SESSION_IDLE_MINUTES: int = int(os.getenv("SESSION_IDLE_MINUTES", "30"))
 
@@ -85,6 +91,25 @@ class Settings:
     # Optional Sarvam pronunciation-dictionary id (future BFSI-terms dictionary).
     # When set, it is passed as dict_id on every synth call; empty = omitted.
     TTS_DICT_ID: str = os.getenv("TTS_DICT_ID", "")
+
+    # ── Persona/Warmth: Nia's voice (the SENIOR interviewer, 40+) ─────────────
+    # Nia reads lower and slightly slower than Nova. Two knobs, both real, both
+    # tunable from the Space settings with no code change — see tts.Voice.
+    #
+    # THERE IS NO PITCH KNOB, AND THAT IS NOT AN OMISSION.
+    #   `pitch` is a bulbul:v2 parameter. On v3 (TTS_MODEL, above) it is IGNORED by the
+    #   vendor. A NIA_PITCH env var would therefore be a dial wired to nothing: ops would
+    #   audition a pitch, set it here, restart, and hear precisely the same audio — with
+    #   no error to explain why. So "lower pitch" is expressed the only way v3 can
+    #   actually express it: by CHOOSING A LOWER-PITCHED SPEAKER.
+    #
+    # NIA_SPEAKER is that choice. v3 ships ~14 female speakers; audition them in the
+    # Sarvam playground and pin the winner here. Defaults to TTS_VOICE_FEMALE so an
+    # existing deploy that sets neither keeps the voice it already had.
+    NIA_SPEAKER: str = os.getenv("NIA_SPEAKER", "").strip() or TTS_VOICE_FEMALE
+    # Spec: ~0.9-0.95. Slower than Nova's 1.0 — an unhurried read is most of what
+    # "calm authority" actually sounds like.
+    NIA_PACE: float = float(os.getenv("NIA_PACE", "0.93"))
 
     # ── Voice Phase 2: STT (learner speaks their answer; BEHAVIOURAL round only) ──
     # OFF by default. Additionally gated at runtime by VOICE_ENABLED + a

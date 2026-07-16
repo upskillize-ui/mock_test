@@ -17,7 +17,12 @@ from sqlalchemy.exc import IntegrityError
 from jose import jwt, JWTError
 
 from .config import settings
-from .db import get_db, get_student_context, fetch_alumni_intel, like_escape
+from .db import (
+    get_db, get_student_context, fetch_alumni_intel, like_escape,
+    recent_lines, remember_line,
+    MEMORY_KIND_OPENING, MEMORY_KIND_CLOSING, MEMORY_KIND_CHECKIN,
+    MEMORY_KIND_REASK, MEMORY_KIND_ENCOURAGEMENT,
+)
 from .auth import current_user
 from . import stages
 from . import compliance
@@ -47,7 +52,7 @@ from .schemas import (
 from .prompts import (
     build_system_prompt, debrief_instruction, stage_turn_directive,
     build_kickoff, parse_kickoff, rating_ask, reask_line, REASK_DIRECTIVE, turn_tone,
-    mute_fork_line, MUTE_FORK_DIRECTIVE, WRAP_DISENGAGED,
+    mute_fork_line, MUTE_FORK_DIRECTIVE, WRAP_DISENGAGED, WRAP_ABUSIVE,
     quiet_mic_line, QUIET_MIC_DIRECTIVE, noise_line, NOISE_DIRECTIVE,
     partial_opening, first_complete_sentence,
 )
@@ -98,10 +103,17 @@ app = FastAPI(title="InterviewIQ API", version="2.1.0")
 
 # Voice config visibility — one line at startup so a misconfigured flag (feature
 # built but not enabled, or a voice mismatch) is obvious in ten seconds.
+#
+# Reports the RESOLVED per-interviewer bundles, not the raw env vars: NIA_SPEAKER
+# overrides TTS_VOICE_FEMALE, so printing the latter would show ops a value the
+# interviewer is not actually speaking in. This line is what an audition-and-retune is
+# checked against, so it has to be the truth.
 log.info(
-    "Voice: TTS=%s STT=%s VOICE=%s model=%s speakers=%s/%s",
+    "Voice: TTS=%s STT=%s VOICE=%s model=%s nia=%s@pace%.2f nova=%s@pace%.2f",
     settings.TTS_ENABLED, settings.STT_ENABLED, settings.VOICE_ENABLED,
-    settings.TTS_MODEL, settings.TTS_VOICE_FEMALE, settings.TTS_VOICE_MALE,
+    settings.TTS_MODEL,
+    settings.NIA_SPEAKER, settings.NIA_PACE,
+    settings.TTS_VOICE_MALE, settings.TTS_PACE,
 )
 
 # INT-09: the daily-session cap is the production cost-abuse guard and is NOT removed.
@@ -350,9 +362,14 @@ def _save_message(db: Session, session_id: str, role: str, content: str) -> None
     db.commit()
 
 
-def _resolve_speaker(voice: str | None) -> str:
-    """Map the learner's voice preference to a Sarvam speaker id (default female)."""
-    return settings.TTS_VOICE_MALE if (voice or "").lower() == "male" else settings.TTS_VOICE_FEMALE
+def _resolve_speaker(voice: str | None) -> tts.Voice:
+    """Map the learner's voice preference to the interviewer's vendor voice settings.
+
+    Returns a full tts.Voice (speaker + pace), not a bare speaker id: Nia reads lower and
+    slower than Nova, and the pace has to travel with the speaker all the way to both the
+    request body and the cache key. See tts.Voice.
+    """
+    return tts.resolve_voice(voice)
 
 
 async def _try_tts(session_id: str, text_out: str, voice: str | None) -> str | None:
@@ -631,11 +648,13 @@ async def warm_clip_pack_on_boot():
 
     async def _warm():
         try:
-            speakers = [settings.TTS_VOICE_FEMALE, settings.TTS_VOICE_MALE]
-            summary = await tts.warm_clip_pack(speakers)
+            # Warm under the SAME bundles the sessions will ask for (Nia's pace included),
+            # or every warmed clip misses its key and the pack prepays nothing.
+            voices = [tts.resolve_voice("female"), tts.resolve_voice("male")]
+            summary = await tts.warm_clip_pack(voices)
             log.info(
                 "clip pack: %d lines x %d voices -> warmed=%d cached=%d failed=%d skipped=%d (%.1f KB on disk)",
-                len(tts.clip_pack_lines()), len(speakers),
+                len(tts.clip_pack_lines()), len(voices),
                 summary["warmed"], summary["cached"], summary["failed"],
                 summary.get("skipped", 0), summary["bytes"] / 1024,
             )
@@ -664,11 +683,11 @@ async def session_clips(
     if not settings.TTS_ENABLED:
         return ClipPackResponse(acks=[], backchannels=[])
 
-    speaker = _resolve_speaker(voice)
+    resolved = _resolve_speaker(voice)
 
     async def _clips(lines):
         hashes = await asyncio.gather(
-            *[tts.get_shared_audio_hash(line, speaker) for line in lines],
+            *[tts.get_shared_audio_hash(line, resolved) for line in lines],
             return_exceptions=True,
         )
         return [
@@ -922,6 +941,13 @@ async def session_greeting(
         # every later turn is prompted to stay in character. Higher temperature-equivalent
         # variety comes from the instruction itself (see prompts.build_kickoff).
         kickoff_cfg = dict(cfg, voice=body.voice)
+        # The variety engine (migration 008): what THIS student actually heard us open
+        # with before, handed back as a do-not-repeat list. Improvisation cannot solve
+        # cross-session repetition on its own — the model has no recollection of the
+        # session it ran for them last month, so "say something fresh" is an instruction
+        # with nothing to compare against. Returns [] for a first-timer, and [] on any
+        # failure, in which case we simply improvise blind exactly as we did before.
+        recent_openings = recent_lines(db, user_id, MEMORY_KIND_OPENING, limit=5)
 
         def _on_delta(text_so_far: str) -> None:
             nonlocal first_clip, first_sentence
@@ -936,7 +962,8 @@ async def session_greeting(
 
         raw_kickoff = await stream_claude(
             system=build_system_prompt(kickoff_cfg, alumni_intel),
-            messages=[{"role": "user", "content": build_kickoff(kickoff_cfg)}],
+            messages=[{"role": "user", "content": build_kickoff(
+                kickoff_cfg, recent_openings=recent_openings)}],
             model=settings.MODEL_INTERVIEW,
             max_tokens=500,
             on_delta=_on_delta,
@@ -963,6 +990,11 @@ async def session_greeting(
                 log.info("interviewer identity: %s", identity)
 
         _save_message(db, body.session_id, "assistant", greeting)
+        # Remember what they HEARD, so the next session cannot open this way again. Written
+        # after the greeting is safely persisted and fully defensive (db.remember_line
+        # swallows everything): the cost of failing here is that we might repeat ourselves
+        # in six months, and nothing on this path is worth a candidate's session.
+        remember_line(db, user_id, body.session_id, MEMORY_KIND_OPENING, greeting)
         _update_session_counters(db, body.session_id)
 
     audio_segments = await _greeting_segments(
@@ -1127,6 +1159,17 @@ async def session_turn(
     if engagement:
         log.info("engagement floor: session=%s action=%s stage=%s", body.session_id, engagement, st)
 
+    # ── THE ABUSE FLOOR ──────────────────────────────────────────────────────
+    # Derived from the same transcript, the same way, for the same reason: no column to
+    # keep in sync, and "any clean answer resets it" needs no code. Only PERSON-DIRECTED
+    # abuse counts — swearing at the difficulty is frustration, and frustration is met
+    # with warmth, never a wrap. See stages.is_abuse_at_person.
+    abuse = stages.abuse_action(stages.trailing_abuse(user_answers))
+    if abuse:
+        # Never log the message itself: it is learner content (INT-07), and the whole point
+        # of this path is that we do not hold it against them.
+        log.info("abuse floor: session=%s action=%s stage=%s", body.session_id, abuse, st)
+
     # Interview Room: if attention has drifted (or the camera went off), the interviewer
     # raises it ONCE on this turn, in their own improvised voice. Tone only — the round
     # plan, difficulty and rigor are untouched.
@@ -1141,6 +1184,13 @@ async def session_turn(
         timeout=timed_out,
         engagement=engagement,
         resumed=resumed,
+        abuse=abuse,
+        # Only read on the closing turn — see stage_turn_directive. Skipping the query on
+        # every other turn keeps the variety engine off the hot path of a normal answer.
+        recent_closings=(
+            recent_lines(db, user_id, MEMORY_KIND_CLOSING, limit=5)
+            if st == "FEEDBACK" else None
+        ),
     )
 
     reply = await call_claude(
@@ -1152,8 +1202,43 @@ async def session_turn(
     )
     _save_message(db, body.session_id, "assistant", reply)
 
+    # ── The variety engine: remember what they HEARD ─────────────────────────
+    # Recorded only where a kind is CLEANLY ISOLABLE — i.e. where the whole reply IS that
+    # thing. A check-in turn is entirely a check-in; a de-escalation turn is entirely a
+    # de-escalation; the FEEDBACK turn's reply is entirely the closing. An "encouragement"
+    # buried mid-reply is NOT isolable without a second model call to go find it, so we do
+    # not pretend to store one. Every write is defensive and best-effort.
+    memory_kind = None
+    if abuse == "deescalate":
+        memory_kind = MEMORY_KIND_ENCOURAGEMENT
+    elif engagement == "checkin":
+        memory_kind = MEMORY_KIND_CHECKIN
+    elif st == "FEEDBACK" or abuse == "wrap" or engagement == "wrap":
+        # Every path whose reply is the last thing the interviewer says.
+        memory_kind = MEMORY_KIND_CLOSING
+    if memory_kind:
+        remember_line(db, user_id, body.session_id, memory_kind, reply)
+
     # Advance the stage machine.
-    if engagement == "wrap":
+    if abuse == "wrap":
+        # We de-escalated once and it continued. Close courteously and go to the readout,
+        # which scores — honestly — what actually happened. Same machinery as the silence
+        # wrap, a different reason: nothing is zeroed as a punishment, and the reason is
+        # stored so the readout can be truthful about why the session was short rather
+        # than implying they went quiet.
+        new_stage, wrapped_at = stages.early_wrap_transition(st)
+        new_round, new_awaiting, new_last = 0, 0, None
+        try:
+            db.execute(
+                text("UPDATE vyom_sessions SET early_wrap_reason=:r, early_wrap_stage=:st "
+                     "WHERE id=:id"),
+                {"r": WRAP_ABUSIVE, "st": wrapped_at, "id": body.session_id},
+            )
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            log.warning("early_wrap_reason not stored (apply migration 006?): %s", type(e).__name__)
+    elif engagement == "wrap":
         # They did not answer the check-in either. Close the interview courteously and go
         # straight to the readout, which scores — honestly — what actually happened. The
         # decision is persisted, so a refresh cannot dodge it, and nothing is zeroed as a
@@ -1173,8 +1258,25 @@ async def session_turn(
             db.rollback()
             log.warning("early_wrap_reason not stored (apply migration 006?): %s", type(e).__name__)
     elif st == "REVERSE":
-        # Not rating-gated; advance straight to READOUT when the round completes.
+        # Not rating-gated; advance to the closing ritual's FEEDBACK beat when complete.
         new_stage, new_round = stages.advance_after_reverse(round_index_after, level)
+        new_awaiting, new_last = 0, None
+    elif st == "FEEDBACK":
+        # They just told us how the session was for them. Store it for product review —
+        # defensively, like every other optional column: a missing column must never cost
+        # them their readout. The answer is in vyom_messages regardless (it is a normal
+        # turn); this is the queryable copy that outlives the transcript purge.
+        try:
+            db.execute(
+                text("UPDATE vyom_sessions SET experience_feedback=:f WHERE id=:id"),
+                {"f": content[:4000], "id": body.session_id},
+            )
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            log.warning("experience_feedback not stored (apply migration 008?): %s",
+                        type(e).__name__)
+        new_stage, new_round = stages.advance_after_feedback(round_index_after, level)
         new_awaiting, new_last = 0, None
     elif stages.should_await_rating(st, substantive):
         # DOMAIN/BEHAVIOURAL/CASE substantive answer: hold here until the learner
@@ -1425,6 +1527,11 @@ async def session_reask(
         line = ""   # upstream model failed — fall back, never block the candidate
     if not line:
         line = fallback(seed)
+    elif body.kind not in ("mute", "quiet", "noise"):
+        # A genuine improvised RE-ASK — remember it. The device lines (mute/quiet/noise)
+        # are not re-asks and are not stored; a fallback line is not stored either, because
+        # it came from a fixed pool and "avoid repeating it" is not a thing we can honour.
+        remember_line(db, user_id, body.session_id, MEMORY_KIND_REASK, line)
 
     audio_url = await _try_tts(body.session_id, line, body.voice)
     return ReaskResponse(reply=line, audio_url=audio_url)
@@ -2658,8 +2765,9 @@ def admin_purge(
 
     - Hard-delete messages of finished sessions past TRANSCRIPT_RETENTION_DAYS.
     - Hard-delete debriefs past DEBRIEF_RETENTION_DAYS.
+    - Hard-delete student memory past MEMORY_RETENTION_DAYS (its own, longer window).
     - Hard-delete soft-deleted accounts past DELETE_GRACE_DAYS (cascades to
-      messages/ratings/debriefs via FK ON DELETE CASCADE).
+      messages/ratings/debriefs/memory via FK ON DELETE CASCADE).
     All windows compared against the DB clock (NOW()). Guarded by ADMIN_TOKEN.
     """
     if not settings.ADMIN_TOKEN or x_admin_token != settings.ADMIN_TOKEN:
@@ -2688,6 +2796,24 @@ def admin_purge(
         """),
         {"days": settings.DEBRIEF_RETENTION_DAYS},
     )
+    # 2b) Student memory past its OWN window. Deliberately not joined to vyom_sessions:
+    #     a memory row may outlive the attempt it was made in (session_id is nullable by
+    #     design — see migration 008), so age is read from the memory row itself.
+    #     Wrapped defensively: an unapplied migration 008 must not stop the nightly job
+    #     purging transcripts, which is the part with a legal deadline attached.
+    mem_purged = 0
+    try:
+        mem_res = db.execute(
+            text("""
+                DELETE FROM vyom_student_memory
+                WHERE created_at < DATE_SUB(NOW(), INTERVAL :days DAY)
+            """),
+            {"days": settings.MEMORY_RETENTION_DAYS},
+        )
+        mem_purged = mem_res.rowcount or 0
+    except Exception as e:
+        log.warning("student memory not purged (apply migration 008?): %s", type(e).__name__)
+
     # 3) Right-to-erasure: hard-delete soft-deleted accounts past the grace window.
     #    Consents are user-scoped (no session FK), so purge them explicitly first.
     con_res = db.execute(
@@ -2701,6 +2827,24 @@ def admin_purge(
         """),
         {"days": settings.DELETE_GRACE_DAYS},
     )
+    # Memory rows are user-scoped and their session_id is NULLABLE, so the FK cascade
+    # below cannot be relied on to erase all of them: a row with no session would survive
+    # the account it belongs to. Purge by user_id explicitly, exactly as consents are.
+    try:
+        db.execute(
+            text("""
+                DELETE FROM vyom_student_memory
+                WHERE user_id IN (
+                    SELECT DISTINCT user_id FROM vyom_sessions
+                    WHERE deleted_at IS NOT NULL
+                      AND deleted_at < DATE_SUB(NOW(), INTERVAL :days DAY)
+                )
+            """),
+            {"days": settings.DELETE_GRACE_DAYS},
+        )
+    except Exception as e:
+        log.warning("student memory not erased (apply migration 008?): %s", type(e).__name__)
+
     sess_res = db.execute(
         text("""
             DELETE FROM vyom_sessions
@@ -2716,6 +2860,7 @@ def admin_purge(
         debriefs_purged=deb_res.rowcount or 0,
         sessions_hard_deleted=sess_res.rowcount or 0,
         consents_hard_deleted=con_res.rowcount or 0,
+        memory_purged=mem_purged,
     )
 
 

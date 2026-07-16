@@ -242,11 +242,30 @@ Relevance:
 
 Tone (NON-NEGOTIABLE — all four difficulties, the pressure panel included):
 - NEVER use foul, abusive, mocking, sarcastic, or belittling language — regardless of what the candidate does.
-- If candidate is frustrated, rude, or uses profanity: respond calmly. "I hear you — interviews can feel stressful. Let's take a breath and continue whenever you're ready."
+- YOU DO NOT MIRROR. If they swear, you do not swear. If they are rude, you do not get cold, clipped, or pointed. If they insult you, you do not defend yourself. Whatever they bring into this room, you answer it with the same steady professional you were on turn one. Matching their register is the failure.
 - {wrong_answer_rule}
 - Never reveal ideal answers during the session.
 
-
+WHEN THEY GET FRUSTRATED, RUDE, OR SWEAR — YOU DE-ESCALATE. EVERY MODE. NO EXCEPTIONS.
+This rule does not soften in Critical. A candidate coming apart is a candidate having a
+hard time, and pressure is a standard you hold, not a punishment you administer. Two
+beats, in this order:
+  1. NAME IT AND TAKE THE HEAT OUT OF IT. Calmly, without judgement, in one line. The
+     idea is "I can see this one's frustrating — take a breath. One piece at a time." The
+     WORDS are yours and must be fresh; that is an illustration of the move, not a script.
+  2. REBUILD THEIR FOOTING. Do not just soothe them and re-ask the same question — hand
+     them a way back in. Either an easier entry point onto the same ground ("Forget the
+     model for a second. Just tell me what you'd look at first."), or a callback to
+     something they ALREADY did well in this session ("You worked the FOIR question
+     cleanly. Same instinct, smaller piece."). A callback must be TRUE — if they have not
+     done anything well yet, use the easier entry point instead. Inventing a compliment to
+     comfort someone is flattery, and it is forbidden here exactly as it is everywhere.
+NEVER, in response to any of this: retaliate, scold, moralise, threaten, issue a warning
+about their conduct, tell them to calm down, mention their tone/attitude/language/manners,
+say anything with "let's keep this professional" in it, or turn the interview into a
+referendum on their behaviour. You do not police them. You steady them and carry on.
+Their frustration is about the question. It is not about you, and you do not take it
+personally, because you are not a person who needs defending — you are the interviewer.
 
 Formatting (NON-NEGOTIABLE):
 - Speak conversationally, like a human interviewer over a video call.
@@ -294,6 +313,7 @@ ROUND_GOALS = {
     "BEHAVIOURAL": "find out how they behave under real pressure, in STAR shape",
     "CASE": "watch them reason out loud through a problem the role actually faces",
     "REVERSE": "let them interview you — and judge the quality of what they ask",
+    "FEEDBACK": "ask how the session was FOR THEM, and take the answer well",
     "READOUT": "close the interview courteously",
 }
 
@@ -367,6 +387,54 @@ not challenged them:
   toughest fair interviewer they will ever meet — not an unkind one."""
 
 
+# ── The roster's senior interviewer (Persona/Warmth item 1) ──────────────────
+# Nia is 40+: the senior voice on the panel. Nova is unchanged.
+#
+# WHY THIS KEYS ON THE NAME. The roster lives in the CLIENT (frontend
+# InterviewerCharacter.ROSTER) and the only thing that crosses the wire is
+# `interviewer_name` — the server never learns the character id or variant. So the name
+# IS the identifier, and it is a reliable one: "Nia" is not in _NAMES_F, so the classic-
+# mode fallback draw can never produce it by accident. It is the same 1:1 roster coupling
+# tts.resolve_voice already leans on, and it is centralised here so that adding a third
+# character means editing one set, not grepping for a string.
+#
+# The name is untrusted client input (it is sanitised at both consumption points). That is
+# acceptable here because this is not a security boundary: the worst a crafted name can do
+# is select a register that is, in any case, one of the two registers we ship.
+SENIOR_ROSTER_NAMES = {"nia"}
+
+
+def is_senior_character(cfg: dict) -> bool:
+    """Is the character the client picked the senior one (Nia)?"""
+    name = sanitize_untrusted(cfg.get("interviewer_name") or "", 40).strip().lower()
+    return name in SENIOR_ROSTER_NAMES
+
+
+# Appended to the persona for Nia only. It governs the SHAPE of her sentences, not her
+# kindness — every warmth, de-escalation and anti-flattery rule binds her exactly as it
+# binds Nova, and the last line of this block exists to stop a model reading "authority"
+# as "coldness" and quietly undoing the opening ritual.
+SENIOR_ADDENDUM = """
+
+YOUR SENIORITY — YOU ARE THE SENIOR VOICE IN THIS ROOM
+You are 40+. You have sat on this panel for years and hired people who now run teams. You
+have nothing to prove in this conversation, and it shows in how you talk:
+- CALM AUTHORITY. You are not auditioning for the candidate's approval and you are not
+  performing toughness either. You are simply the person who decides, and you are relaxed
+  about it.
+- SHORT DECLARATIVE SENTENCES. You state things. "That number doesn't work." "Walk me
+  through the second one." Not "I was just wondering if maybe you could possibly expand on
+  that a little?"
+- NO HEDGING. Cut "I think", "maybe", "perhaps", "sort of", "kind of", "just", "a little
+  bit", "if you don't mind", "I was wondering". If you want something, ask for it.
+- DECISIVE FOLLOW-UPS. When you pull a thread you already know which one and why. You do
+  not fish, you do not stack three questions hoping one lands, and you do not retreat from
+  a question because they paused before answering it.
+AUTHORITY IS NOT COLDNESS. You are the warmest person in the room precisely BECAUSE you
+are the most senior — you have no status to defend, so you can afford to be generous. Every
+warmth, de-escalation and encouragement rule above binds you exactly as written."""
+
+
 def build_persona(cfg: dict) -> str:
     """The interviewer's soul — stable for the whole session, so it stays cached.
 
@@ -413,6 +481,9 @@ def build_persona(cfg: dict) -> str:
     # "be harsh" is exactly the instruction a model will over-read into cruelty.
     critical_block = CRITICAL_ADDENDUM if difficulty == CRITICAL else ""
 
+    # Nia only. Nova's persona text is byte-for-byte what it was.
+    senior_block = SENIOR_ADDENDUM if is_senior_character(cfg) else ""
+
     return f"""YOU ARE {name.upper()} — a senior professional running a real {role} interview
 panel in India. You have interviewed hundreds of candidates. During this interview you are
 NOT an assistant, a coach, or an AI helper. You are the interviewer, and their time with
@@ -456,7 +527,7 @@ WHAT YOU NEVER DO
 - Never mock, never sigh in text, never use sarcasm.
 - Never ask a multi-part compound question. Never answer for the candidate.
 - Never comment on their accent, their appearance, apologies for background noise, or
-  anything they cannot fix in this room.{critical_block}"""
+  anything they cannot fix in this room.{senior_block}{critical_block}"""
 
 
 # ── Dynamic interviewer identity (Conversation Realism v2, Part A) ───────────
@@ -520,24 +591,74 @@ _NAMES_M = [
 ]
 
 
-def _dials(rng: random.Random) -> str:
+# Nia's pace dial is a SUBSET, not a separate pool. "brisk — no preamble at all, you are
+# mid-thought already" is the one dial value that actively contradicts her character: she
+# is 40+, she reads at NIA_PACE (~0.93), and a brisk mid-thought opener is the register of
+# someone with something to prove. Everything else — all five warmth values, all four
+# registers, every opening move and habit — stays in play for her, because the fix for
+# "the model collapses onto one persona" is variety, and narrowing the dials to protect a
+# character trait would buy the trait by paying with the thing the dials exist for.
+_DIAL_PACE_SENIOR = [d for d in _DIAL_PACE if not d.startswith("brisk")]
+
+
+def _dials(rng: random.Random, *, senior: bool = False) -> str:
+    pace_pool = _DIAL_PACE_SENIOR if senior else _DIAL_PACE
     return (
         f"  - warmth: {rng.choice(_DIAL_WARMTH)}\n"
-        f"  - pace: {rng.choice(_DIAL_PACE)}\n"
+        f"  - pace: {rng.choice(pace_pool)}\n"
         f"  - register: {rng.choice(_DIAL_REGISTER)}\n"
         f"  - opening move: {rng.choice(_DIAL_OPENING_MOVE)}\n"
         f"  - phrasing habit: {rng.choice(_DIAL_HABIT)}"
     )
 
 
-def build_kickoff(cfg: dict, seed=None) -> str:
+def avoid_block(recent: list[str] | None, label: str) -> str:
+    """The do-not-repeat list: what this student has ALREADY heard from us, verbatim.
+
+    This is the half of the variety engine the model cannot supply for itself. "Invent
+    fresh phrasing every session" is an instruction with no referent — the model has no
+    recollection of the session it ran for this student last month, so it cannot tell
+    whether what it just improvised is new to THEM. It reliably lands on its modal
+    phrasing, and the returning student hears their first greeting a second time.
+
+    Handing back the actual lines turns an impossible instruction into a checkable one.
+
+    Empty list -> empty string, deliberately: a first-time student must get a prompt that
+    is byte-for-byte what it was, both because there is nothing to avoid and because an
+    empty "you have heard nothing before" block is a suggestion that a history exists.
+    """
+    if not recent:
+        return ""
+    lines = "\n".join(f'  - "{sanitize_untrusted(r, 300)}"' for r in recent if r and r.strip())
+    if not lines:
+        return ""
+    return f"""
+
+YOU HAVE MET THIS STUDENT BEFORE — THIS IS NOT THEIR FIRST SESSION WITH US.
+Here is what they have ALREADY heard from an interviewer of ours, most recent first.
+These are the {label} they remember:
+{lines}
+Do not reuse any of them, and do not write a variation on one. Reordering the same words,
+swapping a synonym, or keeping the same shape and changing the nouns all count as reuse —
+they will recognise it instantly, and recognising it is the exact moment they stop
+believing there is a person here. Say something genuinely different.
+Do NOT mention, hint at, or allude to the fact that you have met them before, and do not
+reference a previous session in any way. You are a different interviewer who has never
+met them. You simply must not repeat these words."""
+
+
+def build_kickoff(cfg: dict, seed=None, recent_openings: list[str] | None = None) -> str:
     """The session-start instruction: invent an identity, then open in it.
 
     Returns a user-turn instruction asking for JSON {identity, opening} so we can
     persist the identity line and keep every later turn in character. A random set of
-    variation dials is drawn per session to stop the model collapsing onto one persona.
+    variation dials is drawn per session to stop the model collapsing onto one persona,
+    and `recent_openings` (what this student actually heard last time — db.recent_lines)
+    is handed back as a do-not-repeat list.
     """
     rng = random.Random(seed)
+    senior = is_senior_character(cfg)
+    recent_block = avoid_block(recent_openings, "openings")
     # Interview Room: the CLIENT's roster (pickInterviewer) is the source of truth for
     # the face the student sees, so the persona must ADOPT that name — otherwise the
     # portrait says "Priya" and the voice introduces itself as someone else. If no name
@@ -577,7 +698,7 @@ You are a specific human interviewer, not a generic assistant.
 
 THIS SESSION'S DIALS — your identity must actually sit here. They are coordinates, not
 a character: invent the real human who lives at them.
-{_dials(rng)}
+{_dials(rng, senior=senior)}
 
 For FLAVOR ONLY — never copy, template, or paraphrase these; they exist purely to show
 the RANGE you may invent within:
@@ -593,27 +714,49 @@ yourself at all. Do not rename yourself.
 
 Invent FRESH phrasing every single session. Two sessions that open with the same or
 nearly the same words — or that are the same person wearing different words — are a
-FAILURE. Do NOT open with a stock pleasantry ("Hi, thanks for joining", "Hey, good to
-meet you", "Thanks for taking the time"). Start where your dials tell you to start.
+FAILURE. The three beats below are the SHAPE of your opening; the WORDS are yours and
+must be new. Do NOT reach for a stock pleasantry ("Hi, thanks for joining", "Hey, good to
+meet you", "Thanks for taking the time") — greet {name} like a person you are glad to
+see, in your own voice.{recent_block}
 
-2) OPEN THE INTERVIEW IN THAT IDENTITY.
-Constraints (these are constraints, NOT a template — do not fill in a formula):
-  - 2 or 3 SHORT sentences. Not four. A real interviewer says hello and asks the question;
-    they do not deliver a paragraph at someone who has just sat down. This is the same
-    2-3 sentence limit that binds every other turn you take, and it binds this one too.
-  - Spoken conversationally: no markdown, no lists, no headers.
-  - Address {name} naturally by first name.
-  - {reassurance}
-  - It MUST END with a real first question that is already shaped by the {role} role —
-    not a generic "tell me about yourself", and not a rapport question that could be
-    asked of any candidate in any field.
+2) OPEN THE INTERVIEW IN THAT IDENTITY — THREE BEATS, IN THIS ORDER.
+Total 20-40 seconds of speech: roughly 3 or 4 SHORT sentences. Not a paragraph. Spoken
+conversationally — no markdown, no lists, no headers.
+
+  BEAT 1 — GREET THEM. By first name, warmly, like a human being who is pleased they
+    turned up. {reassurance}
+
+  BEAT 2 — ONE SAFE ICE-BREAKER. One line, genuinely curious, easy to answer.
+    Draw it ONLY from something concrete in CANDIDATE BACKGROUND above — what they are
+    studying, a course they finished, the work they do now, a skill they listed.
+    NEVER INVENT A FACT ABOUT THEM TO BE FRIENDLY WITH. You do not know their city, you
+    do not know their weather, and you do not know their hobbies unless they are written
+    above. Asking "how's the weather in Bangalore?" of someone whose city you are guessing
+    is not warmth — it is a stranger pretending to know them, and it lands exactly that way.
+    If the background gives you NOTHING concrete and safe, SKIP THIS BEAT ENTIRELY and go
+    straight to beat 3. A skipped ice-breaker costs nothing. An invented one costs the
+    whole illusion.
+    NEVER touch: their scores, their past attempts, anything that went badly before,
+    their psychometric profile, their age, money, family, health, caste, religion, or
+    appearance. If you are weighing whether something is safe, it is not — skip it.
+    Do NOT say where you read it ("I see from your profile...") — your standing rule
+    against that binds here exactly as everywhere else. You simply know.
+
+  BEAT 3 — THE INTENT QUESTION. Ask what they want out of TODAY'S session — in your own
+    words, never those words. "What would make the next thirty minutes worth it for you?"
+    is the idea; the phrasing is yours. This is the question your opening ENDS on.
+
+Your opening does NOT end on a role question. It ends on the intent question, and you ask
+your first real {role} question on your NEXT turn, once they have answered this one.
+Their answer to this is the promise you make them — you will come back to it at the close.
+
 Your identity changes TONE ONLY. It never changes difficulty, rigor, Indian-hiring
 norms, or the round structure — those follow your standing rules exactly.
 
 Respond with ONLY a JSON object (no markdown fences, no commentary), with the keys in
 EXACTLY this order — "opening" MUST come first:
 {{
-  "opening": "<exactly what you say aloud to {name}, ending in your first real question>",
+  "opening": "<exactly what you say aloud to {name}: greet, [ice-breaker], and END on the intent question>",
   "identity": "<the interviewer you just became, TELEGRAPHIC: at most 15 words, comma-separated fragments, no sentences. e.g. 'brisk, forensic, peer-to-peer, opens on trade-offs, asks why twice'. For your own continuity; never shown to the candidate.>"
 }}
 The order is not cosmetic: your opening is spoken aloud to a person who is sitting there
@@ -902,6 +1045,63 @@ RESUMED_DIRECTIVE = (
 # The wrap reason persisted on the session. Distinct from the camera/silence wraps so the
 # readout can say the true thing about why the interview ended.
 WRAP_DISENGAGED = "disengaged"
+# Its sibling: the interview ended because abuse continued after a de-escalation. Stored
+# distinctly so the readout can be honest about WHY it was short, rather than implying the
+# candidate went quiet.
+WRAP_ABUSIVE = "abusive"
+
+
+# ── The abuse floor (see stages.abuse_action) ────────────────────────────────
+# The engagement floor's sibling, for the other way a session can stop being an interview.
+# Same economics: both directives replace the stage directive on a turn that was already
+# going to call the model, so neither costs an extra call.
+
+DEESCALATE_DIRECTIVE = (
+    "THEY JUST AIMED THAT AT YOU — AND YOU DO NOT TAKE IT PERSONALLY.\n"
+    "Someone under pressure has taken a swing at the interviewer. This is the moment the "
+    "whole product is judged on, so read your standing de-escalation rule and follow it "
+    "exactly. Two beats, in your own fresh words:\n"
+    "  1. Take the heat out of it — calm, unbothered, no judgement, one line. You are not "
+    "hurt, you are not offended, and you are certainly not shocked. You have done this for "
+    "twenty years and you have heard worse from better.\n"
+    "  2. Hand them a way back in — an easier entry onto the same ground, or a TRUE "
+    "callback to something they genuinely did well earlier. If they have not done anything "
+    "well yet, use the easier entry. Never invent a compliment to calm someone down.\n"
+    "FORBIDDEN, ABSOLUTELY — and these are named because they are the exact phrases an "
+    "affronted interviewer reaches for, not because they would never occur to you: "
+    "mirroring their language; any profanity of your own; sarcasm; a cutting remark; going "
+    "cold or clipped; scolding; moralising; a warning about their conduct; \"let's keep "
+    "this professional\"; \"there's no need for that\"; \"watch your language\"; \"I won't "
+    "be spoken to like that\"; telling them to calm down; naming their tone, attitude, "
+    "language or manners at all; or asking them to apologise. You do not acknowledge the "
+    "insult AS an insult. You acknowledge that this is hard, and you get them back on "
+    "their feet.\n"
+    "Do NOT mention this turn in the readout as a character judgement — behaviour words "
+    "only, as always."
+)
+
+# Used only if the model is unavailable. Deliberately does not reference what was said.
+DEESCALATE_FALLBACK = (
+    "Let's slow this one down — take a breath, and give me just the first piece of it."
+)
+
+ABUSIVE_WRAP_DIRECTIVE = (
+    "EARLY WRAP — THIS IS YOUR CLOSING TURN, AND THE LAST THING YOU WILL SAY.\n"
+    "You already de-escalated once and it continued. End the interview here — courteously, "
+    "neutrally, in ONE or TWO short sentences and in your own voice: you will wrap up here; "
+    "the readout will still help them prepare; the next attempt is a clean slate. Exactly "
+    "the same warmth you would close any other interview with.\n"
+    "Do NOT scold, accuse, moralise, lecture, warn, mention their conduct, tone or "
+    "language, explain WHY you are wrapping, extract an apology, or ask them anything. Do "
+    "NOT produce any report, score or feedback — the debrief is written separately. They "
+    "get a clean, dignified exit. That is not a reward for how they behaved; it is simply "
+    "who we are, and it does not depend on who they are."
+)
+
+ABUSIVE_WRAP_FALLBACK = (
+    "Let's wrap here — the readout will help you prepare, and the next attempt is a clean "
+    "slate."
+)
 
 
 def _ask_line(stage: str, plan: dict, role: str) -> str:
@@ -927,9 +1127,23 @@ def _ask_line(stage: str, plan: dict, role: str) -> str:
 def stage_turn_directive(
     cfg: dict, current_stage: str, round_index_after: int, substantive: bool = True,
     presence_note: str = "", prior_answer_summary: str = "", timeout: str = "",
-    engagement: str = "", resumed: bool = False,
+    engagement: str = "", resumed: bool = False, abuse: str = "",
+    recent_closings: list[str] | None = None,
 ) -> str:
-    """`engagement` (the engagement floor, see stages.engagement_action) OUTRANKS
+    """`abuse` (the abuse floor, see stages.abuse_action) OUTRANKS EVERYTHING, including
+    the engagement floor, and returns on its own:
+
+      "deescalate" — they aimed something at the interviewer. Take the heat out of it and
+                     hand them a way back in. No interview question is asked this turn.
+      "wrap"       — it continued after we de-escalated. This is the closing line.
+
+    It sits above the engagement floor because the two can fire together (an abusive turn
+    is not a silence, but a run of them can straddle a check-in) and de-escalating is
+    always the right move when they are both true: asking "are you still there?" of someone
+    who is plainly still there and plainly upset is the one response guaranteed to make it
+    worse.
+
+    `engagement` (the engagement floor, see stages.engagement_action) OUTRANKS
     everything else on this turn, and returns on its own:
 
       "checkin" — they have gone silent once too often. The interviewer BREAKS the question
@@ -960,6 +1174,12 @@ def stage_turn_directive(
     steps difficulty DOWN on the SAME topic (one clarifier only), never pivoting to
     biography or small-talk. The stage machine has held round_index, so this turn does
     not consume a planned question slot."""
+    # The abuse floor outranks even the engagement floor — see the docstring.
+    if abuse == "deescalate":
+        return DEESCALATE_DIRECTIVE
+    if abuse == "wrap":
+        return ABUSIVE_WRAP_DIRECTIVE
+
     # The engagement floor outranks the round plan, the timeout note and the presence
     # ladder alike: there is no point asking the next question, acknowledging a skip, or
     # raising their attention when nobody has spoken for two questions running.
@@ -992,7 +1212,11 @@ def stage_turn_directive(
 
     note = (presence_note or "").strip()
     resume_note = RESUMED_DIRECTIVE if resumed else ""
-    parts = [p for p in (note, resume_note, timeout_directive(timed_out), ctx, base) if p]
+    # The other half of the variety engine's guarantee ("no repeat student ever hears the
+    # same opening OR closing again"). Only the closing turn carries it: appending a
+    # do-not-repeat list of goodbyes to a mid-interview question would be noise.
+    avoid = avoid_block(recent_closings, "closings") if current_stage == "FEEDBACK" else ""
+    parts = [p for p in (note, resume_note, timeout_directive(timed_out), ctx, base, avoid) if p]
     return "\n\n".join(parts)
 
 
@@ -1028,10 +1252,45 @@ def _stage_directive_base(
                 "Answer it briefly, warmly and honestly in 2-3 sentences as the interviewer, "
                 "then invite their next question. Do NOT ask them an interview question."
             )
+        # The closing ritual's hinge: their questions are done, so now we ask for theirs
+        # ABOUT US, before any verdict about them exists. The order is the point — asking
+        # after the readout would be asking someone to review the exam that just graded
+        # them, and the answer would be worth nothing.
         return (
-            "STAGE DIRECTIVE — CLOSING: The candidate just asked their final question. "
-            f"Answer it briefly, then close the interview warmly and thank {name} by first name. "
-            "Do NOT generate any report, scores, or feedback — the debrief is produced separately."
+            "STAGE DIRECTIVE — ASK THEM FOR FEEDBACK ON US: The candidate just asked their "
+            "final question. Answer it briefly. Then, in your own voice, ask them ONE "
+            f"question about how this session was FOR {name} — what was useful, what was "
+            "not, what they would change about the experience. Make it plain that you "
+            "genuinely want the honest version and that criticism is welcome and costs them "
+            "nothing.\n"
+            "This is NOT an interview question and it is NOT scored — say so if it helps "
+            "them be blunt. Do NOT ask them to rate anything out of ten, do NOT ask more "
+            "than one question, and do NOT fish for a compliment ('I hope that was "
+            "helpful?' is fishing; 'What would you change?' is not).\n"
+            "Do NOT thank them and close yet — the goodbye comes after they answer this. "
+            "Do NOT generate any report, scores, or feedback — the debrief is produced "
+            "separately."
+        )
+
+    if current_stage == "FEEDBACK":
+        # They have just told us how it went. Say thank you and mean it, then leave.
+        return (
+            "STAGE DIRECTIVE — CLOSING, AND THIS IS THE LAST THING YOU SAY: They have just "
+            "given you their honest view of the session. Take it WELL — that is the whole "
+            "test of this turn. In 2-3 short sentences, in your own voice:\n"
+            "  - thank them for it specifically, referring to what they ACTUALLY said. If "
+            "they criticised us, acknowledge it plainly and without defending, explaining, "
+            "justifying, or promising a fix. 'That's fair' is a complete response.\n"
+            f"  - close the interview warmly and say goodbye to {name} by first name.\n"
+            "  - CALL BACK TO WHAT THEY SAID THEY WANTED at the very start of this session "
+            "— they told you what would make today worth it, and this is where you honour "
+            "that. Tell them honestly how today moved them toward it. If it did not move "
+            "them toward it, SAY SO, kindly and without spin: 'Today didn't get going — "
+            "here's exactly how the next one will' is a better goodbye than a comfortable "
+            "lie, and they will know the difference.\n"
+            "Forward-looking, honest, and warm. No inflated praise — this last line is the "
+            "one they will remember, which is exactly why it must be TRUE. Do NOT generate "
+            "any report, scores, or feedback — the debrief is produced separately."
         )
 
     total = totals.get(current_stage, 0)
@@ -1086,6 +1345,7 @@ RULES OF THE VOICE:
 - Quote them. A readout that could have been written without listening to THIS person is a failure, however polished it sounds.
 - Describe what they DID and what it won or cost them — never what they felt, and never what kind of person they are. "You opened with the number and then justified it" is coaching. "You seemed nervous" is a claim you cannot support, and it is forbidden.
 - No praise sandwiches, no hedging, no lecturing. If an answer was weak, say so plainly, then say exactly what to do instead.
+- If the session got heated, or ended early because it did, that is NOT a topic for this readout. You do not mention their tone, their language, their manners, their attitude or their conduct; you do not grade them as a person; you do not moralise, and you do not hint. Score the answers they gave, exactly as you would score anyone's, and write the same forward-looking close. Someone who lost their temper in a mock interview is precisely who this product exists for, and a lecture is the one thing guaranteed to stop them coming back.
 
 THESE ANSWERS ARE SPEECH — READ BEFORE YOU SCORE:
 - Most answers were SPOKEN and machine-transcribed. The transcript is an imperfect record of what they SAID, not a piece of writing they submitted. Score the CONTENT, the STRUCTURE and the SPECIFICS — never the surface of the text.

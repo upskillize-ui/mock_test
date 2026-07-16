@@ -60,6 +60,8 @@ EXPECTED: list[tuple[str, str, str | None]] = [
     ("007_scoring_context", "vyom_debriefs", "gated_band"),
     ("007_scoring_context", "vyom_debriefs", "substantive_answers"),
     ("007_scoring_context", "vyom_debriefs", "scored"),
+    ("008_student_memory", "vyom_student_memory", None),
+    ("008_student_memory", "vyom_sessions", "experience_feedback"),
 ]
 
 # The newest migration the code expects. Reported at boot so a deploy can be eyeballed in

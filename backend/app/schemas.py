@@ -510,3 +510,7 @@ class PurgeResponse(BaseModel):
     debriefs_purged: int
     sessions_hard_deleted: int
     consents_hard_deleted: int
+    # Student-memory rows past MEMORY_RETENTION_DAYS. Defaulted so an unapplied
+    # migration 008 still returns a well-formed response (the purge reports 0 rather
+    # than 500-ing the nightly retention job).
+    memory_purged: int = 0

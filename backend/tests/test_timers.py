@@ -47,7 +47,24 @@ def test_a_skip_in_the_reverse_round_does_advance():
     # If this did not advance, a silent candidate could never reach the close.
     assert s.consumes_question_slot("REVERSE", False, timed_out_skip=True) is True
     new_stage, _ = s.advance_after_reverse(s.stage_total("Fresher", "REVERSE"), "Fresher")
+    assert new_stage == "FEEDBACK"
+
+
+def test_a_skip_in_the_feedback_beat_does_advance():
+    """The same exemption, for the same reason, one beat later — and here it is a TRAP if
+    it is missing: FEEDBACK asks "how was that for you?", so a candidate who does not want
+    to answer would be re-asked it every time the clock expired, forever. The one turn in
+    the session where nothing is being asked OF them must not be the only one they cannot
+    leave."""
+    assert s.consumes_question_slot("FEEDBACK", False, timed_out_skip=True) is True
+    new_stage, _ = s.advance_after_feedback(s.stage_total("Fresher", "FEEDBACK"), "Fresher")
     assert new_stage == "READOUT"
+
+
+def test_silence_in_the_feedback_beat_is_never_chased():
+    """The engagement floor must not check in during FEEDBACK. Someone who does not want to
+    tell us how the session went has answered by not answering."""
+    assert s.engagement_action("FEEDBACK", 99, 0) == ""
 
 
 def test_a_skip_is_never_rated():

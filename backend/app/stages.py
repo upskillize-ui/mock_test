@@ -3,13 +3,16 @@
 Pure logic only (no DB, no I/O) so it is trivially testable. Consumed by main.py.
 
 Stages (INT-04):
-  SETUP -> WARMUP -> DOMAIN -> BEHAVIOURAL -> CASE -> REVERSE -> READOUT -> DONE
+  SETUP -> WARMUP -> DOMAIN -> BEHAVIOURAL -> CASE -> REVERSE -> FEEDBACK -> READOUT -> DONE
 
 The learner answers questions in WARMUP/DOMAIN/BEHAVIOURAL/CASE (these are the
 "scored" stages). Confidence ratings (INT-01) are collected from DOMAIN onward;
 WARMUP is intentionally exempt — warm-up answers advance straight to the next
 question. REVERSE flips the flow: the learner asks the interviewer questions
-(not rated). READOUT is terminal input-wise; the debrief is at /session/end.
+(not rated). FEEDBACK is the closing ritual's last beat — we ask THEM how the session
+was, and the answer is stored for product review, never scored and never shown to the
+model that writes the readout. READOUT is terminal input-wise; the debrief is at
+/session/end.
 """
 
 import re
@@ -17,12 +20,17 @@ import re
 from .config import settings
 
 # Ordered, answerable stages (excludes SETUP/READOUT/DONE which take no /turn answer).
-STAGE_ORDER = ["WARMUP", "DOMAIN", "BEHAVIOURAL", "CASE", "REVERSE"]
+STAGE_ORDER = ["WARMUP", "DOMAIN", "BEHAVIOURAL", "CASE", "REVERSE", "FEEDBACK"]
 SCORED_STAGES = {"WARMUP", "DOMAIN", "BEHAVIOURAL", "CASE"}
 # Stages whose answers are followed by a confidence rating. WARMUP is excluded
 # by product decision — warm-up is a rapport ice-breaker, not rating-gated.
 RATING_STAGES = {"DOMAIN", "BEHAVIOURAL", "CASE"}
 TERMINAL_STAGES = {"READOUT", "DONE"}
+# FEEDBACK is answerable but NOT scored and NOT rated — it is the one turn in the session
+# where the candidate is not being assessed at all. Deliberately absent from SCORED_STAGES
+# and RATING_STAGES above: what they think of US must never touch what we think of THEM,
+# in either direction. A student who says the session was too hard has not scored badly,
+# and a student who flatters us has not scored well.
 
 STAGE_LABELS = {
     "WARMUP": "Warm-up",
@@ -30,6 +38,7 @@ STAGE_LABELS = {
     "BEHAVIOURAL": "Behavioural",
     "CASE": "Case",
     "REVERSE": "Your Questions",
+    "FEEDBACK": "Your Feedback",
     "READOUT": "Readout",
     "DONE": "Complete",
 }
@@ -72,6 +81,10 @@ def stage_plan(level: str) -> dict:
             "BEHAVIOURAL": behavioural,
             "CASE": 1,
             "REVERSE": 2,
+            # One question, every session, every level. "How was that for you?" asked once
+            # is a question; asked twice it is a survey, and a survey at the end of an
+            # interview is the moment the room stops being a room.
+            "FEEDBACK": 1,
         },
         "case_variant": case_variant,
         "notice_period": notice,
@@ -83,7 +96,7 @@ def stage_total(level: str, stage: str) -> int:
 
 
 def next_stage(stage: str) -> str:
-    """The stage that follows `stage`. After REVERSE comes READOUT; then DONE."""
+    """The stage that follows `stage`. After REVERSE comes FEEDBACK, then READOUT, then DONE."""
     if stage in TERMINAL_STAGES:
         return "DONE" if stage == "READOUT" else "DONE"
     try:
@@ -171,6 +184,146 @@ def is_non_substantive(text: str) -> bool:
     return bool(_NONANSWER_RX.match(stripped) or _CLARIFY_RX.match(stripped))
 
 
+# ── The abuse floor (Persona/Warmth item 2) ─────────────────────────────────
+# Sibling of the engagement floor below: same shape (derived from the transcript, no
+# column to keep in sync, resets on any clean answer), same two-strike escalation, same
+# courteous wrap. It answers one question only: has this candidate ABUSED THE INTERVIEWER,
+# repeatedly, such that the session should be closed courteously?
+#
+# THE LINE THIS DRAWS, AND WHY IT IS DRAWN THERE:
+#   "This is fucking hard."   -> FRUSTRATION. Not abuse. Never wraps. Never counts.
+#   "You're a fucking idiot." -> ABUSE. Counts.
+#   The discriminator is whether the profanity is aimed AT A PERSON. That is deliberate
+#   symmetry with the rule that binds the interviewer in Critical mode: pressure lands on
+#   the answer, never on the person. We hold ourselves to it, so we measure them by it.
+#
+#   It matters enormously that we get this asymmetry right. A candidate swearing at the
+#   DIFFICULTY is a candidate having a hard time, and the correct response is the
+#   de-escalation + confidence rebuild in the persona — warmth, not a wrap. Wrapping them
+#   would punish someone for finding an interview stressful, which is the single worst
+#   thing this product could do. So frustration NEVER reaches this function's threshold;
+#   only sustained, person-directed abuse does.
+#
+# WHY IT IS DELIBERATELY UNDER-SENSITIVE:
+#   A false positive here ENDS A STUDENT'S INTERVIEW. A false negative means an abusive
+#   candidate gets de-escalated at instead of wrapped — which is, at worst, us being too
+#   patient with someone. Those costs are nowhere near symmetric, so every judgement call
+#   below is resolved toward "do nothing". The lexicon is short and unambiguous rather
+#   than comprehensive; the targeting requirement is strict; the threshold requires the
+#   behaviour to REPEAT after we have already tried to de-escalate.
+#
+# SCRIPT COVERAGE — A KNOWN GAP, ACCEPTED FOR GO-LIVE:
+#   The lexicon is English + Hinglish IN LATIN SCRIPT ONLY. Abuse typed in Devanagari or
+#   another Indic script does not trip it. That is a false NEGATIVE — the safe direction —
+#   so the failure mode is that we are too patient with someone, never that we end an
+#   interview we should not have. Extending to Indic scripts is a future addition; until
+#   then, the prompt-level de-escalation still handles those turns in full, because it is
+#   the MODEL reading the message and it is not limited to any script. The only thing this
+#   gap costs is the wrap, i.e. the rung nobody is in a hurry to reach.
+#
+# STATUS: the lexicon and threshold below are APPROVED as tuned (owner sign-off, go-live).
+# Reviewed against real answer shapes; see tests/test_persona_warmth.py, which pins both
+# directions. Retune deliberately, not casually — and if you widen the lexicon, re-read the
+# asymmetry above first.
+_PROFANITY_RX = re.compile(
+    r"\b(fuck(er|ing|ed)?|f\*+k|shit|bastard|bitch|asshole|arsehole|dick|prick|cunt|"
+    r"idiot|stupid|moron|dumbass|retard(ed)?|scum|"
+    r"chutiya|chutiye|bhosdi(ke|wala)?|madarchod|behenchod|bkl|mc|bc|gandu|harami|kutta|kamina)\b",
+    re.IGNORECASE,
+)
+# Is a person being addressed? Second-person pronouns (English + Hinglish-Latin), or a
+# vocative "you <profanity>" construction. Without one of these, profanity is read as
+# frustration at the task and is left entirely alone.
+_SECOND_PERSON_RX = re.compile(
+    r"\b(you|your|you'?re|u|ur|urself|yourself|tu|tum|tera|teri|tere|tumhara|tumhari|aap|apka)\b",
+    re.IGNORECASE,
+)
+# A bare slur with no sentence around it ("chutiya.", "asshole!") is abuse even though it
+# names no one: in a two-person conversation there is only one person it can be aimed at.
+_BARE_SLUR_MAX_WORDS = 3
+
+# Abuse aimed at the interviewer is SHORT AND HOT. Nobody composes a 60-word paragraph to
+# tell you to get lost. An answer this long that contains person-directed profanity is
+# almost always the BEHAVIOURAL round working exactly as intended — a candidate recounting
+# a real workplace conflict and quoting what someone said to them:
+#
+#   "The tech lead lost his temper and told me you are an idiot for shipping on a Friday.
+#    I waited until after the call, asked what specifically broke, and we agreed a rollback."
+#
+# That is a good answer to a STAR question. Without this ceiling the second-person test
+# reads the QUOTED insult as an insult to us and de-escalates at a candidate who is calmly
+# describing how they handled being insulted — which would be both absurd and insulting.
+# Measured against real answer shapes; a long abusive rant slips through instead, and that
+# is the direction this whole module is built to fail in.
+_ABUSE_MAX_WORDS = 25
+
+# Two strikes, mirroring checkin -> wrap. One person-directed hit gets a de-escalation and
+# a way back in; a SECOND consecutive one, after we have already offered that, wraps.
+#
+# ENDING THE SESSION IS THE LAST RUNG OF THE LADDER, AND IT IS REACHABLE ONLY THROUGH THE
+# EARLIER ONES. Because this is 2 and not 1, abuse_action() must return "deescalate" before
+# it can ever return "wrap": there is no input where a candidate's first swing ends their
+# interview. Setting this to 1 would not "tighten" the floor — it would delete the
+# de-escalation and the confidence rebuild entirely, which are the whole point, and leave a
+# product that hangs up on people. If you change this number, change it upward.
+# (The wrap REASON sentinel lives next to WRAP_DISENGAGED in prompts.py, with the rest of
+# the wrap family.)
+ABUSE_TURNS_BEFORE_WRAP = 2
+
+
+def is_abuse_at_person(text: str) -> bool:
+    """True only for profanity aimed AT SOMEONE. Frustration at the task returns False.
+
+    Pure and deterministic — no model call, no network, and cheap enough to run on every
+    turn. See the block comment above for why this is tuned to under-fire.
+    """
+    if not text:
+        return False
+    stripped = (text or "").strip()
+    if not _PROFANITY_RX.search(stripped):
+        return False
+    words = len(stripped.split())
+    # A bare slur, alone: nothing else in the message to be angry at.
+    if words <= _BARE_SLUR_MAX_WORDS:
+        return True
+    # Long enough to be an actual answer -> it is one. See _ABUSE_MAX_WORDS.
+    if words > _ABUSE_MAX_WORDS:
+        return False
+    return bool(_SECOND_PERSON_RX.search(stripped))
+
+
+def trailing_abuse(user_answers: list[str]) -> int:
+    """How many of the LAST answers in a row were person-directed abuse.
+
+    The run breaks on ANY answer that is not — including a terse or unhelpful one. Coming
+    back to the actual question, in any form, is exactly what we want to reward, so it
+    resets the count to zero and costs nothing.
+    """
+    n = 0
+    for content in reversed(list(user_answers or [])):
+        if not is_abuse_at_person(content or ""):
+            break
+        n += 1
+    return n
+
+
+def abuse_action(abusive_turns: int) -> str:
+    """What the interview must do about abuse: "" | "deescalate" | "wrap".
+
+    `abusive_turns` is the trailing run INCLUDING the message just submitted.
+      below the threshold -> DE-ESCALATE. Name it calmly, hand them a way back in. This is
+                             the response we want to give, and we give it every time.
+      at/past it          -> WRAP. We already de-escalated and it continued. Close
+                             courteously and neutrally, score what actually happened.
+    """
+    n = max(0, int(abusive_turns or 0))
+    if n >= ABUSE_TURNS_BEFORE_WRAP:
+        return "wrap"
+    if n > 0:
+        return "deescalate"
+    return ""
+
+
 def should_await_rating(stage: str, is_substantive: bool) -> bool:
     """True iff a just-submitted answer in `stage` must be rated before proceeding.
 
@@ -190,12 +343,15 @@ def consumes_question_slot(stage: str, is_substantive: bool, timed_out_skip: boo
     in any scored stage (WARMUP included: running out of time is not an answer, and a
     round of 2 warm-ups still means 2 real warm-ups).
 
-    REVERSE is the one exception: there is no question of ours to re-ask — the slot is
-    the candidate's own question. If they let the clock run out we let the round advance,
-    otherwise a silent candidate could never reach the close.
+    REVERSE and FEEDBACK are the exceptions: there is no question of OURS to re-ask — the
+    slot is the candidate's own question, or their view of us. If they let the clock run
+    out we let the round advance, otherwise a silent candidate could never reach the close.
+    For FEEDBACK specifically, not advancing here would trap them: the stage would re-ask
+    "so how was that session for you?" every time the clock expired, forever, and the one
+    turn where nothing is being asked OF them would become the only one they cannot leave.
     """
     if timed_out_skip:
-        return stage == "REVERSE"
+        return stage in ("REVERSE", "FEEDBACK")
     if is_rating_gated(stage) and not is_substantive:
         return False
     return True
@@ -266,10 +422,13 @@ def engagement_action(stage: str, skips: int, substantive_so_far: int) -> str:
                            and score honestly what actually happened. Nothing is zeroed as
                            a punishment; there simply is not much to score.
 
-    REVERSE is exempt: the "question" there is the candidate's own, there is nothing of
-    ours to check in about, and a silent candidate must still be able to reach the close.
+    REVERSE and FEEDBACK are exempt: the "question" in REVERSE is the candidate's own and
+    the one in FEEDBACK is about US, so there is nothing of ours to check in about — and a
+    silent candidate must still be able to reach the close. Someone who does not want to
+    tell us how the session went has answered the question by not answering it, and
+    chasing them for it would be the single most self-regarding thing this product does.
     """
-    if (stage or "").upper() == "REVERSE":
+    if (stage or "").upper() in ("REVERSE", "FEEDBACK"):
         return ""
     n = max(0, int(skips or 0))
     threshold = checkin_threshold(substantive_so_far)
@@ -284,6 +443,11 @@ def stage_label(stage: str, round_index: int, level: str, awaiting_rating: bool 
     """Human progress label, e.g. 'Behavioural · Question 2 of 4'."""
     name = STAGE_LABELS.get(stage, stage.title())
     if stage in TERMINAL_STAGES:
+        return name
+    # FEEDBACK is one beat and it is not a question of ours. "Your Feedback · Question 1
+    # of 1" would count it like an interview question they are being marked on — which is
+    # the one thing this turn is not.
+    if stage == "FEEDBACK":
         return name
     total = stage_total(level, stage)
     # While rating, we reference the answer just given (round_index already
@@ -326,10 +490,21 @@ def early_wrap_transition(current_stage: str) -> tuple[str, str]:
 
 
 def advance_after_reverse(round_index: int, level: str) -> tuple[str, int]:
-    """REVERSE is not rating-gated; advance straight to READOUT when complete."""
+    """REVERSE is not rating-gated; advance to the FEEDBACK beat when complete.
+
+    (Was: straight to READOUT. The closing ritual now puts one question between the two —
+    we ask them how it went before we tell them how they went.)
+    """
     if round_index >= stage_total(level, "REVERSE"):
-        return "READOUT", 0
+        return "FEEDBACK", 0
     return "REVERSE", round_index
+
+
+def advance_after_feedback(round_index: int, level: str) -> tuple[str, int]:
+    """FEEDBACK is one turn, not scored, not rated. Then the readout."""
+    if round_index >= stage_total(level, "FEEDBACK"):
+        return "READOUT", 0
+    return "FEEDBACK", round_index
 
 
 # ── INT-03: readiness bands ────────────────────────────────────────────────

@@ -20,7 +20,8 @@ from app import stages as s  # noqa: E402
 
 def test_stage_plan_by_level():
     fresher = s.stage_plan("Fresher")
-    assert fresher["totals"] == {"WARMUP": 2, "DOMAIN": 4, "BEHAVIOURAL": 3, "CASE": 1, "REVERSE": 2}
+    assert fresher["totals"] == {"WARMUP": 2, "DOMAIN": 4, "BEHAVIOURAL": 3, "CASE": 1,
+                                 "REVERSE": 2, "FEEDBACK": 1}
     assert fresher["case_variant"] == "short"
     assert fresher["notice_period"] is False
 
@@ -42,7 +43,12 @@ def test_stage_order_and_advancement():
     assert s.advance_after_rating("CASE", 1, "Fresher") == ("REVERSE", 0)
     # REVERSE is not rating-gated; 2 questions -> READOUT.
     assert s.advance_after_reverse(1, "Fresher") == ("REVERSE", 1)
-    assert s.advance_after_reverse(2, "Fresher") == ("READOUT", 0)
+    # The closing ritual (Persona/Warmth item 4) puts one beat between the candidate's
+    # last question and the readout: we ask THEM how it went before we tell them how they
+    # went. REVERSE therefore lands on FEEDBACK, and FEEDBACK lands on READOUT.
+    assert s.advance_after_reverse(2, "Fresher") == ("FEEDBACK", 0)
+    assert s.advance_after_feedback(0, "Fresher") == ("FEEDBACK", 0)
+    assert s.advance_after_feedback(1, "Fresher") == ("READOUT", 0)
 
 
 def test_rating_gating():

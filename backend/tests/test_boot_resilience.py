@@ -63,7 +63,7 @@ def test_warming_is_a_noop_when_tts_disabled():
     orig = _patch_synth(_boom)
     try:
         with _tts_env(enabled=False, key="whatever"):
-            summary = asyncio.run(t.warm_clip_pack([t.settings.TTS_VOICE_FEMALE]))
+            summary = asyncio.run(t.warm_clip_pack([t.resolve_voice("female")]))
         assert summary["warmed"] == 0 and summary["failed"] == 0
     finally:
         t.synthesize = orig
@@ -77,7 +77,7 @@ def test_warming_is_best_effort_when_every_synth_fails():
     orig = _patch_synth(_fail)
     try:
         with _tts_env(enabled=True, key="invalid-key"):
-            summary = asyncio.run(t.warm_clip_pack([t.settings.TTS_VOICE_FEMALE]))
+            summary = asyncio.run(t.warm_clip_pack([t.resolve_voice("female")]))
         assert summary["warmed"] == 0
         assert summary["failed"] == len(t.clip_pack_lines())   # every line tried, all failed
         assert summary["cached"] == 0
@@ -95,7 +95,7 @@ def test_a_hanging_vendor_is_bounded_and_never_blocks_boot():
         with _tts_env(enabled=True, key="invalid-key"):
             start = time.monotonic()
             summary = asyncio.run(t.warm_clip_pack(
-                [t.settings.TTS_VOICE_FEMALE],
+                [t.resolve_voice("female")],
                 per_call_timeout=0.05, budget_seconds=0.2,
             ))
             elapsed = time.monotonic() - start

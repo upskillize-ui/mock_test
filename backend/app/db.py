@@ -1,8 +1,10 @@
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
+import hashlib
 import json
 import logging
+import re
 
 from .config import settings
 
@@ -88,6 +90,108 @@ def fetch_alumni_intel(db: Session, company: str, role: str, limit: int = 6) -> 
         f"(use naturally during the interview — do NOT list them to the learner):\n"
         + "\n".join(lines)
     )
+
+
+# ── Student memory (migration 008): the variety engine ───────────────────────
+# The closed set of memory kinds, enforced HERE rather than by a database ENUM, so that
+# Flagship can add a memory type without a migration. See migration_008 for the why.
+MEMORY_KIND_OPENING = "opening"
+MEMORY_KIND_CLOSING = "closing"
+MEMORY_KIND_CHECKIN = "checkin"
+MEMORY_KIND_REASK = "reask"
+MEMORY_KIND_ENCOURAGEMENT = "encouragement"
+MEMORY_KINDS = frozenset({
+    MEMORY_KIND_OPENING,
+    MEMORY_KIND_CLOSING,
+    MEMORY_KIND_CHECKIN,
+    MEMORY_KIND_REASK,
+    MEMORY_KIND_ENCOURAGEMENT,
+})
+
+_MEMORY_NOISE_RX = re.compile(r"[^a-z0-9\s]+")
+_MEMORY_WS_RX = re.compile(r"\s+")
+
+
+def normalize_line(text_in: str) -> str:
+    """Casefold, strip punctuation, collapse whitespace.
+
+    The unit of comparison for "has this student heard this before?". Without it,
+    "Good morning, Asha!" and "Good morning Asha." are two different memories and the
+    student hears the same greeting twice — the exact failure the table exists to stop.
+    """
+    return _MEMORY_WS_RX.sub(" ", _MEMORY_NOISE_RX.sub(" ", (text_in or "").lower())).strip()
+
+
+def line_digest(text_in: str) -> str:
+    """Content address of a normalised line. Indexable; TEXT is not (see migration 008)."""
+    return hashlib.sha256(normalize_line(text_in).encode("utf-8")).hexdigest()
+
+
+def remember_line(db: Session, user_id: str, session_id: str | None, kind: str,
+                  content: str, meta: dict | None = None) -> bool:
+    """Record one thing this student HEARD. Returns True if stored.
+
+    DEFENSIVE BY CONSTRUCTION, like every other optional-column write in this codebase:
+    a missing table (migration 008 not applied) must never break a live interview. The
+    cost of failing here is that the interviewer might repeat itself in six months. The
+    cost of raising here is that the candidate's session dies at the greeting. Those are
+    not close, so this swallows everything and says so in the log.
+    """
+    if not user_id or not content or not content.strip():
+        return False
+    if kind not in MEMORY_KINDS:
+        # A typo'd kind writes a row nothing will ever read back — silent and useless.
+        # Loud instead: this is a programming error, not a runtime condition.
+        log.warning("refusing to store unknown memory kind %r (see db.MEMORY_KINDS)", kind)
+        return False
+    try:
+        db.execute(
+            text("""
+                INSERT INTO vyom_student_memory
+                    (user_id, session_id, kind, content, content_digest, meta)
+                VALUES (:uid, :sid, :kind, :content, :digest, :meta)
+            """),
+            {
+                "uid": user_id,
+                "sid": session_id,
+                "kind": kind,
+                "content": content.strip(),
+                "digest": line_digest(content),
+                "meta": json.dumps(meta) if meta else None,
+            },
+        )
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        log.warning("memory not stored (apply migration 008?): %s", type(e).__name__)
+        return False
+
+
+def recent_lines(db: Session, user_id: str, kind: str, limit: int = 5) -> list[str]:
+    """The last `limit` lines of `kind` this student heard, newest first.
+
+    Read on the kickoff path, so it is bounded and indexed (idx_memory_user_kind_recent
+    serves both the WHERE and the ORDER BY). Returns [] on ANY failure — a variety engine
+    that cannot read its history degrades to "improvise blind", which is exactly the
+    behaviour we had before this table existed.
+    """
+    if not user_id or kind not in MEMORY_KINDS:
+        return []
+    try:
+        rows = db.execute(
+            text("""
+                SELECT content FROM vyom_student_memory
+                WHERE user_id = :uid AND kind = :kind
+                ORDER BY created_at DESC, id DESC
+                LIMIT :limit
+            """),
+            {"uid": user_id, "kind": kind, "limit": int(limit)},
+        ).fetchall()
+        return [r[0] for r in rows if r[0]]
+    except Exception as e:
+        log.warning("memory not read (apply migration 008?): %s", type(e).__name__)
+        return []
 
 
 def get_student_context(user_id: str, db: Session) -> dict:

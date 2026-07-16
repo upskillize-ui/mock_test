@@ -42,17 +42,27 @@ def test_kickoff_demands_improvisation_and_forbids_copying_examples():
 
 
 def test_kickoff_opening_constraints_not_a_template():
+    """The opening is a RITUAL now — greet, ice-breaker, intent question — not a formula.
+
+    THIS TEST'S CONTRACT CHANGED (Persona/Warmth item 3). It used to assert the opening was
+    2-3 sentences and ENDED on a role-shaped question, explicitly forbidding rapport. The
+    warm-openings spec inverts exactly that: the opening now ends on the INTENT question
+    ("what do you want out of today?"), and the first role question comes on the next turn,
+    once they have answered it. The 20-40 second budget buys the third beat, so the cap
+    moved 2-3 -> 3-4 sentences; "not a paragraph at someone who has just sat down" is still
+    the constraint, and it is still asserted below.
+    """
     k = p.build_kickoff(_cfg())
-    # The opening is capped at 2-3 sentences — the SAME limit the persona puts on every
-    # other turn ("2-3 SHORT sentences per turn, then STOP"). It used to allow four, and
-    # measured openings were running to five: a paragraph delivered at someone who has just
-    # sat down, which is neither what a person does nor what we told the model to do
-    # everywhere else. Tightening it also happens to be worth ~0.6s of the start latency,
-    # because those are tokens a candidate is sitting there waiting for.
-    assert "2 or 3 SHORT sentences" in k
-    assert "Not four" in k
-    # Must land on a real, role-shaped first question (not generic rapport).
-    assert "shaped by the" in k and "tell me about yourself" in k.lower()
+    assert "3 or 4 SHORT sentences" in k
+    assert "Not a paragraph" in k
+    assert "20-40 seconds" in k
+    # The three beats, in order.
+    greet = k.index("BEAT 1 — GREET THEM")
+    breaker = k.index("BEAT 2 — ONE SAFE ICE-BREAKER")
+    intent = k.index("BEAT 3 — THE INTENT QUESTION")
+    assert greet < breaker < intent
+    # It ends on the intent question, NOT on a role question.
+    assert "Your opening does NOT end on a role question" in k
     # Identity is tone-only — never difficulty/structure.
     assert "never changes difficulty" in k.lower() or "TONE ONLY" in k
 

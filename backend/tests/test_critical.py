@@ -187,8 +187,14 @@ def test_a_frustrated_or_rude_candidate_is_still_met_calmly_under_pressure():
     the guardrail most likely to be quietly lost, because the mode's whole premise argues
     against it."""
     s = flat(p.build_system_prompt(_cfg()))
-    assert "If candidate is frustrated, rude, or uses profanity: respond calmly" in s
+    # The canned one-liner this used to assert on ("If candidate is frustrated, rude, or
+    # uses profanity: respond calmly") was replaced by the two-beat de-escalation block —
+    # same guarantee, now with a confidence rebuild attached and fresh wording required.
+    assert "WHEN THEY GET FRUSTRATED, RUDE, OR SWEAR — YOU DE-ESCALATE. EVERY MODE. NO EXCEPTIONS." in s
+    assert "This rule does not soften in Critical" in s
+    assert "REBUILD THEIR FOOTING" in s
     assert "regardless of what the candidate does" in s
+    assert "YOU DO NOT MIRROR" in s
 
 
 def test_the_word_cheating_still_appears_nowhere_in_critical():

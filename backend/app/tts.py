@@ -21,6 +21,7 @@ import hashlib
 import logging
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -28,6 +29,53 @@ import httpx
 from .config import settings
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Voice:
+    """Every vendor parameter that differs BETWEEN interviewers, in one object.
+
+    WHY THIS IS A BUNDLE AND NOT TWO ARGUMENTS
+      `cache_key` and `build_payload` must agree, exactly, on the parameters used to
+      synthesise a clip. When they disagree the failure is silent and nasty: the payload
+      asks for one thing, the key hashes another, and the cache happily serves audio that
+      was synthesised under settings nobody is running any more.
+
+      That was a live trap here. `pace` used to be read independently by both functions
+      from the global `settings.TTS_PACE`. The moment pace became PER-INTERVIEWER (Nia
+      reads slower than Nova), the payload would have varied while the key did not — so
+      retuning NIA_PACE and restarting would have served the OLD pace from disk, forever,
+      with no error. The exact "tune it on the Space, hear no change" bug that a config
+      knob exists to avoid.
+
+      One frozen object, passed to both, closes that hole by construction: there is no
+      longer a way to synthesise under parameters the key did not hash. Anything added
+      here that changes the audio MUST also be added to cache_key — that is the contract,
+      and `test_cache_key_covers_every_voice_field` enforces it rather than trusting it.
+
+    NOTE there is no `pitch` field: bulbul:v3 ignores pitch (a v2-only knob). Nia's lower
+    voice is a SPEAKER choice — see config.NIA_SPEAKER.
+    """
+
+    speaker: str
+    pace: float
+
+    def cache_fields(self) -> str:
+        """The voice's contribution to a cache key. Every field, always."""
+        return f"spk={self.speaker}|pace={self.pace}"
+
+
+def resolve_voice(pref: str | None) -> Voice:
+    """Map the learner's voice preference to the interviewer's actual vendor settings.
+
+    The roster is the CLIENT's (frontend InterviewerCharacter.ROSTER) and the server never
+    learns the character id — only "female" or "male" crosses the wire. Female is Nia, the
+    senior interviewer; male is Nova. That 1:1 mapping is the roster's, not ours: if a third
+    character is ever added, this is the function that grows a real lookup.
+    """
+    if (pref or "").lower() == "male":
+        return Voice(speaker=settings.TTS_VOICE_MALE, pace=settings.TTS_PACE)
+    return Voice(speaker=settings.NIA_SPEAKER, pace=settings.NIA_PACE)
 
 # v3 synthesis of a full sentence routinely takes several seconds; the old 5s read
 # ceiling timed out on essentially every call (RequestError -> None -> "silent TTS").
@@ -204,18 +252,22 @@ def split_sentences(text: str) -> list[str]:
     return [p for p in parts if p]
 
 
-def cache_key(text: str, speaker: str) -> str:
+def cache_key(text: str, voice: Voice) -> str:
     """Stable content address for a synthesised clip.
 
     Hashes the PREPROCESSED text plus every parameter that changes the audio the
-    vendor returns — **model, speaker, and sample rate** — so a model/voice upgrade
-    can NEVER serve stale audio from a previous version (e.g. legacy Bulbul v2 clips
-    can't leak through after the v3 upgrade). The key is independent of surrounding
-    markdown noise because the text is preprocessed first.
+    vendor returns — **model, sample rate, temperature, and every field of `voice`
+    (speaker + pace)** — so a model/voice/tuning change can NEVER serve stale audio from
+    a previous version (e.g. legacy Bulbul v2 clips can't leak through after the v3
+    upgrade, and re-pacing Nia can't keep playing the old read). The key is independent
+    of surrounding markdown noise because the text is preprocessed first.
+
+    The per-voice half comes from `voice.cache_fields()` — the SAME object build_payload
+    sends to the vendor. See the Voice docstring for why that matters.
     """
     payload = (
-        f"{preprocess(text)}|model={settings.TTS_MODEL}|spk={speaker}"
-        f"|sr={settings.TTS_SAMPLE_RATE}|temp={settings.TTS_TEMPERATURE}|pace={settings.TTS_PACE}"
+        f"{preprocess(text)}|model={settings.TTS_MODEL}|{voice.cache_fields()}"
+        f"|sr={settings.TTS_SAMPLE_RATE}|temp={settings.TTS_TEMPERATURE}"
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
@@ -250,30 +302,34 @@ def _write_cache(key: str, data: bytes) -> None:
         log.warning("tts cache write failed: %s", type(e).__name__)
 
 
-def build_payload(text: str, speaker: str) -> dict:
-    """Assemble the Bulbul v3 request body for `text`.
+def build_payload(text: str, voice: Voice) -> dict:
+    """Assemble the Bulbul v3 request body for `text` in `voice`.
 
     v3 notes baked in here:
-      - NO pitch/loudness (unsupported on v3 — sending them errors the request).
+      - NO pitch/loudness (unsupported on v3 — sending them errors the request). Nia's
+        lower voice is `voice.speaker`, not a number; see config.NIA_SPEAKER.
       - temperature + pace tune delivery; speech_sample_rate up to 48000.
       - dict_id is attached only when a pronunciation dictionary is configured.
+
+    Per-interviewer parameters come from `voice` — the same object cache_key hashes, so
+    the body and the key can never describe different audio.
     """
     payload = {
         "text": preprocess(text),
         "target_language_code": settings.TTS_LANG,
         "model": settings.TTS_MODEL,
-        "speaker": speaker,
+        "speaker": voice.speaker,
         "output_audio_codec": "mp3",
         "speech_sample_rate": settings.TTS_SAMPLE_RATE,
         "temperature": settings.TTS_TEMPERATURE,
-        "pace": settings.TTS_PACE,
+        "pace": voice.pace,
     }
     if settings.TTS_DICT_ID:
         payload["dict_id"] = settings.TTS_DICT_ID
     return payload
 
 
-async def synthesize(text: str, speaker: str) -> bytes | None:
+async def synthesize(text: str, voice: Voice) -> bytes | None:
     """Call Sarvam and return decoded audio bytes, or None on ANY failure.
 
     Never raises, never logs the API key or the text being synthesized.
@@ -296,7 +352,7 @@ async def synthesize(text: str, speaker: str) -> bytes | None:
     else:
         log.debug("tts preprocess no-op (v3 may handle it natively): %r", text)
 
-    payload = build_payload(text, speaker)
+    payload = build_payload(text, voice)
     headers = {
         "api-subscription-key": settings.SARVAM_API_KEY,
         "Content-Type": "application/json",
@@ -373,7 +429,7 @@ def ack_line(seed: int) -> str:
     return ACK_LINES[abs(int(seed)) % len(ACK_LINES)]
 
 
-async def get_shared_audio_hash(text: str, speaker: str) -> str | None:
+async def get_shared_audio_hash(text: str, voice: Voice) -> str | None:
     """Cache-first synth for a SHARED, session-independent clip (the ack pack, the
     backchannels).
 
@@ -384,10 +440,10 @@ async def get_shared_audio_hash(text: str, speaker: str) -> str | None:
     """
     if not text or not text.strip():
         return None
-    key = cache_key(text, speaker)
+    key = cache_key(text, voice)
     if read_cache(key) is not None:
         return key
-    audio = await synthesize(text, speaker)
+    audio = await synthesize(text, voice)
     if audio is None:
         return None
     _write_cache(key, audio)
@@ -406,12 +462,16 @@ def clip_pack_lines() -> list[str]:
 
 
 async def warm_clip_pack(
-    speakers: list[str],
+    voices: list[Voice],
     *,
     per_call_timeout: float = _WARM_CALL_TIMEOUT,
     budget_seconds: float = _WARM_BUDGET_SECONDS,
 ) -> dict:
     """Synthesise the whole shared clip pack for these voices, at startup.
+
+    Takes full Voice bundles, not speaker ids: the pack must be warmed under the SAME
+    parameters the session will ask for, or every warmed clip misses its key and the
+    first ack of every interview pays a vendor call it was supposed to have prepaid.
 
     HARD-bounded and best-effort by construction: a dead or hanging TTS account at boot must
     never stop the app serving, never delay it becoming healthy, and never leave a zombie
@@ -427,9 +487,9 @@ async def warm_clip_pack(
         return summary
 
     deadline = (time.monotonic() + budget_seconds) if budget_seconds else None
-    for speaker in speakers:
+    for voice in voices:
         for line in clip_pack_lines():
-            key = cache_key(line, speaker)
+            key = cache_key(line, voice)
             hit = read_cache(key)
             if hit is not None:
                 summary["cached"] += 1
@@ -443,7 +503,7 @@ async def warm_clip_pack(
                 # HARD per-call ceiling: wait_for cancels a hung synth (and closes its HTTP
                 # client) even if the client's own timeout somehow does not fire.
                 got = await asyncio.wait_for(
-                    get_shared_audio_hash(line, speaker),
+                    get_shared_audio_hash(line, voice),
                     timeout=per_call_timeout,
                 )
             except Exception as e:  # incl. asyncio.TimeoutError — warming NEVER raises
@@ -459,7 +519,7 @@ async def warm_clip_pack(
     return summary
 
 
-async def get_audio_hash(session_id: str, text: str, speaker: str) -> str | None:
+async def get_audio_hash(session_id: str, text: str, voice: Voice) -> str | None:
     """Return a cache hash the client can fetch audio by, or None if unavailable.
 
     Order: cache hit (free) -> per-session cost guard -> vendor synth. Any failure
@@ -468,7 +528,7 @@ async def get_audio_hash(session_id: str, text: str, speaker: str) -> str | None
     if not text or not text.strip():
         return None
 
-    key = cache_key(text, speaker)
+    key = cache_key(text, voice)
 
     # 1) Cache hit — no vendor call, nothing billed. Still METERED: the seconds it saved
     #    us are exactly what the cache is worth, and that is worth knowing.
@@ -484,7 +544,7 @@ async def get_audio_hash(session_id: str, text: str, speaker: str) -> str | None
         return None
 
     # 3) Vendor synth — billed, and metered in seconds.
-    audio = await synthesize(text, speaker)
+    audio = await synthesize(text, voice)
     if audio is None:
         return None
 
