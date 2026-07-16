@@ -6,6 +6,28 @@ package-lock.json
 tts_cache/
 scripts/_tts_probe_out.mp3
 
+# ── BUILD EVIDENCE NEVER GOES IN GIT. THIS IS A STANDING RULE. ───────────────
+# Screenshots, renders, recordings, and any other artefact produced to PROVE a phase
+# worked: they live on disk, and a report references them BY FILENAME ONLY. Do not
+# commit them. Do not LFS them. Do not make an exception for "just this one".
+#
+# WHY, because the cost is invisible until it isn't:
+#   The HF Space's pre-receive hook rejects ANY raw binary, and it scans the FULL
+#   HISTORY of the pushed range — not just the tip. So one committed .png does not
+#   inconvenience a future push; it PERMANENTLY BLOCKS EVERY DEPLOY until someone
+#   rewrites published history to remove it. That already happened once: the room-ui
+#   phase committed 45 screenshots, its deploy was rejected, and the Space silently sat
+#   two phases behind until the persona-warmth phase hit the same wall and had to purge
+#   them all out of history and force-push.
+#   Converting them to LFS is NOT a fix for history that already contains the raw blobs.
+#
+# The Dockerfile never copies docs/, so none of this art was ever reaching the Space
+# anyway. It was pure deploy risk for zero runtime value.
+#
+# Build-critical art is the ONE exception, and it is not this: art a page actually
+# imports must be in git, tracked via LFS — see the interviewer note below.
+docs/screenshots/
+
 # Interviewer avatar art is now BUILD-CRITICAL (InterviewerCharacter.jsx imports it),
 # so it must be in git. HF rejects raw binaries, so it is tracked via Git LFS —
 # see .gitattributes. Do NOT re-ignore these.

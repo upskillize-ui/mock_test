@@ -1,8 +1,10 @@
 # PERSONA_WARMTH_REPORT.md — senior Nia, warmth, variety, de-escalation
 
-All five items are built. `339 backend + 100 frontend tests pass` (37 of the backend ones
+All five items are built. `341 backend + 100 frontend tests pass` (39 of the backend ones
 are new, in `tests/test_persona_warmth.py`). Migration 008 is **applied and verified**
-against Aiven; the HF push is **pending your confirmation**, as always.
+against Aiven. Pushed to `origin` and, once unblocked, to the **HF Space** — the deploy was
+rejected twice by committed screenshots, which is now a solved problem with a standing rule
+attached (§9).
 
 Three things to know before anything else in this report:
 
@@ -17,8 +19,8 @@ Three things to know before anything else in this report:
    known gap for a future addition, and session-ending stays the ladder's last rung, after
    de-escalation and rebuild. Both are now pinned by tests.
 
-**No open design decisions remain.** What's left in §9 is yours to trigger: the HF push,
-your Sarvam audition, and LEGAL on the retention window.
+**No open design decisions remain.** What's left in §10 is yours: your Sarvam audition, and
+LEGAL on the retention window.
 
 ---
 
@@ -92,7 +94,14 @@ reads as someone with something to prove). All five warmth values, all four regi
 every opening move and habit stay in play — narrowing the dials to protect a trait would
 buy the trait by paying with the exact thing the anti-convergence dials exist for.
 
-### Looks (`RobotInterviewer.jsx`) — see `docs/screenshots/persona-warmth/`
+### Looks (`RobotInterviewer.jsx`)
+
+> **Evidence, by filename only** (build evidence is not committed — see §9). On the machine
+> that produced them: `docs/screenshots/persona-warmth/nia-vs-nova.png` (all four figures,
+> Nova included), `nia-head-streak-and-brows.png` (the streak and the set brows, zoomed),
+> `nia-collar-lapel.png` (the collar, after the bow-tie fix below). Regenerate any time with
+> a static React render + headless Chrome; the component is pure given `variant`/`state`/
+> `tone`.
 
 Five changes, all `fem`-gated: squarer cranium, **angular set brows** (`rx` 1.6 → 0.3, +4°
 permanent converge, sat 1px lower — her neutral is already level-eyed), **silver streak**
@@ -127,7 +136,7 @@ phrases are named explicitly because they are what an affronted interviewer actu
 reaches for — a guardrail test caught that two of them weren't banned, and I fixed the
 prompt rather than the test.
 
-### The abuse floor (`stages.abuse_action`) — **your decision needed**
+### The abuse floor (`stages.abuse_action`) — **approved as tuned**
 
 Repeated abuse → courteous wrap, in the engagement-floor family (same derivation from the
 transcript, same two-strike shape, same `early_wrap_reason` persistence, new `WRAP_ABUSIVE`
@@ -431,12 +440,76 @@ ice-breaker honesty rules · feedback beat never scored/rated, never fishes, nev
 silent candidate · variety engine (variations count, never reveals the memory, first-timer
 gets a byte-identical prompt, injection sanitised).
 
-**Full suite: 339 backend, 100 frontend, all passing.** Six pre-existing tests needed
+**Full suite: 341 backend, 100 frontend, all passing.** Six pre-existing tests needed
 updating; five were mechanical (FEEDBACK in the chain, `LATEST_MIGRATION`, `Voice`
 signatures) and **two encoded expectations that genuinely moved** — the opening contract
 (§4) and Nia's payload pace (§1). Both are called out above rather than quietly flipped.
 
-## 9. Pending
+## 9. The HF deploy was blocked by committed screenshots — and the standing rule that follows
+
+**STANDING RULE, effective now: build evidence never goes in git.** Screenshots, renders,
+recordings, any artefact produced to prove a phase worked — they live **on disk**, and
+reports reference them **by filename only**. `docs/screenshots/` is gitignored. No
+exceptions, and LFS is not an alternative. The rule and its full reasoning are written into
+`.gitignore`, which is where the next person will actually meet it.
+
+### What happened
+
+The first `git push hf main` was rejected outright:
+
+```
+Your push was rejected because it contains binary files.
+Offending files:
+  - docs/screenshots/persona-warmth/nia-vs-nova.png
+  - docs/screenshots/room-ui/after-room-1920.png
+  ... (45 screenshots in total)
+```
+
+**This is why the room-ui phase never reached the Space either.** Only 3 of the offending
+files were this phase's; the rest came from the previous one, which had been sitting
+unpushed at `a0b1e46` ever since. Not a one-off — a tripwire that fires on every phase that
+adds a screenshot.
+
+My first fix was wrong, and it's worth recording why. I extended the existing LFS rule
+(`frontend/src/interviewers/*.png` is LFS-tracked, and `.gitignore` already said *"HF
+rejects raw binaries, so it is tracked via Git LFS"*) to cover `docs/screenshots/`, and
+renormalised the files into pointers. **The second push was rejected too.** The hook scans
+the **full history of the pushed range**, not the tree at the ref:
+
+| | raw PNG blobs? |
+|---|---|
+| tip tree, after LFS conversion | ✅ clean — pointers |
+| `a0b1e46` (room-ui phase) | ❌ still raw |
+| `6aa8d36` (this phase) | ❌ still raw |
+
+**So converting to LFS does nothing for history that already contains raw blobs.** A single
+committed binary doesn't inconvenience a future push — it permanently blocks every deploy
+until someone rewrites published history.
+
+### What was done
+
+Owner chose to drop screenshots from git entirely. `docs/screenshots` was purged from
+`a0b1e46` and `6aa8d36` with `git filter-branch`, the LFS commit was dropped as moot, and
+`docs/screenshots/` was gitignored with the rule above.
+
+- The 45 PNGs are **on disk, untouched** — only untracked.
+- Verified: no `docs/screenshots` in any commit in `6713968..HEAD`; every remaining tracked
+  PNG (the roster art, which IS build-critical and imported by `InterviewerCharacter.jsx`)
+  is an LFS pointer.
+- **Rewritten SHAs** — `a0b1e46 → 2c7f2e4`, `6aa8d36 → 87e50da`. Both were on `origin/main`,
+  so `origin` was force-pushed. Commits at or before `6713968` were untouched and kept their
+  SHAs, so `hf/main` remained a clean ancestor.
+- Backup ref `backup/pre-screenshot-purge` points at the pre-rewrite tip.
+- The Dockerfile never copied `docs/`, so **nothing about what the Space runs changed**. The
+  screenshots were pure deploy risk for zero runtime value.
+
+### The trade this makes
+
+The visual evidence for Nia's redesign is **no longer reviewable on GitHub**. §2 references
+it by filename; the files exist only on the machine that made them. That is the accepted
+cost of a `main` that can always deploy.
+
+## 10. Pending
 
 - [ ] **HF push — pending your explicit confirmation.** Nothing pushed. When you're ready,
       the Space needs `NIA_SPEAKER` / `NIA_PACE` set (or it uses `ritu` @ 0.93), and note
@@ -454,6 +527,6 @@ signatures) and **two encoded expectations that genuinely moved** — the openin
       inversion stands.**
 - [ ] **Optional:** city/interests in `student_profiles` would make the ice-breaker real
       rather than usually-skipped.
-- [ ] Frontend has no renderer, so Nia's art is verified by screenshot + a byte-identical
+- [ ] Frontend has no renderer, so Nia's art is verified by on-disk screenshot + a byte-identical
       Nova check, not by a test. A snapshot test would need a jsdom/vitest dependency —
       say the word.
