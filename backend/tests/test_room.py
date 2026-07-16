@@ -192,11 +192,20 @@ def test_the_attribution_pattern_test_actually_catches_the_bad_shape():
     assert not ATTRIBUTION_RX.search("Never say nervous, bored, disinterested or anxious.")
 
 
-def test_presence_band_is_counts_only():
-    assert pr.presence_band(0) == "Offer-Ready"
-    assert pr.presence_band(2) == "Interview-Ready"
-    assert pr.presence_band(4) == "Building"
-    assert pr.presence_band(5) == "Not Ready"
+def test_presence_reports_counts_and_carries_no_band_of_its_own():
+    """SCORING_CONTEXT item 9 — the band appears EXACTLY ONCE, in the Readiness block.
+
+    Presence used to ship a readiness pill of its own, so the readout said a band twice,
+    about two different things. Presence is report-only — it never enters the benchmark —
+    so a readiness claim was never its to make.
+    """
+    r = pr.presence_readout({"window_blur": 3}, camera_at_join=True)
+    assert r["measured"] is True
+    assert r["events_total"] == 3 and r["by_type"] == {"window_blur": 3}
+    assert r["coaching_note"]
+    assert "band" not in r
+    assert not hasattr(pr, "presence_band"), "the presence band is gone, not just unrendered"
+    assert not hasattr(pr, "PRESENCE_BANDS")
 
 
 # ── Early wrap: end the interview, never the score ─────────────────────────

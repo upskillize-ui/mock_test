@@ -298,9 +298,59 @@ class EndRequest(BaseModel):
     session_id: str = Field(..., max_length=36)
 
 
+class SessionProfile(BaseModel):
+    """SCORING_CONTEXT item 1: the context every number on the readout is read against.
+
+    No score appears anywhere without this. A band with no context attached is not a
+    verdict, it is a compliment — which is exactly how Easy/10min/raw-100 came to read
+    stronger than Critical/45min/raw-75.
+    """
+    role: str = ""
+    company: str = ""
+    level: str = ""
+    difficulty: str = ""
+    duration_min: int = 0
+    # Reserved: TEXT/VOICE/HYBRID lands with the Intake sprint. None until then, and the
+    # strip says so honestly rather than guessing.
+    mode: Optional[str] = None
+    # interview | coach — the lobby heading now reads FEEDBACK; the column keeps its name.
+    feedback: str = "interview"
+    rounds_covered: list[str] = []
+    rounds_skipped: list[str] = []
+
+
+class ScoreContext(BaseModel):
+    """SCORING_CONTEXT items 2/3/5/8: the benchmark and everything needed to defend it.
+
+    Every field here is STORED per attempt, never recomputed on read — retuning
+    scoring.WEIGHTS must not change a score a learner has already been shown.
+    """
+    # The context-weighted score, display-capped at 100.
+    benchmark: int
+    # The same maths uncapped. Distinguishes "cleared 100 with room to spare" from "just".
+    benchmark_uncapped: float
+    # The RAW, level-anchored rubric score. Never re-weighted; coverage never touches it.
+    raw: int
+    # The band the raw answers EARNED, before any context gate.
+    earned_band: str
+    # True when a gate capped the band below what the answers earned.
+    capped: bool = False
+    # The binding gate's ladder copy ("Easy caps at Building. Step up to Realistic…").
+    gate_copy: str = ""
+    gates: list[dict] = []
+    # {difficulty, evidence, feedback, coverage, mode} — the exact multipliers used.
+    factors: dict = {}
+    # Which release of the weights table scored this attempt.
+    weights_version: str = ""
+    # "How this score is calculated" — one plain-words row per factor.
+    math: list[dict] = []
+
+
 class DebriefResponse(BaseModel):
     session_id: str
     # INT-03: the readout returns a band, never the raw percentage.
+    # SCORING_CONTEXT item 3: this is the band AFTER the context gates — the one and only
+    # band the UI renders (item 9: it appears exactly once, in the Readiness block).
     overall_band: str
     round_bands: dict
     one_line: str
@@ -328,6 +378,25 @@ class DebriefResponse(BaseModel):
     # Set when the interview ended early (e.g. the camera stayed off). Neutral language;
     # the rounds that were completed are still scored normally — nothing is zeroed.
     early_wrap: Optional[str] = None
+
+    # ── SCORING_CONTEXT ──────────────────────────────────────────────────────
+    # The context strip. Present on EVERY readout, scored or not.
+    profile: SessionProfile = SessionProfile()
+    # False when the attempt fell below the evidence floor (< 3 substantive answers).
+    # When false there is no band, no benchmark and no tiles — `evidence` says why, and
+    # overall_band/score are not to be rendered. Skipped ≠ failed.
+    scored: bool = True
+    substantive_answers: int = 0
+    # {substantive_answers, minimum, copy} when scored is False; {} otherwise.
+    evidence: dict = {}
+    # The benchmark block. None on an unscored attempt, and on rows debriefed before
+    # migration 007 existed (history keeps rendering those from raw + band).
+    score: Optional[ScoreContext] = None
+    # {days, copy} — when to come back, and why that long.
+    reattempt_window: dict = {}
+    # Item 11: the stable hand-off to NudgeAI (CareerIQ later). Presence, calibration and
+    # focus events are deliberately NOT in here — they are report-only.
+    ecopro: dict = {}
 
 
 class AlumniQuestionSubmit(BaseModel):
@@ -373,13 +442,28 @@ class HistoryListItem(BaseModel):
     ended_at: datetime | None
     status: str
     completion_type: str | None
+    # The RAW rubric score. Kept for back-compat and for the detail view; history's TREND
+    # reads `benchmark` — a raw score compared across different difficulties and durations
+    # is the exact apples-to-oranges this sprint removed from the readout.
     overall: int | None
     one_line: str | None
+    # SCORING_CONTEXT item 7. None for an unscored attempt, and for rows debriefed before
+    # migration 007 (they have a raw score but never had a benchmark computed).
+    benchmark: int | None = None
+    band: str | None = None
+    # Item 6: False when the attempt fell below the evidence floor. History still SHOWS it
+    # — "Ended early — not scored", navy and neutral. Quitting cannot hide a run, and it is
+    # never framed as a failure.
+    scored: bool = True
 
 
 class HistoryListResponse(BaseModel):
     sessions: list[HistoryListItem]
     total: int
+    # Item 7: the benchmark trend, newest first, and the latest-3 average that any
+    # placement view reads instead of a best-ever.
+    trend: list[dict] = []
+    latest_average: float | None = None
 
 
 class HistoryDetailResponse(BaseModel):

@@ -206,8 +206,16 @@ def wrap_directive() -> str:
 
 
 # ── Readout: "Professional presence" ─────────────────────────────────────────
-PRESENCE_BANDS = ("Offer-Ready", "Interview-Ready", "Building", "Not Ready")
-
+#
+# SCORING_CONTEXT item 9 — PRESENCE HAS NO BAND. It used to carry a readiness pill of its
+# own, which meant the readout said "Interview-Ready" in two places, about two different
+# things, and a learner had no way to know which one was the verdict. Worse, presence has
+# never entered the benchmark (item 11 — it is report-only, and it stays that way), so its
+# pill was a readiness claim made by something that does not score readiness.
+#
+# The band now lives in exactly ONE place: the Readiness block. This module reports counts
+# and one coaching line. If you are reaching for presence_band() to render a pill, that is
+# the bug this comment exists to stop.
 _COACHING = {
     "tab_hidden": "You left the interview tab during the session. In a live panel, "
                   "looking away from the screen reads as disengagement — stay in the room.",
@@ -222,20 +230,9 @@ _COACHING = {
 }
 
 
-def presence_band(attention_events_total: int) -> str:
-    n = max(0, int(attention_events_total or 0))
-    if n == 0:
-        return "Offer-Ready"
-    if n <= 2:
-        return "Interview-Ready"
-    if n <= 4:
-        return "Building"
-    return "Not Ready"
-
-
 def presence_readout(by_type: dict, camera_at_join: bool) -> dict:
     """The readout's Professional-presence block. Counts only — never a judgement about
-    the person, never an emotion label.
+    the person, never an emotion label, and (since SCORING_CONTEXT item 9) never a band.
 
     When the learner joined camera-off, camera-based signals are omitted entirely: they
     were never measured, so they are never reported and never scored.
@@ -246,7 +243,6 @@ def presence_readout(by_type: dict, camera_at_join: bool) -> dict:
         counts = {k: v for k, v in counts.items() if k not in CAMERA_SIGNALS}
 
     total = sum(counts.values())
-    band = presence_band(total)
 
     if total == 0:
         note = ("You stayed present throughout — no attention drift picked up. "
@@ -256,7 +252,9 @@ def presence_readout(by_type: dict, camera_at_join: bool) -> dict:
         note = _COACHING.get(worst, "Hold your attention on the interviewer throughout.")
 
     return {
-        "band": band,
+        # The card renders on this, not on a band. Presence is REPORT-ONLY: it never
+        # enters the benchmark and it never carries a readiness verdict of its own.
+        "measured": True,
         "events_total": total,
         "by_type": counts,
         "coaching_note": note,

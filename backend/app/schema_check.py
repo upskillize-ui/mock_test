@@ -53,6 +53,13 @@ EXPECTED: list[tuple[str, str, str | None]] = [
     ("006_interview_room", "vyom_sessions", "early_wrap_reason"),
     ("006_interview_room", "vyom_sessions", "early_wrap_stage"),
     ("006_interview_room", "vyom_sessions", "camera_at_join"),
+    ("007_scoring_context", "vyom_debriefs", "benchmark"),
+    ("007_scoring_context", "vyom_debriefs", "benchmark_uncapped"),
+    ("007_scoring_context", "vyom_debriefs", "score_factors"),
+    ("007_scoring_context", "vyom_debriefs", "weights_version"),
+    ("007_scoring_context", "vyom_debriefs", "gated_band"),
+    ("007_scoring_context", "vyom_debriefs", "substantive_answers"),
+    ("007_scoring_context", "vyom_debriefs", "scored"),
 ]
 
 # The newest migration the code expects. Reported at boot so a deploy can be eyeballed in

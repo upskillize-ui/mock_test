@@ -26,6 +26,7 @@ from . import stt
 from . import delivery
 from . import dev_auth
 from . import presence
+from . import scoring
 from . import schema_check
 from .schemas import (
     StartSessionRequest, StartSessionResponse,
@@ -36,7 +37,7 @@ from .schemas import (
     FocusEventRequest, FocusEventResponse, WrapRequest, WrapResponse,
     RatingRequest, RatingResponse, SessionState,
     SessionMessagesResponse,
-    EndRequest, DebriefResponse,
+    EndRequest, DebriefResponse, SessionProfile, ScoreContext,
     AlumniQuestionSubmit, HealthResponse,
     HistoryListResponse, HistoryListItem, HistoryDetailResponse,
     ConsentRequest, ConsentResponse,
@@ -1746,6 +1747,340 @@ def submit_rating(
     return RatingResponse(accepted=True, state=state)
 
 
+def _load_user_answers(db: Session, session_id: str) -> list[str]:
+    """Every learner answer, verbatim and untagged — the input to the evidence floor.
+
+    Deliberately NOT _load_debrief_messages: that one prefixes each answer with its
+    `[answer #id]` tag, and those characters would count toward the substantive-length
+    gate. The floor must measure what they SAID, not what we annotated it with.
+    """
+    rows = db.execute(
+        text("SELECT content FROM vyom_messages WHERE session_id=:s AND role='user' ORDER BY id ASC"),
+        {"s": session_id},
+    ).mappings().all()
+    return [r["content"] or "" for r in rows]
+
+
+# The benchmark columns land with migration 007. Until it is applied every read below
+# degrades to the legacy column set — a drifted database still serves a readout, it just
+# serves one without a benchmark (and schema_check has already said so, loudly, at boot).
+_DEBRIEF_COLS_LEGACY = "raw_json, overall, overall_band, round_bands, calibration"
+_DEBRIEF_COLS_007 = (
+    _DEBRIEF_COLS_LEGACY
+    + ", benchmark, benchmark_uncapped, score_factors, weights_version, gated_band,"
+      " substantive_answers, scored"
+)
+
+
+def _load_stored_debrief(db: Session, session_id: str) -> dict | None:
+    try:
+        row = db.execute(
+            text(f"SELECT {_DEBRIEF_COLS_007} FROM vyom_debriefs WHERE session_id=:s"),
+            {"s": session_id},
+        ).mappings().first()
+    except Exception as e:
+        log.warning("debrief benchmark columns unreadable (apply migration 007?): %s",
+                    type(e).__name__)
+        db.rollback()
+        row = db.execute(
+            text(f"SELECT {_DEBRIEF_COLS_LEGACY} FROM vyom_debriefs WHERE session_id=:s"),
+            {"s": session_id},
+        ).mappings().first()
+    return dict(row) if row else None
+
+
+def _replay_stored_debrief(
+    session_id: str, session_row: dict, existing: dict, d: dict,
+    *, delivery_profile: dict, presence_block: dict, early_wrap,
+) -> DebriefResponse:
+    """Re-render a debrief that was already scored, from what was STORED.
+
+    Nothing here recomputes a weight. The factors, the benchmark and the gates all come
+    back out of score_factors exactly as they went in, which is what lets ops retune the
+    table without rewriting anybody's history (item 5).
+
+    Three shapes arrive here, and all three must render:
+      * scored on 007+     — the full benchmark block.
+      * unscored           — below the evidence floor; the card, no band, no tiles.
+      * pre-007 / drifted  — a raw score and a band, but no benchmark. We show what we
+                             have and omit what we never computed, rather than inventing
+                             a benchmark now with today's weights and calling it history.
+    """
+    stored = _as_obj(existing.get("score_factors"), {}) or {}
+    cov = stored.get("coverage") or scoring.coverage(set())
+    result = stored.get("result")
+    band_result = stored.get("band")
+    scored = bool(existing.get("scored", 1))
+    substantive = existing.get("substantive_answers")
+    if substantive is None:
+        substantive = scoring.MIN_SUBSTANTIVE_ANSWERS if scored else 0
+
+    # The gated band is what the learner was shown. Older rows have only overall_band
+    # (which predates gating and therefore IS the band they saw).
+    band = existing.get("gated_band") or existing.get("overall_band") \
+        or stages.band_for(d.get("overall"))
+
+    return _debrief_response(
+        session_id, session_row, d,
+        overall_band=band,
+        round_bands=_as_obj(existing.get("round_bands"), {}),
+        calibration=_as_obj(existing.get("calibration"), {}),
+        delivery_profile=delivery_profile, presence_block=presence_block,
+        early_wrap=early_wrap, scored=scored, substantive=int(substantive),
+        result=result, band_result=band_result, cov=cov,
+    )
+
+
+def _store_unscored_debrief(db: Session, session_id: str, substantive: int) -> None:
+    """Record an attempt that fell below the evidence floor.
+
+    A row is written even though nothing was scored, and that is the point (item 6): the
+    attempt exists, it shows in history as "Ended early — not scored", and quitting cannot
+    make a run disappear. It is not a failure and is never rendered as one — there is no
+    band and no benchmark on this row to render.
+    """
+    try:
+        db.execute(
+            text("""
+                INSERT INTO vyom_debriefs
+                (session_id, overall, one_line, raw_json, substantive_answers, scored)
+                VALUES (:s, NULL, :one_line, :raw, :sub, 0)
+                ON DUPLICATE KEY UPDATE
+                  substantive_answers=VALUES(substantive_answers), scored=VALUES(scored),
+                  one_line=VALUES(one_line), raw_json=VALUES(raw_json)
+            """),
+            {
+                "s": session_id,
+                "one_line": "Ended early — not scored.",
+                "raw": json.dumps({"oneLine": "Ended early — not scored."}),
+                "sub": int(substantive),
+            },
+        )
+        db.commit()
+    except Exception as e:
+        # No migration 007 -> we cannot mark it unscored. Write nothing rather than a row
+        # that history would read as a scored zero: an unscored attempt showing as 0/100
+        # is the exact "skipped = failed" lie this sprint removes.
+        log.warning("unscored debrief not stored (apply migration 007?): %s", type(e).__name__)
+        db.rollback()
+
+
+_DEBRIEF_INSERT_LEGACY = """
+    INSERT INTO vyom_debriefs
+    (session_id, overall, overall_band, round_bands, calibration,
+     sub_scores, strengths, gaps, star, plan, next_focus, one_line, raw_json)
+    VALUES
+    (:session_id, :overall, :overall_band, :round_bands, :calibration,
+     :sub_scores, :strengths, :gaps, :star, :plan, :next_focus, :one_line, :raw_json)
+    ON DUPLICATE KEY UPDATE
+      overall=VALUES(overall), overall_band=VALUES(overall_band),
+      round_bands=VALUES(round_bands), calibration=VALUES(calibration),
+      sub_scores=VALUES(sub_scores), strengths=VALUES(strengths),
+      gaps=VALUES(gaps), star=VALUES(star), plan=VALUES(plan),
+      next_focus=VALUES(next_focus), one_line=VALUES(one_line),
+      raw_json=VALUES(raw_json)
+"""
+
+_DEBRIEF_INSERT_007 = """
+    INSERT INTO vyom_debriefs
+    (session_id, overall, overall_band, round_bands, calibration,
+     sub_scores, strengths, gaps, star, plan, next_focus, one_line, raw_json,
+     benchmark, benchmark_uncapped, score_factors, weights_version, gated_band,
+     substantive_answers, scored)
+    VALUES
+    (:session_id, :overall, :overall_band, :round_bands, :calibration,
+     :sub_scores, :strengths, :gaps, :star, :plan, :next_focus, :one_line, :raw_json,
+     :benchmark, :benchmark_uncapped, :score_factors, :weights_version, :gated_band,
+     :substantive_answers, 1)
+    ON DUPLICATE KEY UPDATE
+      overall=VALUES(overall), overall_band=VALUES(overall_band),
+      round_bands=VALUES(round_bands), calibration=VALUES(calibration),
+      sub_scores=VALUES(sub_scores), strengths=VALUES(strengths),
+      gaps=VALUES(gaps), star=VALUES(star), plan=VALUES(plan),
+      next_focus=VALUES(next_focus), one_line=VALUES(one_line),
+      raw_json=VALUES(raw_json),
+      benchmark=VALUES(benchmark), benchmark_uncapped=VALUES(benchmark_uncapped),
+      score_factors=VALUES(score_factors), weights_version=VALUES(weights_version),
+      gated_band=VALUES(gated_band), substantive_answers=VALUES(substantive_answers),
+      scored=VALUES(scored)
+"""
+
+
+def _store_debrief(
+    db: Session, session_id: str, debrief: dict, *,
+    overall_pct: int, overall_band: str, gated_band: str, round_bands: dict,
+    calibration: dict, result: dict, band_result: dict, cov: dict, substantive: int,
+) -> None:
+    """Persist the debrief AND the exact numbers that produced its benchmark.
+
+    `overall` stays the RAW rubric score and `overall_band` the band those raw answers
+    EARNED — neither is ever context-weighted. The benchmark, its factors, its weights
+    version and the gated band sit alongside them, so the whole calculation is
+    reproducible from the row for as long as the row exists.
+
+    score_factors carries the FULL result + gates + coverage, not just the multipliers:
+    it is what the replay path and "How this score is calculated" read, and it must keep
+    explaining this attempt correctly long after the live table has been retuned.
+    """
+    params = {
+        "session_id": session_id,
+        "overall": overall_pct,
+        "overall_band": overall_band,
+        "round_bands": json.dumps(round_bands),
+        "calibration": json.dumps(calibration),
+        "sub_scores": json.dumps(debrief.get("subScores", {})),
+        "strengths": json.dumps(debrief.get("strengths", [])),
+        "gaps": json.dumps(debrief.get("gaps", [])),
+        "star": json.dumps(debrief.get("starBreakdown", [])),
+        "plan": json.dumps(debrief.get("plan", [])),
+        "next_focus": debrief.get("nextFocus", ""),
+        "one_line": debrief.get("oneLine", ""),
+        "raw_json": json.dumps(debrief),
+    }
+    try:
+        db.execute(text(_DEBRIEF_INSERT_007), {
+            **params,
+            "benchmark": result["benchmark"],
+            "benchmark_uncapped": result["benchmark_uncapped"],
+            "score_factors": json.dumps({"result": result, "band": band_result, "coverage": cov}),
+            "weights_version": result["weights_version"],
+            "gated_band": gated_band,
+            "substantive_answers": int(substantive),
+        })
+        db.commit()
+        return
+    except Exception as e:
+        log.warning("benchmark not stored (apply migration 007?): %s", type(e).__name__)
+        db.rollback()
+
+    # Drifted database: store the debrief itself rather than lose a billed Sonnet call.
+    # The readout still renders the benchmark for THIS response (it is in memory); it is
+    # only the persistence — and therefore history's trend — that degrades.
+    db.execute(text(_DEBRIEF_INSERT_LEGACY), params)
+    db.commit()
+
+
+def _session_profile(session_row: dict, cov: dict) -> SessionProfile:
+    """SCORING_CONTEXT item 1 — the strip every readout opens with.
+
+    `mode` (TEXT/VOICE/HYBRID) does not exist until the Intake sprint ships the selector,
+    so it is None and the strip says "—" rather than inventing one. The session's `mode`
+    column is the FEEDBACK style (interview/coach) — the lobby renamed the heading, the
+    column kept its name, and this is the single place the two vocabularies meet.
+    """
+    return SessionProfile(
+        role=session_row.get("role") or "",
+        company=session_row.get("company") or "",
+        level=session_row.get("level") or "",
+        difficulty=session_row.get("difficulty") or "",
+        duration_min=int(session_row.get("duration_min") or 0),
+        mode=None,
+        feedback=session_row.get("mode") or "interview",
+        rounds_covered=cov.get("covered_labels", []),
+        rounds_skipped=cov.get("skipped_labels", []),
+    )
+
+
+def _score_context(session_row: dict, raw_pct: int, sub_stages: set) -> tuple[dict, dict, dict]:
+    """The benchmark, the gated band, and the coverage — computed ONCE, at debrief time.
+
+    Returns (benchmark_result, band_result, coverage). The caller persists all of it: the
+    numbers here are only ever computed on the attempt they describe. Retuning
+    scoring.WEIGHTS later must not move a score a learner has already read — see
+    migration 007's header.
+    """
+    cov = scoring.coverage(sub_stages)
+    result = scoring.compute_benchmark(
+        raw_pct,
+        difficulty=session_row.get("difficulty"),
+        duration_min=session_row.get("duration_min"),
+        feedback=session_row.get("mode"),
+        rounds_attempted=cov["attempted"],
+        rounds_offered=cov["offered"],
+        mode=None,
+    )
+    band_result = scoring.band_gates(
+        stages.band_for(raw_pct),
+        difficulty=session_row.get("difficulty"),
+        duration_min=session_row.get("duration_min"),
+        case_attempted="CASE" in cov["covered"],
+        raw=raw_pct,
+    )
+    return result, band_result, cov
+
+
+def _debrief_response(
+    session_id: str,
+    session_row: dict,
+    d: dict,
+    *,
+    overall_band: str,
+    round_bands: dict,
+    calibration: dict,
+    delivery_profile: dict,
+    presence_block: dict,
+    early_wrap,
+    scored: bool,
+    substantive: int,
+    result: dict | None,
+    band_result: dict | None,
+    cov: dict,
+) -> DebriefResponse:
+    """Assemble the one readout payload. Shared by the fresh-debrief path and the
+    idempotent replay path, so a re-fetch can never disagree with the first render."""
+    profile = _session_profile(session_row, cov)
+    reattempt = scoring.reattempt_window(overall_band) if scored else {}
+
+    score = None
+    if scored and result:
+        score = ScoreContext(
+            benchmark=result["benchmark"],
+            benchmark_uncapped=result["benchmark_uncapped"],
+            raw=result["raw"],
+            earned_band=(band_result or {}).get("earned_band", overall_band),
+            capped=bool((band_result or {}).get("capped")),
+            gate_copy=(band_result or {}).get("copy", ""),
+            gates=(band_result or {}).get("gates", []),
+            factors=result.get("factors", {}),
+            weights_version=result.get("weights_version", ""),
+            math=scoring.math_lines(result, band_result),
+        )
+
+    return DebriefResponse(
+        session_id=session_id,
+        # Item 3: the band the learner sees is the GATED one. Item 9: it is rendered
+        # exactly once, in the Readiness block.
+        overall_band=overall_band if scored else "",
+        round_bands=round_bands if scored else {},
+        one_line=d.get("oneLine", ""),
+        sub_scores=d.get("subScores", {}) if scored else {},
+        strengths=d.get("strengths", []),
+        gaps=d.get("gaps", []),
+        star_breakdown=d.get("starBreakdown", []),
+        interviewer_thoughts=d.get("interviewerThoughts", []),
+        plan=d.get("plan", []),
+        next_focus=d.get("nextFocus", ""),
+        calibration=calibration,
+        delivery=delivery_profile,
+        professional_presence=presence_block,
+        early_wrap=early_wrap,
+        profile=profile,
+        scored=scored,
+        substantive_answers=substantive,
+        evidence={} if scored else scoring.insufficient_evidence_card(substantive),
+        score=score,
+        reattempt_window=reattempt,
+        ecopro=scoring.ecopro_export(
+            band=overall_band,
+            benchmark=(result or {}).get("benchmark"),
+            gaps=d.get("gaps", []),
+            reattempt=reattempt,
+            session_id=session_id,
+            scored=scored,
+        ),
+    )
+
+
 @app.post("/session/end", response_model=DebriefResponse)
 async def end_session(
     body: EndRequest,
@@ -1773,31 +2108,34 @@ async def end_session(
 
     # Idempotency + cost guard: if a debrief already exists, return it instead of
     # re-running the (billed) Sonnet debrief on every /session/end call.
-    existing = db.execute(
-        text("SELECT raw_json, overall, overall_band, round_bands, calibration "
-             "FROM vyom_debriefs WHERE session_id=:s"),
-        {"s": body.session_id},
-    ).mappings().first()
+    #
+    # PERSIST, NEVER RECOMPUTE (item 5): this path re-reads the STORED benchmark and the
+    # STORED factors — it never re-runs scoring.compute_benchmark. That is the whole
+    # promise: retuning the weights table tomorrow cannot change what this attempt says.
+    existing = _load_stored_debrief(db, body.session_id)
     if existing and existing.get("raw_json"):
         d = _as_obj(existing["raw_json"], None)
         if isinstance(d, dict):
-            return DebriefResponse(
-                session_id=body.session_id,
-                overall_band=existing.get("overall_band") or stages.band_for(d.get("overall")),
-                round_bands=_as_obj(existing.get("round_bands"), {}),
-                one_line=d.get("oneLine", ""),
-                sub_scores=d.get("subScores", {}),
-                strengths=d.get("strengths", []),
-                gaps=d.get("gaps", []),
-                star_breakdown=d.get("starBreakdown", []),
-                interviewer_thoughts=d.get("interviewerThoughts", []),
-                plan=d.get("plan", []),
-                next_focus=d.get("nextFocus", ""),
-                calibration=_as_obj(existing.get("calibration"), {}),
-                delivery=delivery_profile,
-                professional_presence=presence_block,
+            return _replay_stored_debrief(
+                body.session_id, session_row, existing, d,
+                delivery_profile=delivery_profile, presence_block=presence_block,
                 early_wrap=early_wrap,
             )
+
+    # ── The evidence floor (item 4) ──────────────────────────────────────────
+    # Under three substantive answers there is nothing to score, so we do not pay Sonnet
+    # to write a readout nobody may be shown. The card + Presence is the whole render.
+    substantive = stages.substantive_count(_load_user_answers(db, body.session_id))
+    if not scoring.has_minimum_evidence(substantive):
+        _store_unscored_debrief(db, body.session_id, substantive)
+        _finalize_session(db, body.session_id, completion_type="completed")
+        return _debrief_response(
+            body.session_id, session_row, {},
+            overall_band="", round_bands={}, calibration={},
+            delivery_profile=delivery_profile, presence_block=presence_block,
+            early_wrap=early_wrap, scored=False, substantive=substantive,
+            result=None, band_result=None, cov=scoring.coverage(set()),
+        )
 
     system_prompt = build_system_prompt(cfg, "")
     # INT-11: tag each answer with its answer_id so perAnswerScores can echo it.
@@ -1836,10 +2174,15 @@ async def end_session(
     # zero any scored round the join says had no substantive answer, so a round of
     # pure "don't know"s can never surface a positive band.
     overall_pct = int(debrief.get("overall", 0))
-    overall_band = stages.band_for(overall_pct)
     round_bands = stages.round_bands_from_scores(
         stages.gate_round_scores(debrief.get("roundScores", {}) or {}, sub_stages)
     )
+
+    # SCORING_CONTEXT items 2/3: weight the raw score by the context they chose, and let
+    # the gates outrank the arithmetic. `overall_band` — the band the learner is SHOWN —
+    # is the gated one; what the raw answers earned is kept alongside it, never lost.
+    result, band_result, cov = _score_context(session_row, overall_pct, sub_stages)
+    overall_band = band_result["band"]
 
     # INT-02 + INT-11: calibrate learner confidence ratings against the model's
     # per-answer quality scores, JOINED BY answer_id (not positional zip). A rating
@@ -1859,58 +2202,21 @@ async def end_session(
         log.warning("calibration: %d ratings but 0 joined perAnswerScores by answer_id", len(ratings))
     calibration = stages.calibration_profile(pairs)
 
-    db.execute(
-        text("""
-            INSERT INTO vyom_debriefs
-            (session_id, overall, overall_band, round_bands, calibration,
-             sub_scores, strengths, gaps, star, plan, next_focus, one_line, raw_json)
-            VALUES
-            (:session_id, :overall, :overall_band, :round_bands, :calibration,
-             :sub_scores, :strengths, :gaps, :star, :plan, :next_focus, :one_line, :raw_json)
-            ON DUPLICATE KEY UPDATE
-              overall=VALUES(overall), overall_band=VALUES(overall_band),
-              round_bands=VALUES(round_bands), calibration=VALUES(calibration),
-              sub_scores=VALUES(sub_scores), strengths=VALUES(strengths),
-              gaps=VALUES(gaps), star=VALUES(star), plan=VALUES(plan),
-              next_focus=VALUES(next_focus), one_line=VALUES(one_line),
-              raw_json=VALUES(raw_json)
-        """),
-        {
-            "session_id": body.session_id,
-            "overall": overall_pct,
-            "overall_band": overall_band,
-            "round_bands": json.dumps(round_bands),
-            "calibration": json.dumps(calibration),
-            "sub_scores": json.dumps(debrief.get("subScores", {})),
-            "strengths": json.dumps(debrief.get("strengths", [])),
-            "gaps": json.dumps(debrief.get("gaps", [])),
-            "star": json.dumps(debrief.get("starBreakdown", [])),
-            "plan": json.dumps(debrief.get("plan", [])),
-            "next_focus": debrief.get("nextFocus", ""),
-            "one_line": debrief.get("oneLine", ""),
-            "raw_json": json.dumps(debrief),
-        },
+    _store_debrief(
+        db, body.session_id, debrief,
+        overall_pct=overall_pct, overall_band=band_result["earned_band"],
+        gated_band=overall_band, round_bands=round_bands, calibration=calibration,
+        result=result, band_result=band_result, cov=cov, substantive=substantive,
     )
-    db.commit()
 
     _finalize_session(db, body.session_id, completion_type="completed")
 
-    return DebriefResponse(
-        session_id=body.session_id,
-        overall_band=overall_band,
-        round_bands=round_bands,
-        one_line=debrief.get("oneLine", ""),
-        sub_scores=debrief.get("subScores", {}),
-        strengths=debrief.get("strengths", []),
-        gaps=debrief.get("gaps", []),
-        star_breakdown=debrief.get("starBreakdown", []),
-        interviewer_thoughts=debrief.get("interviewerThoughts", []),
-        plan=debrief.get("plan", []),
-        next_focus=debrief.get("nextFocus", ""),
-        calibration=calibration,
-        delivery=delivery_profile,
-        professional_presence=presence_block,
-        early_wrap=early_wrap,
+    return _debrief_response(
+        body.session_id, session_row, debrief,
+        overall_band=overall_band, round_bands=round_bands, calibration=calibration,
+        delivery_profile=delivery_profile, presence_block=presence_block,
+        early_wrap=early_wrap, scored=True, substantive=substantive,
+        result=result, band_result=band_result, cov=cov,
     )
 
 
@@ -1927,7 +2233,15 @@ def abandon_session(
 
 def _row_to_history_item(row: dict) -> HistoryListItem:
     focus_str = row.get("focus") or ""
+    # `scored` is absent on a drifted (pre-007) database. A row with a debrief is scored;
+    # one without simply has no score yet — neither is "ended early, not scored", and we
+    # must not invent that label for a session that predates the evidence floor.
+    scored = row.get("scored")
+    scored = bool(scored) if scored is not None else row.get("overall") is not None
     return HistoryListItem(
+        benchmark=row.get("benchmark"),
+        band=row.get("gated_band") or row.get("overall_band"),
+        scored=scored,
         session_id=row["id"],
         role=row["role"],
         company=row.get("company") or "",
@@ -1950,6 +2264,41 @@ def _row_to_history_item(row: dict) -> HistoryListItem:
     )
 
 
+# History's per-session columns. The 007 half degrades to nothing on a drifted database —
+# the list still renders, it just cannot show a benchmark it never stored.
+_HISTORY_COLS = """
+    s.id, s.role, s.company, s.level, s.difficulty, s.mode,
+    s.round, s.round_label, s.focus,
+    s.duration_min, s.actual_duration_seconds,
+    s.user_message_count, s.assistant_message_count,
+    s.started_at, s.ended_at, s.status, s.completion_type,
+    d.overall, d.one_line
+"""
+_HISTORY_COLS_007 = _HISTORY_COLS + ", d.benchmark, d.gated_band, d.overall_band, d.scored"
+
+
+def _history_rows(db: Session, sql: str, params: dict) -> list[dict]:
+    """Run a history query with the 007 columns, falling back to the legacy set on drift."""
+    try:
+        rows = db.execute(text(sql.format(cols=_HISTORY_COLS_007)), params).mappings().all()
+    except Exception as e:
+        log.warning("history benchmark columns unreadable (apply migration 007?): %s",
+                    type(e).__name__)
+        db.rollback()
+        rows = db.execute(text(sql.format(cols=_HISTORY_COLS)), params).mappings().all()
+    return [dict(r) for r in rows]
+
+
+_HISTORY_LIST_SQL = """
+    SELECT {cols}
+    FROM vyom_sessions s
+    LEFT JOIN vyom_debriefs d ON d.session_id = s.id
+    WHERE s.user_id = :u AND s.deleted_at IS NULL
+    ORDER BY s.started_at DESC
+    LIMIT :lim OFFSET :off
+"""
+
+
 @app.get("/user/history", response_model=HistoryListResponse)
 def user_history(
     db: Session = Depends(get_db),
@@ -1957,22 +2306,7 @@ def user_history(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
-    rows = db.execute(
-        text("""
-            SELECT s.id, s.role, s.company, s.level, s.difficulty, s.mode,
-                   s.round, s.round_label, s.focus,
-                   s.duration_min, s.actual_duration_seconds,
-                   s.user_message_count, s.assistant_message_count,
-                   s.started_at, s.ended_at, s.status, s.completion_type,
-                   d.overall, d.one_line
-            FROM vyom_sessions s
-            LEFT JOIN vyom_debriefs d ON d.session_id = s.id
-            WHERE s.user_id = :u AND s.deleted_at IS NULL
-            ORDER BY s.started_at DESC
-            LIMIT :lim OFFSET :off
-        """),
-        {"u": user_id, "lim": limit, "off": offset},
-    ).mappings().all()
+    rows = _history_rows(db, _HISTORY_LIST_SQL, {"u": user_id, "lim": limit, "off": offset})
 
     total_row = db.execute(
         text("SELECT COUNT(*) AS cnt FROM vyom_sessions WHERE user_id = :u AND deleted_at IS NULL"),
@@ -1980,9 +2314,34 @@ def user_history(
     ).first()
     total = total_row.cnt if total_row else 0
 
+    items = [_row_to_history_item(r) for r in rows]
+
+    # Item 7 — TREND OVER TROPHY. The trend is BENCHMARKS, newest first: raw scores from
+    # different difficulties and durations are not comparable to each other, which is the
+    # whole reason this sprint exists. Unscored attempts are excluded from the trend (they
+    # have no number) but stay in the list (item 6 — quitting cannot hide a run).
+    trend = [
+        {
+            "session_id": i.session_id,
+            "benchmark": i.benchmark,
+            "band": i.band,
+            "started_at": i.started_at.isoformat() if i.started_at else None,
+            "difficulty": i.difficulty,
+            "duration_min": i.planned_duration_min,
+            # The newest attempt is flagged so a glance lands on "where am I now",
+            # not on the best row.
+            "latest": False,
+        }
+        for i in items if i.scored and i.benchmark is not None
+    ]
+    if trend:
+        trend[0]["latest"] = True
+
     return HistoryListResponse(
-        sessions=[_row_to_history_item(dict(r)) for r in rows],
+        sessions=items,
         total=total,
+        trend=trend,
+        latest_average=scoring.latest_average([t["benchmark"] for t in trend]),
     )
 
 
@@ -1992,25 +2351,17 @@ def user_history_detail(
     db: Session = Depends(get_db),
     user_id: str = Depends(current_user),
 ):
-    row = db.execute(
-        text("""
-            SELECT s.id, s.role, s.company, s.level, s.difficulty, s.mode,
-                   s.round, s.round_label, s.focus,
-                   s.duration_min, s.actual_duration_seconds,
-                   s.user_message_count, s.assistant_message_count,
-                   s.started_at, s.ended_at, s.status, s.completion_type,
-                   d.overall, d.one_line, d.raw_json
-            FROM vyom_sessions s
-            LEFT JOIN vyom_debriefs d ON d.session_id = s.id
-            WHERE s.id = :id AND s.user_id = :u AND s.deleted_at IS NULL
-        """),
-        {"id": session_id, "u": user_id},
-    ).mappings().first()
+    rows = _history_rows(db, """
+        SELECT {cols}, d.raw_json
+        FROM vyom_sessions s
+        LEFT JOIN vyom_debriefs d ON d.session_id = s.id
+        WHERE s.id = :id AND s.user_id = :u AND s.deleted_at IS NULL
+    """, {"id": session_id, "u": user_id})
 
-    if not row:
+    if not rows:
         raise HTTPException(404, "Session not found")
 
-    row = dict(row)
+    row = rows[0]
     messages = _load_messages(db, session_id)
 
     debrief = None
@@ -2027,6 +2378,37 @@ def user_history_detail(
     )
 
 
+def _grouped_averages(db: Session, user_id: str, column: str, alias: str, limit: int = 50) -> list[dict]:
+    """Average BENCHMARK per group (role / round), scored attempts only.
+
+    `column`/`alias` are internal constants, never user input — but they are still the only
+    interpolated parts of this SQL, so keep them that way. Everything else is bound.
+    """
+    sql = """
+        SELECT {col} AS {alias}, COUNT(*) AS n, {avg} AS avg_score
+        FROM vyom_sessions s
+        JOIN vyom_debriefs d ON d.session_id = s.id
+        WHERE s.user_id = :u AND s.status = 'completed' AND s.deleted_at IS NULL
+        GROUP BY {col}
+        ORDER BY n DESC
+        LIMIT :lim
+    """
+    try:
+        rows = db.execute(
+            text(sql.format(col=column, alias=alias, avg="AVG(d.benchmark)")),
+            {"u": user_id, "lim": limit},
+        ).mappings().all()
+    except Exception as e:
+        log.warning("stats benchmark average unavailable (apply migration 007?): %s",
+                    type(e).__name__)
+        db.rollback()
+        rows = db.execute(
+            text(sql.format(col=column, alias=alias, avg="NULL")),
+            {"u": user_id, "lim": limit},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
 @app.get("/user/stats")
 def user_stats(
     db: Session = Depends(get_db),
@@ -2040,10 +2422,7 @@ def user_stats(
               SUM(s.status = 'active') AS in_progress,
               SUM(s.completion_type = 'abandoned') AS abandoned,
               SUM(COALESCE(s.actual_duration_seconds, 0)) AS total_seconds,
-              SUM(s.user_message_count) AS total_answers,
-              AVG(d.overall) AS avg_score,
-              MAX(d.overall) AS best_score,
-              MIN(d.overall) AS worst_score
+              SUM(s.user_message_count) AS total_answers
             FROM vyom_sessions s
             LEFT JOIN vyom_debriefs d ON d.session_id = s.id
             WHERE s.user_id = :u AND s.deleted_at IS NULL
@@ -2051,34 +2430,40 @@ def user_stats(
         {"u": user_id},
     ).mappings().first()
 
-    by_role = db.execute(
-        text("""
-            SELECT s.role, COUNT(*) AS n, AVG(d.overall) AS avg_score
-            FROM vyom_sessions s
-            LEFT JOIN vyom_debriefs d ON d.session_id = s.id
-            WHERE s.user_id = :u AND s.status = 'completed' AND s.deleted_at IS NULL
-            GROUP BY s.role
-            ORDER BY n DESC
-            LIMIT 10
-        """),
-        {"u": user_id},
-    ).mappings().all()
+    # Item 7 — TREND OVER TROPHY. `best_score` is gone from this payload, deliberately.
+    # A best-ever is a story about one good day, and it was an average of RAW scores
+    # across different difficulties and durations — the exact comparison this sprint
+    # exists to stop. What a placement view gets instead is where this person is NOW:
+    # the average of their latest three benchmarks.
+    recent = _history_rows(db, """
+        SELECT {cols}
+        FROM vyom_sessions s
+        JOIN vyom_debriefs d ON d.session_id = s.id
+        WHERE s.user_id = :u AND s.deleted_at IS NULL
+        ORDER BY s.started_at DESC
+        LIMIT 25
+    """, {"u": user_id})
+    recent_items = [_row_to_history_item(r) for r in recent]
+    benchmarks = [i.benchmark for i in recent_items if i.scored and i.benchmark is not None]
 
-    by_round = db.execute(
-        text("""
-            SELECT s.round, COUNT(*) AS n, AVG(d.overall) AS avg_score
-            FROM vyom_sessions s
-            LEFT JOIN vyom_debriefs d ON d.session_id = s.id
-            WHERE s.user_id = :u AND s.status = 'completed' AND s.deleted_at IS NULL
-            GROUP BY s.round
-        """),
-        {"u": user_id},
-    ).mappings().all()
+    # These breakdowns average the BENCHMARK, not the raw score: "your average as a Data
+    # Analyst" is meaningless if one of those sessions was Easy/10min and the next was
+    # Critical/45. On a drifted database the column is missing and the breakdown degrades
+    # to a count with no average — a missing number beats a misleading one.
+    by_role = _grouped_averages(db, user_id, "s.role", "role", limit=10)
+    by_round = _grouped_averages(db, user_id, "s.round", "round")
 
     return {
-        "summary": dict(summary) if summary else {},
-        "by_role": [dict(r) for r in by_role],
-        "by_round": [dict(r) for r in by_round],
+        "summary": {
+            **(dict(summary) if summary else {}),
+            # The headline number, and the only one a placement view may read.
+            "latest_average": scoring.latest_average(benchmarks),
+            "latest_band": recent_items[0].band if recent_items else None,
+            "scored_sessions": len(benchmarks),
+            "window": scoring.PLACEMENT_WINDOW,
+        },
+        "by_role": by_role,
+        "by_round": by_round,
     }
 
 

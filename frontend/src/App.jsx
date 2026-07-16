@@ -12,7 +12,7 @@ import {
   WRAP_CAMERA_OFF, WRAP_NO_ANSWER, WRAP_SESSION_TIME_UP,
   shouldBackchannel, shouldBargeIn, canArmCapture, BARGE_IN_RMS, BARGE_IN_DUCK_MS,
 } from "./roomPolicy.js";
-import { isEmptyReadout } from "./readoutPolicy.js";
+import { isEmptyReadout, historyStatus, trendDirection } from "./readoutPolicy.js";
 
 // Realism v2: spoken confidence rating. Accepts digits, English words, Hinglish
 // numerals, and an explicit "prefer not to say".
@@ -371,14 +371,27 @@ const ROUND_BAND_LABELS = { warmup: "Warm-up", domain: "Domain", behavioural: "B
 // When an interview ended early, the readout SAYS so — plainly, in neutral language, and
 // with the one thing the learner most needs to hear: nothing was zeroed as a punishment.
 // We score what happened and mark what didn't.
-const EARLY_WRAP_NOTE = {
-  camera_off: "This interview ended early because the camera stayed off. What you covered is scored below exactly as it stood — nothing was zeroed.",
-  no_answer_timeout: "This interview ended early after a long silence with no answer. What you covered is scored below exactly as it stood — nothing was zeroed.",
-  session_time_up: "Time ran out before the last rounds. What you covered is scored below exactly as it stood — nothing was zeroed.",
+//
+// WHY (the reason) is separate from the REASSURANCE, because the reassurance is only true
+// when there IS something below to be scored. On a session below the evidence floor,
+// "what you covered is scored below" is a promise the page does not keep — there are no
+// scores below, by design. Composing the two lets the same reason serve both readouts
+// without either of them lying.
+const EARLY_WRAP_WHY = {
+  camera_off: "This interview ended early because the camera stayed off.",
+  no_answer_timeout: "This interview ended early after a long silence with no answer.",
+  session_time_up: "Time ran out before the last rounds.",
   // The engagement floor: questions kept running out, the interviewer checked in, and that
   // went unanswered too. Said plainly and without blame — we have no idea why they went
   // quiet, and guessing would be both rude and, quite possibly, wrong.
-  disengaged: "This interview ended early — the questions kept running out with no answer, and the check-in went unanswered too. What you covered is scored below exactly as it stood, and the next attempt is a clean slate.",
+  disengaged: "This interview ended early — the questions kept running out with no answer, and the check-in went unanswered too.",
+};
+
+const earlyWrapNote = (reason, scored) => {
+  const why = EARLY_WRAP_WHY[reason] || "This interview ended early.";
+  return scored
+    ? `${why} What you covered is scored below exactly as it stood — nothing was zeroed.`
+    : `${why} Nothing was zeroed and nothing was marked against you — the next attempt is a clean slate.`;
 };
 
 // ── Markdown rendering ─────────────────────────────────────────────────────
@@ -579,6 +592,63 @@ const CSS = `
   .mba-pill-pass{background:#edf7ed;color:#2d6a2d}
   .mba-pill-warn{background:#fdf8ed;color:#7a5e00}
   .mba-pill-fail{background:#fdf1f0;color:#c0392b}
+
+  /* ── THE READOUT — ONE DESIGN LANGUAGE ──────────────────────────────────
+     The readout used to render as two stacked designs: a navy report, then a
+     second navy scorecard, with the band printed on both. It read as two
+     documents about one interview, and a full-page screenshot showed it.
+
+     There are now EXACTLY TWO SURFACES, and the rule is a rule, not a habit:
+       .rd-card  — light. Every piece of coaching prose lives on one.
+       .rd-navy  — navy. The Session Profile strip and the Readiness block. Only
+                   those two. Nothing else on this page is navy.
+     One width, one radius, one padding rhythm, one header treatment, so the
+     page reads top-to-bottom as a single designed document. */
+  .rd-page{width:100%;max-width:820px;margin:0 auto;padding:24px 28px;box-sizing:border-box}
+  .rd-card{background:#fff;border:1.5px solid #e8e9f0;border-radius:12px;margin-bottom:14px;overflow:hidden}
+  .rd-navy{background:#1a2744;border:1.5px solid #1a2744;border-radius:12px;margin-bottom:14px;overflow:hidden}
+  .rd-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:16px 22px 0}
+  .rd-navy .rd-h{padding-top:18px}
+  .rd-t{font-size:14px;font-weight:800;color:#1a2744;letter-spacing:-.01em}
+  .rd-navy .rd-t{color:rgba(255,255,255,.34);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}
+  .rd-b{padding:12px 22px 20px}
+  .rd-navy .rd-b{padding:14px 22px 22px}
+  /* Item 1: the context chip. Every section carries one — no score, anywhere,
+     without the context it was earned in. */
+  .rd-chip{margin-left:auto;flex-shrink:0;padding:3px 9px;border-radius:6px;font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:10px;font-weight:500;letter-spacing:.02em;background:#f7f8fc;color:#72706b;border:1px solid #e8e9f0;white-space:nowrap}
+  .rd-navy .rd-chip{background:rgba(255,255,255,.07);color:rgba(255,255,255,.6);border-color:rgba(255,255,255,.14)}
+  /* The Session Profile strip: label/value pairs, data in DM Mono. */
+  .rd-strip{display:flex;flex-wrap:wrap;gap:0 26px}
+  .rd-strip-i{display:flex;flex-direction:column;gap:3px;padding:6px 0;min-width:0}
+  .rd-strip-l{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:rgba(255,255,255,.34)}
+  .rd-strip-v{font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:13px;color:#fff;font-weight:500;overflow-wrap:anywhere}
+  .rd-rule{border-top:1px solid rgba(255,255,255,.12);margin-top:18px;padding-top:16px}
+  .rd-sub{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:rgba(255,255,255,.35);margin-bottom:12px}
+  /* Item 8: "How this score is calculated" — the working, on demand. <details> so
+     it is keyboard-reachable and printable without a line of JS. */
+  .rd-math{margin-top:18px;border-top:1px solid rgba(255,255,255,.12);padding-top:14px}
+  .rd-math summary{cursor:pointer;font-size:12px;font-weight:700;color:rgba(255,255,255,.72);list-style:none;padding:4px 0;font-family:'Plus Jakarta Sans',sans-serif}
+  .rd-math summary::-webkit-details-marker{display:none}
+  .rd-math summary:before{content:"+ ";font-family:'DM Mono',monospace}
+  .rd-math[open] summary:before{content:"− "}
+  .rd-math summary:hover{color:#fff}
+  .rd-math-r{display:flex;gap:12px;align-items:baseline;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.07)}
+  .rd-math-r:last-child{border-bottom:none}
+  .rd-math-v{font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:13px;font-weight:500;color:#C8992A;flex-shrink:0;min-width:56px;text-align:right}
+  .rd-math-l{font-size:12px;font-weight:700;color:#fff;margin-bottom:2px}
+  .rd-math-n{font-size:12px;line-height:1.55;color:rgba(255,255,255,.6)}
+  .rd-star{margin-bottom:14px}
+  .rd-star summary{cursor:pointer;font-size:14px;font-weight:800;color:#1a2744;list-style:none;padding:16px 22px}
+  .rd-star summary::-webkit-details-marker{display:none}
+  .rd-star summary:after{content:" ▸";color:#a8a49f}
+  .rd-star[open] summary:after{content:" ▾"}
+  @media(max-width:640px){
+    .rd-page{padding:18px 14px}
+    .rd-h,.rd-star summary{padding-left:16px;padding-right:16px}
+    .rd-b,.rd-navy .rd-b{padding-left:16px;padding-right:16px}
+    .rd-chip{margin-left:0;width:100%;text-align:center}
+    .rd-strip{gap:0 18px}
+  }
 
   /* ── VOICE STAGE ────────────────────────────────────────────────────────
      Call-like presentation over the SAME state machine. Everything is built on
@@ -3420,41 +3490,148 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   );
 }
 
-// Voice Phase 3 Part D: Delivery Profile — informational, NOT counted in the band.
-// Colors follow the locked band semantics via BAND_STYLE (gold Offer-Ready, teal
-// Interview-Ready, navy Building, orange Not Ready). < 3 spoken answers → a nudge.
-function DeliveryBlock({ delivery }) {
-  if (!delivery || Object.keys(delivery).length === 0) return null;
-  if (!delivery.enough_data) {
-    return (
-      <div className="vc" style={{ marginBottom: 16 }}>
-        <div className="vc-h"><span className="vc-t">Delivery Profile</span></div>
-        <div className="vc-b"><div style={{ fontSize: 13, color: T.muted, fontFamily: IQ.sans }}>{delivery.message || "Not enough voice data — try answering aloud next session."}</div></div>
+// ── THE READOUT ────────────────────────────────────────────────────────────
+// ONE document, read top to bottom, and the ORDER IS THE COACHING:
+//
+//   1 context  -> 2 verdict -> 3 what went well -> 4 delivery -> 5 presence
+//   -> 6 the fixes -> 7 the plan -> 8 READINESS (the band, once, last)
+//   -> 9 the working -> 10 when to come back
+//
+// Two things this fixes, both of which a full-page screenshot used to show:
+//   * It rendered as TWO stacked designs — a navy report, then a second navy
+//     scorecard — with the band printed on both. Now: two surfaces, one card
+//     system, and the band exists in exactly one place (the Readiness block).
+//   * A score with no context read as a verdict. Every section now carries the
+//     context chip, and the Session Profile strip opens the page, because
+//     "100" means nothing until you know it was Easy and it was ten minutes.
+//
+// The band goes LAST on purpose. It used to open the page, which meant the first
+// thing a struggling learner saw was a label, and everything after it was noise.
+// Nobody hears a correction until they have been met.
+
+// The context every number on this page is read against. Item 1: no score anywhere
+// without it.
+const profileChip = (p) => {
+  if (!p) return "";
+  return [p.difficulty, p.duration_min ? `${p.duration_min} min` : "", p.feedback === "coach" ? "Coach" : "Interview"]
+    .filter(Boolean).join(" · ");
+};
+
+const ContextChip = ({ profile }) => {
+  const t = profileChip(profile);
+  return t ? <span className="rd-chip">{t}</span> : null;
+};
+
+// The one card. Everything that is coaching prose is one of these — same width,
+// same radius, same padding rhythm, same header treatment.
+function RdCard({ title, titleColor, accent, profile, children }) {
+  return (
+    <div className="rd-card" style={accent ? { borderLeft: "3px solid " + accent } : null}>
+      <div className="rd-h">
+        <span className="rd-t" style={titleColor ? { color: titleColor } : null}>{title}</span>
+        <ContextChip profile={profile} />
       </div>
-    );
+      <div className="rd-b">{children}</div>
+    </div>
+  );
+}
+
+// Item 10, last line: missing data is an honest one-line card, never a silently
+// absent section. A section that vanishes leaves the learner wondering whether
+// they failed it; a card that says "we didn't measure this" cannot be misread.
+function RdMissing({ title, profile, children }) {
+  return (
+    <RdCard title={title} profile={profile}>
+      <div style={{ fontSize: 13, color: T.muted, fontFamily: IQ.sans, lineHeight: 1.6 }}>{children}</div>
+    </RdCard>
+  );
+}
+
+// Item 1: the SESSION PROFILE STRIP. Navy, DM Mono, and the first thing on the page.
+// Every readout opens with this — the whole sprint is here in one component: the
+// context comes before the number, always, because Easy/10-min/100 and
+// Critical/45-min/75 are not the same achievement and a bare score says they are.
+function SessionProfileStrip({ profile, early, scored }) {
+  const p = profile || {};
+  const covered = p.rounds_covered || [];
+  const skipped = p.rounds_skipped || [];
+  const item = (label, value) => (
+    <div className="rd-strip-i" key={label}>
+      <div className="rd-strip-l">{label}</div>
+      <div className="rd-strip-v">{value || "—"}</div>
+    </div>
+  );
+  return (
+    <div className="rd-navy">
+      <div className="rd-h"><span className="rd-t">Session profile</span></div>
+      <div className="rd-b">
+        <div className="rd-strip">
+          {item("Role", p.company ? `${p.role} — ${p.company}` : p.role)}
+          {item("Level", p.level)}
+          {item("Difficulty", p.difficulty)}
+          {item("Duration", p.duration_min ? `${p.duration_min} min` : "")}
+          {/* Reserved until the Intake sprint ships the TEXT/VOICE/HYBRID selector.
+              It shows an em-dash rather than a guess — this strip is the one place
+              on the page that must never be wrong. */}
+          {item("Mode", p.mode)}
+          {item("Feedback", p.feedback === "coach" ? "Coach" : "Interview")}
+        </div>
+        <div className="rd-rule">
+          <div className="rd-sub">Rounds</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {covered.map((r) => (
+              <span key={r} className="mba-pill" style={{ background: "rgba(0,196,160,.14)", color: IQ.teal }}>{r}</span>
+            ))}
+            {skipped.map((r) => (
+              <span key={r} className="mba-pill" style={{ background: "rgba(255,255,255,.06)", color: "rgba(255,255,255,.45)" }}>{r} — not reached</span>
+            ))}
+            {covered.length === 0 && skipped.length === 0 && (
+              <span style={{ fontSize: 12, color: "rgba(255,255,255,.45)" }}>No rounds recorded.</span>
+            )}
+          </div>
+          {skipped.length > 0 && (
+            <div style={{ fontSize: 12, color: "rgba(255,255,255,.5)", marginTop: 10, lineHeight: 1.55 }}>
+              A round you didn&rsquo;t reach is not a round you failed. It isn&rsquo;t marked against your answers —
+              it only means we saw less of you.
+            </div>
+          )}
+          {early && (
+            <div style={{ fontSize: 12, color: "rgba(255,255,255,.55)", marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.12)", lineHeight: 1.55 }}>
+              {earlyWrapNote(early, scored)}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Voice Phase 3 Part D: Delivery Profile — informational, and NOT in the benchmark.
+// Item 9: its readiness pill is gone. Delivery is report-only; a readiness verdict was
+// never its to make, and printing one here is how the page came to say a band twice.
+function DeliveryBlock({ delivery, profile }) {
+  if (!delivery || Object.keys(delivery).length === 0) {
+    return <RdMissing title="Delivery Profile" profile={profile}>Your delivery wasn&rsquo;t measured this session, so there&rsquo;s nothing to report here — and nothing counted against you for it.</RdMissing>;
   }
-  const bs = BAND_STYLE[delivery.delivery_band] || BAND_STYLE["Not Ready"];
+  if (!delivery.enough_data) {
+    return <RdMissing title="Delivery Profile" profile={profile}>{delivery.message || "Not enough spoken answers to read your delivery. Answer aloud next session and this fills in."}</RdMissing>;
+  }
   const metric = (label, val, suffix) => (
     <div className="mba-metric"><div className="mba-metric-label">{label}</div><div className="mba-metric-value" style={{ fontFamily: IQ.mono }}>{val ?? "—"}{suffix ? <span style={{ fontSize: 12, fontWeight: 400, color: T.subtle, fontFamily: IQ.sans }}>{suffix}</span> : null}</div></div>
   );
+  const line = (t) => t ? <div style={{ fontSize: 13, lineHeight: 1.65, color: T.text, fontFamily: IQ.sans, marginBottom: 6 }}>{t}</div> : null;
   return (
-    <div className="vc" style={{ marginBottom: 16 }}>
-      <div className="vc-h" style={{ display: "flex", alignItems: "center" }}>
-        <span className="vc-t">Delivery Profile</span>
-        <span style={{ marginLeft: "auto", padding: "3px 12px", borderRadius: 8, background: bs.bg, color: bs.fg, fontFamily: IQ.display, fontWeight: 700, fontSize: 13 }}>{delivery.delivery_band}</span>
+    <RdCard title="Delivery Profile" profile={profile}>
+      <div className="mba-grid-3" style={{ marginBottom: 14 }}>
+        {metric("Avg Pace", delivery.avg_wpm, " wpm")}
+        {metric("Fillers / min", delivery.filler_per_min, "")}
+        {metric("Spoken Answers", delivery.spoken_answers, "")}
       </div>
-      <div className="vc-b">
-        <div className="mba-grid-3" style={{ marginBottom: 14 }}>
-          {metric("Avg Pace", delivery.avg_wpm, " wpm")}
-          {metric("Fillers / min", delivery.filler_per_min, "")}
-          {metric("Spoken Answers", delivery.spoken_answers, "")}
-        </div>
-        <div style={{ fontSize: 13, lineHeight: 1.6, color: T.text, fontFamily: IQ.sans, marginBottom: 6 }}>{delivery.pace_verdict}</div>
-        <div style={{ fontSize: 13, lineHeight: 1.6, color: T.text, fontFamily: IQ.sans, marginBottom: 6 }}>{delivery.filler_note}</div>
-        <div style={{ fontSize: 13, lineHeight: 1.6, color: T.text, fontFamily: IQ.sans, marginBottom: 10 }}>{delivery.pause_note}</div>
-        <div style={{ fontSize: 11, color: T.subtle, fontStyle: "italic" }}>{delivery.note}</div>
-      </div>
-    </div>
+      {line(delivery.pace_verdict)}
+      {line(delivery.filler_note)}
+      {line(delivery.pause_note)}
+      {delivery.note && <div style={{ fontSize: 11, color: T.subtle, fontStyle: "italic", marginTop: 4 }}>{delivery.note}</div>}
+    </RdCard>
   );
 }
 
@@ -3465,208 +3642,136 @@ function DeliveryBlock({ delivery }) {
 const asStrength = (s) => (typeof s === "string" ? { strength: s, evidence: "" } : (s || {}));
 
 // Interview Room: the presence card. It reports COUNTS of observable behaviour and one
-// coaching line — never an emotion, never a judgement about the person. Absent entirely
-// for a camera-off join (those signals were never measured, so they are never reported).
-function PresenceBlock({ presence }) {
-  if (!presence || !presence.band) return null;
-  const bs = BAND_STYLE[presence.band] || BAND_STYLE["Not Ready"];
-  const counts = Object.entries(presence.by_type || {});
+// coaching line — never an emotion, never a judgement about the person, and (item 9)
+// never a band: presence is report-only and never enters the benchmark.
+function PresenceBlock({ presence, profile }) {
+  const p = presence || {};
+  if (!p.measured && !p.coaching_note) {
+    return <RdMissing title="Presence Profile" profile={profile}>Attention signals weren&rsquo;t measured this session, so there&rsquo;s nothing to report — and nothing counted against you for it.</RdMissing>;
+  }
+  const counts = Object.entries(p.by_type || {});
   const LABELS = {
     tab_hidden: "Left the interview tab", window_blur: "Switched window",
     no_face: "Out of frame", multiple_faces: "Someone else in frame",
     looking_away: "Looked away from camera",
   };
   return (
-    <div className="vc" style={{ marginBottom: 16 }}>
-      <div className="vc-h" style={{ display: "flex", alignItems: "center" }}>
-        <span className="vc-t">Presence Profile</span>
-        <span style={{ marginLeft: "auto", padding: "3px 12px", borderRadius: 8, background: bs.bg, color: bs.fg, fontFamily: IQ.display, fontWeight: 700, fontSize: 13 }}>{presence.band}</span>
-      </div>
-      <div className="vc-b">
-        {counts.length > 0 && (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-            {counts.map(([k, v]) => (
-              <span key={k} className="mba-pill mba-pill-warn">{LABELS[k] || k} ×{v}</span>
-            ))}
-          </div>
-        )}
-        <div style={{ fontSize: 13, lineHeight: 1.6, color: T.text, fontFamily: IQ.sans }}>{presence.coaching_note}</div>
-        {presence.camera_signals_disabled && (
-          <div style={{ fontSize: 11, color: T.subtle, fontStyle: "italic", marginTop: 10 }}>
-            You joined with your camera off, so camera cues were never measured — and are never counted against you.
-          </div>
-        )}
-      </div>
-    </div>
+    <RdCard title="Presence Profile" profile={profile}>
+      {counts.length > 0 && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          {counts.map(([k, v]) => (
+            <span key={k} className="mba-pill mba-pill-warn">{LABELS[k] || k} ×{v}</span>
+          ))}
+        </div>
+      )}
+      <div style={{ fontSize: 13, lineHeight: 1.65, color: T.text, fontFamily: IQ.sans }}>{p.coaching_note}</div>
+      {p.camera_signals_disabled && (
+        <div style={{ fontSize: 11, color: T.subtle, fontStyle: "italic", marginTop: 10 }}>
+          You joined with your camera off, so camera cues were never measured — and are never counted against you.
+        </div>
+      )}
+    </RdCard>
   );
 }
 
-function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
-  const [d, setD] = useState(null);
-  const [error, setError] = useState(null);
-  useEffect(() => { (async () => { try {
-    const r = await endSession(sessionId);
-    if (!(r.strengths?.length) && !(r.star_breakdown?.length)) {
-      r.one_line = r.one_line || "Session ended before answering. Start another when ready.";
-      r.next_focus = r.next_focus || "Prepare your introduction, pick a role, and try again.";
-    }
-    setD(r);
-  } catch (e) { setError(e.message); } })(); }, [sessionId]);
+// Item 8: SHOW THE MATH. The expandable working behind the benchmark, in plain words,
+// listing THIS attempt's real factors — read from what the server stored, so an old
+// attempt explains itself with the weights it was actually scored on.
+//
+// A student who cannot see why 100 became 42 has simply been told they are worse than
+// they are. This is the difference between a score and an accusation.
+function ShowTheMath({ math }) {
+  if (!math || math.length === 0) return null;
+  return (
+    <details className="rd-math">
+      <summary>How this score is calculated</summary>
+      <div style={{ marginTop: 8 }}>
+        {math.map((r, i) => (
+          <div key={i} className="rd-math-r">
+            <span className="rd-math-v">{r.value}</span>
+            <div style={{ minWidth: 0 }}>
+              <div className="rd-math-l">{r.label}</div>
+              <div className="rd-math-n">{r.note}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="rd-math-n" style={{ marginTop: 12, fontStyle: "italic" }}>
+        Your experience level is already built into the first line — it is not weighted
+        again, so nothing here counts it twice.
+      </div>
+    </details>
+  );
+}
 
-  if (error) return <div className="vc" style={{ padding: 28, textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 700, color: T.navy, marginBottom: 8 }}>Could not generate report</div><div style={{ fontSize: 13, color: T.muted, marginBottom: 20 }}>{error}</div><button onClick={onRestart} className="mba-btn-primary">Start new session</button></div>;
-  if (!d) return <div style={{ textAlign: "center", padding: "80px 20px" }}><div className="mba-spinner" style={{ margin: "0 auto 16px" }} /><div style={{ fontSize: 16, fontWeight: 700, color: T.navy }}>Analyzing your interview...</div><div style={{ fontSize: 13, color: T.subtle, marginTop: 4 }}>Scoring each response against the STAR framework.</div></div>;
-
+// Item 10 (7): THE READINESS BLOCK — the last major section, and the ONE place a band
+// exists on this page. The band, the per-round pills, the calibration delta, the
+// competency bars, the benchmark and the working are all folded into this single navy
+// block. There is no second scorecard below it: that is exactly what "two stacked
+// designs" used to be.
+function ReadinessBlock({ d, profile }) {
   const band = d.overall_band || "Not Ready";
   const bandStyle = BAND_STYLE[band] || BAND_STYLE["Not Ready"];
   const roundBands = d.round_bands || {};
   const cal = d.calibration || {};
   const ss = d.sub_scores || {};
-  const pk = (k) => ({ communication:"Communication",roleKnowledge:"Role Knowledge",clarity:"Clarity",confidence:"Confidence",structure:"Structure",problemSolving:"Problem Solving" })[k] || k;
-  // Calibration + competency data folded into the single readiness block below (INT-02).
+  const score = d.score || null;
   const calHasData = cal.profile && cal.profile !== "insufficient_data" && cal.avg_confidence != null;
   const calCopy = CALIBRATION_COPY[cal.profile];
   const ssEntries = Object.entries(ss);
-  const currentRound = ROUNDS.find(r => r.v === config.round) || ROUNDS[ROUNDS.length - 1];
-
-  // E6 — the readout is read top to bottom, and the ORDER is the coaching:
-  //   what went well (in their own words) -> how they came across (delivery, presence)
-  //   -> the 2-3 fixes that matter -> and only then the verdict.
-  // The band used to open the page, which meant the first thing a struggling learner saw
-  // was a label, and everything after it was noise. Nobody hears a correction until they
-  // have been met. The evidence (sub-scores, STAR, what the interviewer was thinking)
-  // now sits UNDER the verdict, where it belongs: it is the working, not the message.
-  const strengths = (d.strengths || []).map(asStrength).filter(s => s.strength);
-  const gaps = d.gaps || [];
-
-  // INT/embed fixup #3 — a session that ended before ANY substantive answer is SKIPPED,
-  // not failed. Show only the "ended before answering" card (plus Presence, if it was
-  // measured). Never a readiness band, never 0/10 tiles — that would score a no-show.
-  if (isEmptyReadout(d)) {
-    return (
-      <div style={{ fontFamily: T.font, width: "100%", maxWidth: 820, margin: "0 auto", padding: "24px 28px", boxSizing: "border-box" }}>
-        <div style={{ background: T.navy, borderRadius: 12, padding: "24px 32px", marginBottom: 16 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.3)", marginBottom: 12 }}>Session ended</div>
-          <div style={{ fontSize: 17, fontWeight: 700, color: "#fff", lineHeight: 1.45 }}>
-            {d.one_line || "This session ended before any substantive answers."}
-          </div>
-          <div style={{ fontSize: 12, color: "rgba(255,255,255,.3)", marginTop: 8 }}>{config.role} — {config.level} — {config.company || "General"} — {config.duration_min} min</div>
-          {d.early_wrap && (
-            <div style={{ fontSize: 12, color: "rgba(255,255,255,.55)", marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.12)" }}>
-              {EARLY_WRAP_NOTE[d.early_wrap] || "This interview ended early."}
-            </div>
-          )}
-          <div style={{ fontSize: 13, color: "rgba(255,255,255,.7)", marginTop: 12, lineHeight: 1.6 }}>
-            Nothing was scored — a skipped session is not a failed one. There's no readiness band to read here; start another when you're ready and give it a full run.
-          </div>
-        </div>
-
-        {/* Presence is the ONE thing that can exist without an answer (camera cues), so it
-            stays — but only if it was actually measured. */}
-        <PresenceBlock presence={d.professional_presence} />
-
-        <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={onRestart} className="vbtn">Start Another Mock</button>
-          <button onClick={onViewHistory} className="vbtn" style={{ background: T.white, color: T.navy, border: "1.5px solid " + T.border }}>View History</button>
-        </div>
-      </div>
-    );
-  }
+  const pk = (k) => ({ communication: "Communication", roleKnowledge: "Role Knowledge", clarity: "Clarity", confidence: "Confidence", structure: "Structure", problemSolving: "Problem Solving" })[k] || k;
 
   return (
-    <div style={{ fontFamily: T.font, width: "100%", maxWidth: 820, margin: "0 auto", padding: "24px 28px", boxSizing: "border-box" }}>
-      {/* The opening line, in the interviewer's own voice. No band yet. */}
-      <div style={{ background: T.navy, borderRadius: 12, padding: "24px 32px", marginBottom: 16 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.3)" }}>Your readout</div>
-          <div style={{ padding: "3px 10px", borderRadius: 10, background: "rgba(184,150,11,.2)", border: "1px solid rgba(184,150,11,.3)", fontSize: 10, fontWeight: 700, color: T.gold }}>{currentRound.l}</div>
-        </div>
-        <div style={{ fontSize: 17, fontWeight: 700, color: "#fff", lineHeight: 1.45 }}>{d.one_line}</div>
-        <div style={{ fontSize: 12, color: "rgba(255,255,255,.3)", marginTop: 8 }}>{config.role} — {config.level} — {config.company || "General"} — {currentRound.l} — {config.duration_min} min</div>
-        {d.early_wrap && (
-          <div style={{ fontSize: 12, color: "rgba(255,255,255,.55)", marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.12)" }}>
-            {EARLY_WRAP_NOTE[d.early_wrap] || "This interview ended early. What you did cover is scored below, exactly as it stood."}
-          </div>
-        )}
+    <div className="rd-navy">
+      <div className="rd-h">
+        <span className="rd-t">Readiness</span>
+        <ContextChip profile={profile} />
       </div>
-
-      {/* 1. WHAT WENT WELL — first, and in their own words. */}
-      {strengths.length > 0 && (
-        <div className="vc" style={{ marginBottom: 16, borderLeft: "3px solid " + T.green }}>
-          <div className="vc-h"><span className="vc-t" style={{ color: T.green }}>What went well</span></div>
-          <div className="vc-b">
-            {strengths.map((s, i) => (
-              <div key={i} style={{ marginBottom: i < strengths.length - 1 ? 14 : 0, paddingLeft: 14, borderLeft: "2px solid " + T.green }}>
-                <div style={{ fontSize: 13, lineHeight: 1.65 }}>{s.strength}</div>
-                {s.evidence && (
-                  <div style={{ fontSize: 12, color: T.muted, fontStyle: "italic", marginTop: 5, lineHeight: 1.55 }}>
-                    Your words: &ldquo;{s.evidence}&rdquo;
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 2. HOW YOU CAME ACROSS. */}
-      <DeliveryBlock delivery={d.delivery || {}} />
-      <PresenceBlock presence={d.professional_presence} />
-
-      {/* 3. THE FIXES THAT MATTER — each with something to do about it tomorrow. */}
-      {gaps.length > 0 && (
-        <div className="vc" style={{ marginBottom: 16, borderLeft: "3px solid " + T.gold }}>
-          <div className="vc-h"><span className="vc-t" style={{ color: "#7a5e00" }}>The {gaps.length} {gaps.length === 1 ? "fix" : "fixes"} that matter</span></div>
-          <div className="vc-b">
-            {gaps.map((g, i) => (
-              <div key={i} style={{ marginBottom: 16, paddingBottom: i < gaps.length - 1 ? 14 : 0, borderBottom: i < gaps.length - 1 ? "1px solid " + T.border : "none" }}>
-                <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
-                  <span style={{ fontFamily: IQ.mono, fontSize: 12, fontWeight: 800, color: T.gold, flexShrink: 0 }}>{String(i + 1).padStart(2, "0")}</span>
-                  <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.5, color: T.text }}>{g.gap}</div>
-                </div>
-                {g.cost && <div style={{ fontSize: 13, lineHeight: 1.6, color: T.muted, marginTop: 5, paddingLeft: 32 }}>{g.cost}</div>}
-                {g.tryThisNextTime && (
-                  <div style={{ marginTop: 10, marginLeft: 32, padding: "10px 14px", borderRadius: 8, background: IQ.cream, border: "1px solid " + T.gold }}>
-                    <div style={{ fontFamily: IQ.mono, fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "#7a5e00", marginBottom: 4 }}>Try this next time</div>
-                    <div style={{ fontSize: 13, lineHeight: 1.6, color: "#5a4500", fontWeight: 600 }}>{g.tryThisNextTime}</div>
-                  </div>
-                )}
-                {g.upskillizeCourse && <div style={{ fontSize: 12, color: T.navy, fontWeight: 700, marginTop: 8, paddingLeft: 32 }}>Study: {g.upskillizeCourse}</div>}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 5. THE READINESS VERDICT — stated ONCE, in a single block. The band, the per-round
-          pills, the calibration delta, and the competency /10s all live here, folded together
-          as the working. There is no second scorecard below it — the verdict is not repeated,
-          which is exactly what "two stacked reports" used to do. Band pill colours are the
-          locked brand semantics (BAND_STYLE): Offer-Ready gold, Interview-Ready teal, Building
-          navy, Not Ready orange. */}
-      <div style={{ background: T.navy, borderRadius: 12, padding: "28px 32px", marginBottom: 16 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.3)", marginBottom: 14 }}>Readiness</div>
+      <div className="rd-b">
         <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
           <div style={{ display: "inline-flex", alignItems: "center", padding: "10px 24px", borderRadius: 10, background: bandStyle.bg, color: bandStyle.fg, fontFamily: IQ.display, fontWeight: 700, letterSpacing: "-0.01em", fontSize: 26 }}>{band}</div>
-          {cal.sentence && (
-            <div style={{ flex: 1, minWidth: 240, fontSize: 14, color: "rgba(255,255,255,.9)", lineHeight: 1.6 }}>{cal.sentence}</div>
+          {score && (
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.35)" }}>Benchmark</div>
+              <div style={{ fontFamily: IQ.mono, fontSize: 30, fontWeight: 500, color: "#fff", lineHeight: 1.15 }}>
+                {score.benchmark}<span style={{ fontSize: 14, color: "rgba(255,255,255,.4)" }}>/100</span>
+              </div>
+            </div>
           )}
         </div>
 
-        {Object.keys(roundBands).length > 0 && (
-          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 18 }}>
-            {Object.entries(roundBands).map(([k, v]) => { const bs = BAND_STYLE[v] || BAND_STYLE["Not Ready"]; return (
-              <div key={k} style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-start" }}>
-                <span style={{ fontSize: 10, color: "rgba(255,255,255,.4)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".04em" }}>{ROUND_BAND_LABELS[k] || k}</span>
-                <span style={{ padding: "3px 12px", borderRadius: 8, background: bs.bg, color: bs.fg, fontFamily: IQ.display, fontWeight: 700, fontSize: 13 }}>{v}</span>
-              </div>
-            ); })}
+        {/* Item 3: the gate copy. A cap with no explanation is a number that feels
+            unfair; a cap that names the next rung is a next session. */}
+        {score && score.capped && score.gate_copy && (
+          <div style={{ marginTop: 16, padding: "12px 16px", borderRadius: 10, background: "rgba(200,153,42,.13)", border: "1px solid rgba(200,153,42,.32)" }}>
+            <div style={{ fontFamily: IQ.mono, fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: IQ.gold, marginBottom: 5 }}>Band gate</div>
+            <div style={{ fontSize: 13, lineHeight: 1.6, color: "rgba(255,255,255,.92)" }}>{score.gate_copy}</div>
           </div>
         )}
 
-        {/* Calibration delta — confidence vs. performance, in the SAME block. Never punitive. */}
+        {Object.keys(roundBands).length > 0 && (
+          <div className="rd-rule">
+            <div className="rd-sub">By round</div>
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+              {Object.entries(roundBands).map(([k, v]) => { const bs = BAND_STYLE[v] || BAND_STYLE["Not Ready"]; return (
+                <div key={k} style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-start" }}>
+                  <span style={{ fontSize: 10, color: "rgba(255,255,255,.4)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".04em" }}>{ROUND_BAND_LABELS[k] || k}</span>
+                  <span style={{ padding: "3px 12px", borderRadius: 8, background: bs.bg, color: bs.fg, fontFamily: IQ.display, fontWeight: 700, fontSize: 13 }}>{v}</span>
+                </div>
+              ); })}
+            </div>
+          </div>
+        )}
+
+        {/* Item 12: calibration keeps its own place here, untouched. Confidence never
+            enters the benchmark formula — it is a different question (do you know what
+            you know?) and folding it into a score would answer neither. */}
         {calHasData && (
-          <div style={{ marginTop: 22, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,.12)" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.35)", marginBottom: 12 }}>Calibration — confidence vs. performance</div>
+          <div className="rd-rule">
+            <div className="rd-sub">Calibration — confidence vs. performance</div>
+            {cal.sentence && (
+              <div style={{ fontSize: 14, color: "rgba(255,255,255,.9)", lineHeight: 1.6, marginBottom: 14 }}>{cal.sentence}</div>
+            )}
             <div className="mba-grid-3" style={{ marginBottom: calCopy ? 14 : 0 }}>
               {[
                 ["Avg Confidence", cal.avg_confidence, "/5"],
@@ -3675,7 +3780,7 @@ function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
               ].map(([label, val, suffix], i) => (
                 <div key={i} style={{ padding: "12px 14px", borderRadius: 10, background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.10)" }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,.5)", textTransform: "uppercase", letterSpacing: ".05em" }}>{label}</div>
-                  <div style={{ fontSize: 24, fontWeight: 800, color: "#fff", marginTop: 4, fontFamily: IQ.mono }}>{val}<span style={{ fontSize: 13, fontWeight: 400, color: "rgba(255,255,255,.5)", fontFamily: IQ.sans }}>{suffix}</span></div>
+                  <div style={{ fontSize: 24, fontWeight: 500, color: "#fff", marginTop: 4, fontFamily: IQ.mono }}>{val}<span style={{ fontSize: 13, fontWeight: 400, color: "rgba(255,255,255,.5)", fontFamily: IQ.sans }}>{suffix}</span></div>
                 </div>
               ))}
             </div>
@@ -3688,43 +3793,234 @@ function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
           </div>
         )}
 
-        {/* Competency /10 — the working, folded into the verdict rather than a separate card. */}
+        {/* Competency /10 — the working, folded into the verdict rather than a second card. */}
         {ssEntries.length > 0 && (
-          <div style={{ marginTop: 22, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,.12)" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.35)", marginBottom: 12 }}>By competency</div>
+          <div className="rd-rule">
+            <div className="rd-sub">By competency</div>
             <div className="mba-grid-3">
-              {ssEntries.map(([k, v]) => { const co = v >= 7 ? T.green : v >= 5 ? T.gold : T.red; return (
+              {ssEntries.map(([k, v]) => { const co = v >= 7 ? IQ.teal : v >= 5 ? IQ.gold : IQ.orange; return (
                 <div key={k} style={{ padding: "12px 14px", borderRadius: 10, background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.10)" }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,.5)", textTransform: "uppercase", letterSpacing: ".05em" }}>{pk(k)}</div>
-                  <div style={{ fontSize: 22, fontWeight: 800, color: "#fff", marginTop: 4 }}>{v}<span style={{ fontSize: 13, fontWeight: 400, color: "rgba(255,255,255,.5)" }}>/10</span></div>
-                  <div style={{ height: 4, borderRadius: 2, background: "rgba(255,255,255,.12)", marginTop: 8, overflow: "hidden" }}><div style={{ height: "100%", borderRadius: 2, width: (v * 10) + "%", background: co }} /></div>
+                  <div style={{ fontSize: 22, fontWeight: 500, color: "#fff", marginTop: 4, fontFamily: IQ.mono }}>{v}<span style={{ fontSize: 13, fontWeight: 400, color: "rgba(255,255,255,.5)", fontFamily: IQ.sans }}>/10</span></div>
+                  <div style={{ height: 4, borderRadius: 2, background: "rgba(255,255,255,.12)", marginTop: 8, overflow: "hidden" }}><div style={{ height: "100%", borderRadius: 2, width: Math.max(0, Math.min(100, v * 10)) + "%", background: co }} /></div>
                 </div>
               ); })}
             </div>
           </div>
         )}
-      </div>
 
-      {d.star_breakdown?.length > 0 &&<div className="vc" style={{ marginBottom: 16 }}><div className="vc-h"><span className="vc-t">Answer-by-answer analysis (STAR)</span></div><div className="vc-b">{d.star_breakdown.map((q, i) => <div key={i} style={{ marginBottom: 16, paddingBottom: 14, borderBottom: i < d.star_breakdown.length - 1 ? "1px solid " + T.border : "none" }}><div style={{ fontSize: 13, fontWeight: 700, color: T.navy, marginBottom: 8 }}>{q.question}</div><div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>{["situation","task","action","result"].map(key => { const val = q[key] || 0; return <span key={key} className={"mba-pill " + (val >= 2 ? "mba-pill-pass" : val === 1 ? "mba-pill-warn" : "mba-pill-fail")}>{key[0].toUpperCase()} {val}/2</span>; })}</div><div style={{ fontSize: 12, color: T.muted, fontStyle: "italic" }}>{q.note}</div></div>)}</div></div>}
-
-      {d.interviewer_thoughts?.length > 0 && <div className="vc" style={{ marginBottom: 16, borderLeft: "3px solid " + T.navy }}><div className="vc-h"><span className="vc-t">What the interviewer was thinking</span></div><div className="vc-b">{d.interviewer_thoughts.map((t, i) => <div key={i} style={{ marginBottom: 12 }}><div style={{ fontSize: 11, color: T.subtle, textTransform: "uppercase" }}>Re: {t.answer}</div><div style={{ fontSize: 13, fontStyle: "italic", marginTop: 2, paddingLeft: 12, borderLeft: "2px solid " + T.navy }}>"{t.thought}"</div></div>)}</div></div>}
-
-      <div className="vc" style={{ marginBottom: 16 }}><div className="vc-h"><span className="vc-t">Your 7-day action plan</span></div><div className="vc-b">{(d.plan || []).map((p, i) => <div key={i} style={{ display: "flex", gap: 12, marginBottom: 10 }}><div style={{ width: 26, height: 26, borderRadius: 6, flexShrink: 0, background: T.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, color: T.navy, border: "1px solid " + T.border }}>{i + 1}</div><div style={{ fontSize: 13, lineHeight: 1.6, paddingTop: 3 }}>{p.replace(/^Day \d:\s*/, "")}</div></div>)}</div></div>
-
-      <div style={{ background: T.navy, borderRadius: 10, padding: "18px 24px", marginBottom: 20 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: "rgba(255,255,255,.4)", marginBottom: 6 }}>Before your next mock</div>
-        <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", lineHeight: 1.5 }}>{d.next_focus}</div>
-      </div>
-      <div style={{ display: "flex", gap: 10 }}>
-        <button onClick={onRestart} className="vbtn">Start Another Mock</button>
-        <button onClick={onViewHistory} className="vbtn" style={{ background: T.white, color: T.navy, border: "1.5px solid " + T.border }}>View History</button>
+        {score && <ShowTheMath math={score.math} />}
       </div>
     </div>
   );
 }
 
+function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
+  const [d, setD] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => { (async () => { try {
+    setD(await endSession(sessionId));
+  } catch (e) { setError(e.message); } })(); }, [sessionId]);
+
+  if (error) return <div className="vc" style={{ padding: 28, textAlign: "center" }}><div style={{ fontSize: 16, fontWeight: 700, color: T.navy, marginBottom: 8 }}>Could not generate report</div><div style={{ fontSize: 13, color: T.muted, marginBottom: 20 }}>{error}</div><button onClick={onRestart} className="mba-btn-primary">Start new session</button></div>;
+  if (!d) return <div style={{ textAlign: "center", padding: "80px 20px" }}><div className="mba-spinner" style={{ margin: "0 auto 16px" }} /><div style={{ fontSize: 16, fontWeight: 700, color: T.navy }}>Analyzing your interview...</div><div style={{ fontSize: 13, color: T.subtle, marginTop: 4 }}>Scoring each response against the STAR framework.</div></div>;
+
+  // The strip always renders, so fall back to what the lobby knows if the server
+  // sent no profile (a drifted or older backend). The context is never optional.
+  const profile = (d.profile && d.profile.role) ? d.profile : {
+    role: config.role, company: config.company, level: config.level,
+    difficulty: config.difficulty, duration_min: config.duration_min,
+    mode: null, feedback: config.mode, rounds_covered: [], rounds_skipped: [],
+  };
+  const strengths = (d.strengths || []).map(asStrength).filter((s) => s.strength);
+  const gaps = d.gaps || [];
+  const reattempt = d.reattempt_window || {};
+
+  const actions = (
+    <div style={{ display: "flex", gap: 10 }}>
+      <button onClick={onRestart} className="vbtn">Start Another Mock</button>
+      <button onClick={onViewHistory} className="vbtn" style={{ background: T.white, color: T.navy, border: "1.5px solid " + T.border }}>View History</button>
+    </div>
+  );
+
+  // Item 4: below the evidence floor there is no band, no benchmark and no tiles —
+  // the "Insufficient evidence" card is the whole readout (plus Presence, which is the
+  // one thing that can exist without an answer). A band printed on two answers is a
+  // guess wearing a verdict's clothes, and "Not Ready · 0/10" for a session nobody
+  // answered is the exact failure this guards against. Skipped ≠ failed.
+  if (isEmptyReadout(d)) {
+    const ev = d.evidence || {};
+    return (
+      <div className="rd-page">
+        <SessionProfileStrip profile={profile} early={d.early_wrap} scored={false} />
+        <RdCard title="Insufficient evidence" profile={profile} accent={T.navy}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: T.navy, lineHeight: 1.5, marginBottom: 8 }}>
+            This session ended before there was enough to score.
+          </div>
+          <div style={{ fontSize: 13, color: T.muted, lineHeight: 1.65 }}>
+            {ev.copy || "A readiness band needs at least three substantive answers. That is a statement about the evidence, not about you — nothing has been marked against you, and the next attempt starts clean."}
+          </div>
+        </RdCard>
+        <PresenceBlock presence={d.professional_presence} profile={profile} />
+        <RdCard title="When to come back" profile={profile}>
+          <div style={{ fontSize: 13, color: T.text, lineHeight: 1.65, marginBottom: 14 }}>
+            Whenever you have twenty quiet minutes. There is nothing to make up for here — there is just an interview you have not had yet.
+          </div>
+          {actions}
+        </RdCard>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rd-page">
+      {/* 1. THE CONTEXT — before any number, always. */}
+      <SessionProfileStrip profile={profile} early={d.early_wrap} scored={true} />
+
+      {/* 2. THE VERDICT — one sentence, in the interviewer's own voice. No band here:
+             the band lives once, in the Readiness block, at the bottom. */}
+      <RdCard title="Your readout" profile={profile} accent={T.navy}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: T.navy, lineHeight: 1.5 }}>{d.one_line}</div>
+      </RdCard>
+
+      {/* 3. WHAT WENT WELL — first, and in their own words. */}
+      {strengths.length > 0 ? (
+        <RdCard title="What went well" titleColor={T.green} accent={T.green} profile={profile}>
+          {strengths.map((s, i) => (
+            <div key={i} style={{ marginBottom: i < strengths.length - 1 ? 14 : 0, paddingLeft: 14, borderLeft: "2px solid " + T.green }}>
+              <div style={{ fontSize: 13, lineHeight: 1.65 }}>{s.strength}</div>
+              {s.evidence && (
+                <div style={{ fontSize: 12, color: T.muted, fontStyle: "italic", marginTop: 5, lineHeight: 1.55 }}>
+                  Your words: &ldquo;{s.evidence}&rdquo;
+                </div>
+              )}
+            </div>
+          ))}
+        </RdCard>
+      ) : (
+        <RdMissing title="What went well" profile={profile}>
+          There wasn&rsquo;t a moment we could quote back to you this time. That is not a verdict on you — it is the honest read of a short session, and it is the first thing that changes on the next one.
+        </RdMissing>
+      )}
+
+      {/* 4 + 5. HOW YOU CAME ACROSS. Both report-only: neither moves the band. */}
+      <DeliveryBlock delivery={d.delivery || {}} profile={profile} />
+      <PresenceBlock presence={d.professional_presence} profile={profile} />
+
+      {/* 6. THE FIXES THAT MATTER — each with something to do about it tomorrow. */}
+      {gaps.length > 0 ? (
+        <RdCard title={`The ${gaps.length} ${gaps.length === 1 ? "fix" : "fixes"} that matter`} titleColor="#7a5e00" accent={T.gold} profile={profile}>
+          {gaps.map((g, i) => (
+            <div key={i} style={{ marginBottom: 16, paddingBottom: i < gaps.length - 1 ? 14 : 0, borderBottom: i < gaps.length - 1 ? "1px solid " + T.border : "none" }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+                <span style={{ fontFamily: IQ.mono, fontSize: 12, fontWeight: 800, color: T.gold, flexShrink: 0 }}>{String(i + 1).padStart(2, "0")}</span>
+                <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.5, color: T.text }}>{g.gap}</div>
+              </div>
+              {g.cost && <div style={{ fontSize: 13, lineHeight: 1.6, color: T.muted, marginTop: 5, paddingLeft: 32 }}>{g.cost}</div>}
+              {g.tryThisNextTime && (
+                <div style={{ marginTop: 10, marginLeft: 32, padding: "10px 14px", borderRadius: 8, background: IQ.cream, border: "1px solid " + T.gold }}>
+                  <div style={{ fontFamily: IQ.mono, fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "#7a5e00", marginBottom: 4 }}>Try this next time</div>
+                  <div style={{ fontSize: 13, lineHeight: 1.6, color: "#5a4500", fontWeight: 600 }}>{g.tryThisNextTime}</div>
+                </div>
+              )}
+              {g.upskillizeCourse && <div style={{ fontSize: 12, color: T.navy, fontWeight: 700, marginTop: 8, paddingLeft: 32 }}>Study: {g.upskillizeCourse}</div>}
+            </div>
+          ))}
+        </RdCard>
+      ) : (
+        <RdMissing title="The fixes that matter" profile={profile}>
+          Nothing specific enough to name as a fix came out of this session.
+        </RdMissing>
+      )}
+
+      {/* 7. THE PLAN — the fixes, spread over the week the re-attempt window assumes. */}
+      {(d.plan || []).length > 0 && (
+        <RdCard title="Your 7-day action plan" profile={profile}>
+          {(d.plan || []).map((p, i) => (
+            <div key={i} style={{ display: "flex", gap: 12, marginBottom: 10 }}>
+              <div style={{ width: 26, height: 26, borderRadius: 6, flexShrink: 0, background: T.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: IQ.mono, fontSize: 12, fontWeight: 500, color: T.navy, border: "1px solid " + T.border }}>{i + 1}</div>
+              <div style={{ fontSize: 13, lineHeight: 1.6, paddingTop: 3 }}>{p.replace(/^Day \d:\s*/, "")}</div>
+            </div>
+          ))}
+        </RdCard>
+      )}
+
+      {/* 8. THE READINESS BLOCK — last major section, and the only band on the page. */}
+      <ReadinessBlock d={d} profile={profile} />
+
+      {/* 9. THE WORKING — answer by answer, collapsed. It is evidence for the verdict
+             above, not part of reading it, so it opens on request. */}
+      {(d.star_breakdown?.length > 0 || d.interviewer_thoughts?.length > 0) && (
+        <details className="rd-card rd-star">
+          <summary>View answer-by-answer</summary>
+          <div className="rd-b" style={{ paddingTop: 0 }}>
+            {d.star_breakdown?.length > 0 && (
+              <>
+                <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: T.subtle, marginBottom: 12 }}>STAR breakdown</div>
+                {d.star_breakdown.map((q, i) => (
+                  <div key={i} style={{ marginBottom: 16, paddingBottom: 14, borderBottom: i < d.star_breakdown.length - 1 ? "1px solid " + T.border : "none" }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: T.navy, marginBottom: 8 }}>{q.question}</div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+                      {["situation", "task", "action", "result"].map((key) => { const val = q[key] || 0; return <span key={key} className={"mba-pill " + (val >= 2 ? "mba-pill-pass" : val === 1 ? "mba-pill-warn" : "mba-pill-fail")} style={{ fontFamily: IQ.mono, fontWeight: 500 }}>{key[0].toUpperCase()} {val}/2</span>; })}
+                    </div>
+                    <div style={{ fontSize: 12, color: T.muted, fontStyle: "italic", lineHeight: 1.55 }}>{q.note}</div>
+                  </div>
+                ))}
+              </>
+            )}
+            {d.interviewer_thoughts?.length > 0 && (
+              <div style={{ marginTop: d.star_breakdown?.length > 0 ? 18 : 0, paddingTop: d.star_breakdown?.length > 0 ? 16 : 0, borderTop: d.star_breakdown?.length > 0 ? "1px solid " + T.border : "none" }}>
+                <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: T.subtle, marginBottom: 12 }}>What the interviewer was thinking</div>
+                {d.interviewer_thoughts.map((t, i) => (
+                  <div key={i} style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, color: T.subtle, textTransform: "uppercase" }}>Re: {t.answer}</div>
+                    <div style={{ fontSize: 13, fontStyle: "italic", marginTop: 2, paddingLeft: 12, borderLeft: "2px solid " + T.navy, lineHeight: 1.6 }}>&ldquo;{t.thought}&rdquo;</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </details>
+      )}
+
+      {/* 10. WHEN TO COME BACK — the re-attempt window, and one closing line. */}
+      <RdCard title="When to come back" profile={profile}>
+        {reattempt.days && (
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 8 }}>
+            <span style={{ fontFamily: IQ.mono, fontSize: 22, fontWeight: 500, color: T.navy }}>{reattempt.days}</span>
+            <span style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".06em", color: T.subtle }}>{reattempt.days === 1 ? "day" : "days"}</span>
+          </div>
+        )}
+        <div style={{ fontSize: 13, color: T.text, lineHeight: 1.65 }}>{reattempt.copy || "Come back when you have twenty quiet minutes."}</div>
+        {d.next_focus && (
+          <div style={{ marginTop: 14, padding: "12px 16px", borderRadius: 8, background: T.bg, border: "1px solid " + T.border }}>
+            <div style={{ fontFamily: IQ.mono, fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: T.muted, marginBottom: 4 }}>Before your next mock</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: T.navy, lineHeight: 1.5 }}>{d.next_focus}</div>
+          </div>
+        )}
+        {/* One closing line. Funny-but-sharp is allowed; quirky is not. It is the last
+            thing they read, so it carries the whole point: this was practice, and
+            practice is the only part of the process you control. */}
+        <div style={{ fontSize: 13, color: T.muted, lineHeight: 1.65, marginTop: 14, fontStyle: "italic" }}>
+          Nobody has ever walked out of a real interview wishing they had rehearsed less.
+        </div>
+        <div style={{ marginTop: 16 }}>{actions}</div>
+      </RdCard>
+    </div>
+  );
+}
+
+// Item 7: what the trend actually means, said in one clause. An arrow is not a sentence.
+const TREND_COPY = {
+  up: "Up on your recent average",
+  down: "Down on your recent average",
+  flat: "Holding steady",
+  none: "One session so far — not a trend yet",
+};
+
 function HistoryScreen({ onPickSession, onStartNew }) {
   const [items, setItems] = useState(null);
+  const [trend, setTrend] = useState([]);
   const [stats, setStats] = useState(null);
   const [error, setError] = useState(null);
   const [tab, setTab] = useState("all");
@@ -3733,7 +4029,7 @@ function HistoryScreen({ onPickSession, onStartNew }) {
     (async () => {
       try {
         const [h, s] = await Promise.all([fetchHistory(100, 0), fetchStats()]);
-        setItems(h.sessions); setStats(s);
+        setItems(h.sessions); setTrend(h.trend || []); setStats(s);
       } catch (e) { setError(e.message); }
     })();
   }, []);
@@ -3759,18 +4055,51 @@ function HistoryScreen({ onPickSession, onStartNew }) {
         <button onClick={onStartNew} className="mba-btn-primary" style={{ background: T.gold }}>+ New Mock</button>
       </div>
 
+      {/* Item 7 — TREND OVER TROPHY. "Best Score" is gone, deliberately: it was a raw
+          score from whichever session happened to be easiest and shortest, held up as
+          who this person is. What replaces it is where they are NOW — the average of
+          their latest three BENCHMARKS, which are the only scores comparable to each
+          other across different difficulties and durations. */}
       <div className="mba-grid-3" style={{ marginBottom: 18 }}>
-        <div className="mba-metric mba-metric-green"><div className="mba-metric-label">Total Sessions</div><div className="mba-metric-value">{summary.total_sessions || 0}</div></div>
-        <div className="mba-metric mba-metric-gold"><div className="mba-metric-label">Average Score</div><div className="mba-metric-value">{summary.avg_score != null ? Math.round(summary.avg_score) : "—"}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle }}>/100</span></div></div>
-        <div className="mba-metric mba-metric-green"><div className="mba-metric-label">Best Score</div><div className="mba-metric-value">{summary.best_score ?? "—"}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle }}>/100</span></div></div>
-        <div className="mba-metric"><div className="mba-metric-label">Completed</div><div className="mba-metric-value" style={{ color: T.green }}>{summary.completed || 0}</div></div>
-        <div className="mba-metric"><div className="mba-metric-label">Abandoned</div><div className="mba-metric-value" style={{ color: T.red }}>{summary.abandoned || 0}</div></div>
-        <div className="mba-metric"><div className="mba-metric-label">Total Practice Time</div><div className="mba-metric-value">{totalMinutes}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle }}> min</span></div></div>
+        <div className="mba-metric mba-metric-gold">
+          <div className="mba-metric-label">Latest {summary.window || 3} — average</div>
+          <div className="mba-metric-value" style={{ fontFamily: IQ.mono, fontWeight: 500 }}>{summary.latest_average != null ? summary.latest_average : "—"}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle, fontFamily: IQ.sans }}>/100</span></div>
+          <div style={{ fontSize: 10, color: T.subtle, marginTop: 4 }}>Benchmark, not raw score</div>
+        </div>
+        <div className="mba-metric mba-metric-green"><div className="mba-metric-label">Where you are now</div><div className="mba-metric-value" style={{ fontFamily: IQ.display, fontSize: 20 }}>{summary.latest_band || "—"}</div><div style={{ fontSize: 10, color: T.subtle, marginTop: 4 }}>{trend.length > 0 ? TREND_COPY[trendDirection(trend.map(t => t.benchmark))] : "No scored sessions yet"}</div></div>
+        <div className="mba-metric"><div className="mba-metric-label">Total Sessions</div><div className="mba-metric-value" style={{ fontFamily: IQ.mono, fontWeight: 500 }}>{summary.total_sessions || 0}</div></div>
+        <div className="mba-metric"><div className="mba-metric-label">Scored</div><div className="mba-metric-value" style={{ color: T.green, fontFamily: IQ.mono, fontWeight: 500 }}>{summary.scored_sessions ?? 0}</div></div>
+        <div className="mba-metric"><div className="mba-metric-label">Completed</div><div className="mba-metric-value" style={{ fontFamily: IQ.mono, fontWeight: 500 }}>{summary.completed || 0}</div></div>
+        <div className="mba-metric"><div className="mba-metric-label">Total Practice Time</div><div className="mba-metric-value" style={{ fontFamily: IQ.mono, fontWeight: 500 }}>{totalMinutes}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle, fontFamily: IQ.sans }}> min</span></div></div>
       </div>
+
+      {/* The benchmark trend, newest FLAGGED — so a glance lands on where they are, not
+          on their best day. Each bar carries the context it was earned in, because that
+          is the whole reason these numbers can sit next to each other at all. */}
+      {trend.length > 0 && (
+        <div className="vc" style={{ marginBottom: 16 }}>
+          <div className="vc-h"><span className="vc-t">Benchmark trend</span></div>
+          <div className="vc-b">
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 10, overflowX: "auto", paddingBottom: 4 }}>
+              {[...trend].reverse().map((t, i) => {
+                const bs = BAND_STYLE[t.band] || BAND_STYLE["Not Ready"];
+                return (
+                  <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, minWidth: 62, flexShrink: 0 }}>
+                    <div style={{ fontFamily: IQ.mono, fontSize: 12, fontWeight: 500, color: t.latest ? T.navy : T.muted }}>{t.benchmark}</div>
+                    <div style={{ width: 26, height: Math.max(6, Math.round((t.benchmark / 100) * 84)), borderRadius: 4, background: bs.bg, opacity: t.latest ? 1 : 0.45 }} />
+                    <div style={{ fontSize: 9, color: T.subtle, textAlign: "center", lineHeight: 1.3 }}>{t.difficulty}<br />{t.duration_min}m</div>
+                    {t.latest && <span className="mba-pill" style={{ background: T.navy, color: "#fff", fontSize: 9 }}>LATEST</span>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {stats?.by_role?.length > 0 && (
         <div className="vc" style={{ marginBottom: 16 }}>
-          <div className="vc-h"><span className="vc-t">Average score by role</span></div>
+          <div className="vc-h"><span className="vc-t">Average benchmark by role</span></div>
           <div className="vc-b">
             {stats.by_role.map((r, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 0", borderBottom: i < stats.by_role.length - 1 ? "1px solid " + T.border : "none" }}>
@@ -3794,6 +4123,8 @@ function HistoryScreen({ onPickSession, onStartNew }) {
         <div style={{ textAlign: "center", padding: 40, color: T.muted, fontSize: 14 }}>No sessions in this category yet.</div>
       ) : filtered.map(s => {
         const tag = completionLabel(s.status, s.completion_type);
+        const st = historyStatus(s);
+        const bs = BAND_STYLE[st.label] || { bg: T.bg, fg: T.navy };
         return (
           <div key={s.session_id} className="iq-hist-row" onClick={() => onPickSession(s.session_id)}>
             <div>
@@ -3808,10 +4139,22 @@ function HistoryScreen({ onPickSession, onStartNew }) {
               </div>
               {s.one_line && <div style={{ fontSize: 12, color: T.muted, marginTop: 6, fontStyle: "italic" }}>"{s.one_line}"</div>}
             </div>
-            <div style={{ textAlign: "right", minWidth: 80 }}>
-              {s.overall != null
-                ? <><div style={{ fontSize: 28, fontWeight: 800, color: scoreColor(s.overall) }}>{s.overall}</div><div style={{ fontSize: 10, color: T.subtle, fontWeight: 600 }}>/ 100</div></>
-                : <div style={{ fontSize: 12, color: T.subtle }}>Not scored</div>}
+            {/* Item 6 — EARLY EXITS ARE VISIBLE. A session that fell below the evidence
+                floor still appears, and it appears in navy and neutral: "Ended early —
+                not scored". Quitting cannot hide a run, and a run nobody scored is not a
+                run somebody failed. The number shown is the BENCHMARK, never the raw
+                score — a raw 100 from Easy/10-min next to a raw 75 from Critical/45 is
+                the comparison this whole sprint removed. */}
+            <div style={{ textAlign: "right", minWidth: 92, flexShrink: 0 }}>
+              {st.benchmark != null ? (
+                <>
+                  <div style={{ fontFamily: IQ.mono, fontSize: 26, fontWeight: 500, color: T.navy }}>{st.benchmark}</div>
+                  <div style={{ fontSize: 10, color: T.subtle, fontWeight: 600 }}>BENCHMARK</div>
+                  {st.label && <span className="iq-pill" style={{ background: bs.bg, color: bs.fg, marginTop: 5, display: "inline-block", fontFamily: IQ.display }}>{st.label}</span>}
+                </>
+              ) : (
+                <div style={{ fontSize: 12, color: T.subtle, lineHeight: 1.4 }}>{st.label}</div>
+              )}
             </div>
           </div>
         );
@@ -3832,6 +4175,7 @@ function HistoryDetail({ sessionId, onBack }) {
   const s = data.session;
   const d = data.debrief || {};
   const tag = completionLabel(s.status, s.completion_type);
+  const st = historyStatus(s);
   const ss = d.subScores || {};
 
   return (
@@ -3849,19 +4193,49 @@ function HistoryDetail({ sessionId, onBack }) {
         </div>
       </div>
 
-      {s.overall != null && (
+      {/* Item 6: an attempt below the evidence floor is SHOWN here too, and shown as
+          what it was — not scored — rather than as a zero. */}
+      {st.benchmark == null && (
+        <div className="vc" style={{ marginBottom: 16 }}>
+          <div className="vc-b" style={{ paddingTop: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: T.navy, marginBottom: 6 }}>{st.label}</div>
+            <div style={{ fontSize: 13, color: T.muted, lineHeight: 1.6 }}>
+              {s.scored === false
+                ? "There wasn't enough here to score — a readiness band needs at least three substantive answers. Nothing was marked against you."
+                : "This session has no benchmark. The transcript below is exactly as it stood."}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {st.benchmark != null && (
         <>
           <div className="mba-grid-3" style={{ marginBottom: 16 }}>
-            <div className="mba-metric mba-metric-gold"><div className="mba-metric-label">Overall</div><div className="mba-metric-value" style={{ color: scoreColor(s.overall) }}>{s.overall}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle }}>/100</span></div>{s.one_line && <div style={{ fontSize: 12, color: T.muted, marginTop: 6, fontStyle: "italic" }}>"{s.one_line}"</div>}</div>
-            {Object.entries(ss).slice(0, 2).map(([k, v]) => (
-              <div key={k} className="mba-metric"><div className="mba-metric-label">{k}</div><div className="mba-metric-value">{v}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle }}>/10</span></div></div>
+            {/* The BENCHMARK leads, because it is the number that means the same thing
+                from one session to the next. The raw score sits underneath it, labelled
+                as what it is: the rubric's read of the answers, before context. */}
+            <div className="mba-metric mba-metric-gold">
+              <div className="mba-metric-label">Benchmark</div>
+              <div className="mba-metric-value" style={{ fontFamily: IQ.mono, fontWeight: 500 }}>{st.benchmark}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle, fontFamily: IQ.sans }}>/100</span></div>
+              {st.label && <div style={{ fontSize: 12, color: T.navy, fontWeight: 700, marginTop: 4, fontFamily: IQ.display }}>{st.label}</div>}
+              {s.one_line && <div style={{ fontSize: 12, color: T.muted, marginTop: 6, fontStyle: "italic" }}>&ldquo;{s.one_line}&rdquo;</div>}
+            </div>
+            {s.overall != null && (
+              <div className="mba-metric">
+                <div className="mba-metric-label">Raw answers</div>
+                <div className="mba-metric-value" style={{ fontFamily: IQ.mono, fontWeight: 500 }}>{s.overall}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle, fontFamily: IQ.sans }}>/100</span></div>
+                <div style={{ fontSize: 10, color: T.subtle, marginTop: 4, lineHeight: 1.4 }}>Before weighting for {s.difficulty} · {s.planned_duration_min} min</div>
+              </div>
+            )}
+            {Object.entries(ss).slice(0, 1).map(([k, v]) => (
+              <div key={k} className="mba-metric"><div className="mba-metric-label">{k}</div><div className="mba-metric-value" style={{ fontFamily: IQ.mono, fontWeight: 500 }}>{v}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle, fontFamily: IQ.sans }}>/10</span></div></div>
             ))}
           </div>
 
-          {Object.keys(ss).length > 2 && (
+          {Object.keys(ss).length > 1 && (
             <div className="mba-grid-3" style={{ marginBottom: 16 }}>
-              {Object.entries(ss).slice(2).map(([k, v]) => (
-                <div key={k} className="mba-metric"><div className="mba-metric-label">{k}</div><div className="mba-metric-value">{v}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle }}>/10</span></div></div>
+              {Object.entries(ss).slice(1).map(([k, v]) => (
+                <div key={k} className="mba-metric"><div className="mba-metric-label">{k}</div><div className="mba-metric-value" style={{ fontFamily: IQ.mono, fontWeight: 500 }}>{v}<span style={{ fontSize: 14, fontWeight: 400, color: T.subtle, fontFamily: IQ.sans }}>/10</span></div></div>
               ))}
             </div>
           )}
