@@ -227,7 +227,12 @@ export default function Lobby({ name, role, onJoin }) {
   const initial = (name || "You").trim().charAt(0).toUpperCase() || "Y";
 
   return (
-    <div style={{ fontFamily: IQ.sans, margin: "-24px -28px", minHeight: "calc(100vh - 70px)",
+    // No negative margin. This used to carry `margin: -24px -28px` to bleed the navy out
+    // through a padded app shell — but the lobby is rendered straight into the page now,
+    // there is no padding left to cancel, and those numbers were pulling the whole screen
+    // 28px off both edges and putting a horizontal scrollbar on the pre-flight at every
+    // width. Full bleed is what a plain 100%-wide block already does here.
+    <div style={{ fontFamily: IQ.sans, width: "100%", boxSizing: "border-box", minHeight: "calc(100vh - 70px)",
       background: IQ.navy, color: "#fff", display: "flex", alignItems: "center",
       justifyContent: "center", padding: "28px 20px" }}>
       <div style={{ width: "100%", maxWidth: 900 }}>

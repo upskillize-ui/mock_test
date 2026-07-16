@@ -13,6 +13,12 @@ import {
   shouldBackchannel, shouldBargeIn, canArmCapture, BARGE_IN_RMS, BARGE_IN_DUCK_MS,
 } from "./roomPolicy.js";
 import { isEmptyReadout, historyStatus, trendDirection } from "./readoutPolicy.js";
+// The room's presentation decisions: who has the floor, what the one strip says, what the
+// student's tile shows while they answer. Pure and tested — see roomLayout.test.mjs.
+import {
+  activeSpeaker, statusStrip, studentSurface, chatSlot, bubbleMeta, composerIntent,
+  SPEAKER_INTERVIEWER, SPEAKER_STUDENT, SURFACE_LIVE,
+} from "./roomLayout.js";
 
 // Realism v2: spoken confidence rating. Accepts digits, English words, Hinglish
 // numerals, and an explicit "prefer not to say".
@@ -332,6 +338,11 @@ const IconCC = ({ size = 18 }) => (
 );
 const IconTranscript = ({ size = 18 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /><line x1="7" y1="8" x2="17" y2="8" /><line x1="7" y1="12" x2="13" y2="12" /></svg>
+);
+// The "captured" tick. Lucide's check-circle, drawn like every other icon here — no
+// emoji anywhere on the interview surface.
+const IconCheck = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21.8 10.5V12a10 10 0 1 1-5.9-9.1" /><path d="M22 4 12 14l-3-3" /></svg>
 );
 
 // ── Theme ─────────────────────────────────────────────────────────────────
@@ -664,58 +675,23 @@ const CSS = `
   @keyframes iqSweep { 0%{transform:translateX(-120%)} 100%{transform:translateX(120%)} }
   @keyframes iqRise { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
 
-  .iq-stage{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:#0B1628;padding:24px 20px;overflow:hidden;position:relative;min-height:0}
-  .iq-orb-wrap{position:relative;width:180px;height:180px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-  .iq-orb-halo{position:absolute;inset:-22%;border-radius:50%;background:radial-gradient(circle,rgba(0,196,160,.42) 0%,rgba(0,196,160,0) 68%);animation:iqHalo 3.2s ease-in-out infinite;will-change:transform,opacity}
-  .iq-orb{position:relative;width:132px;height:132px;border-radius:50%;overflow:hidden;background:#0B1628;box-shadow:inset 0 0 34px rgba(0,196,160,.30),0 0 26px rgba(0,196,160,.20);animation:iqOrbBreathe 3.4s ease-in-out infinite;will-change:transform}
-  .iq-orb-core{position:absolute;inset:0;border-radius:50%;background:radial-gradient(circle at 34% 30%,rgba(0,196,160,.30) 0%,rgba(11,22,40,.96) 68%)}
-  .iq-orb-aurora{position:absolute;inset:-32%;border-radius:50%;background:conic-gradient(from 0deg,rgba(0,196,160,0) 0deg,rgba(0,196,160,.55) 70deg,rgba(200,153,42,.30) 150deg,rgba(0,196,160,0) 230deg,rgba(0,196,160,.42) 320deg,rgba(0,196,160,0) 360deg);filter:blur(9px);opacity:.75;animation:iqAurora 12s linear infinite;will-change:transform}
-  .iq-orb-ring{position:absolute;border-radius:50%;border:1.6px solid rgba(0,196,160,.36);will-change:transform}
-  .iq-orb-ring1{inset:4%;animation:iqAurora 9s linear infinite}
-  .iq-orb-ring2{inset:15%;border-color:rgba(0,196,160,.20);border-style:dashed;animation:iqAuroraRev 14s linear infinite}
-  /* SPEAKING: faster pulse + stronger teal glow (bars render below the orb). */
-  .iq-orb-speaking .iq-orb{animation:iqOrbBreatheFast 1.5s ease-in-out infinite;box-shadow:inset 0 0 40px rgba(0,196,160,.5),0 0 46px rgba(0,196,160,.42)}
-  .iq-orb-speaking .iq-orb-aurora{opacity:1;animation-duration:5s}
-  .iq-orb-speaking .iq-orb-halo{animation-duration:1.5s;opacity:.7}
-  /* THINKING: slow shimmer sweep across the orb. */
-  .iq-orb-thinking .iq-orb-aurora{opacity:.4;animation-duration:18s}
-  .iq-orb-sweep{position:absolute;top:0;bottom:0;width:46%;background:linear-gradient(90deg,rgba(255,255,255,0),rgba(255,255,255,.16),rgba(255,255,255,0));animation:iqSweep 1.9s ease-in-out infinite;will-change:transform}
-  /* LISTENING: the orb recedes (learner has the floor) — orange lives ONLY on the
-     learner strip, never on the orb. */
-  .iq-orb-listening .iq-orb{animation-duration:4.4s;box-shadow:inset 0 0 26px rgba(0,196,160,.16),0 0 14px rgba(0,196,160,.10)}
-  .iq-orb-listening .iq-orb-aurora{opacity:.35}
-  .iq-orb-listening .iq-orb-halo{opacity:.18;animation:none}
+  /* ── THE RETIRED ORB STAGE ────────────────────────────────────────────────
+     The room used to be a glowing orb on a centred stage (.iq-stage / .iq-orb* /
+     .iq-micpill / .iq-review / .iq-caption / a bottom .iq-strip). InterviewerCharacter
+     replaced the orb with a real face and the room replaced the stage with two tiles, but
+     the CSS stayed — and it was not merely dead. The old bottom-strip rule set
+     flex-direction:column and padding:16px 20px 20px on .iq-strip, and the new status
+     strip is also .iq-strip: the corpse was reaching up and stacking the live strip's dot
+     above its own label. Dead CSS is not free; it collides. It is gone.
 
-  /* Speaking waveform bars (decorative, under the orb) */
-  .iq-wavebars{display:flex;align-items:flex-end;justify-content:center;gap:4px;height:26px}
-  .iq-wavebar{width:3px;height:100%;border-radius:2px;background:#00C4A0;transform-origin:center bottom;animation:iqBar 1.1s ease-in-out infinite;will-change:transform}
-  /* Live mic waveform (heights are set inline from the real AnalyserNode) */
+     Kept from that block, because they are still load-bearing: the live mic waveform
+     (now inside the student's input surface) and the ghost button (the audio seatbelt). */
+  /* Live mic waveform — heights are set inline from the real AnalyserNode. */
   .iq-livewave{display:flex;align-items:center;justify-content:center;gap:3px;height:34px}
   .iq-livebar{width:3px;min-height:3px;border-radius:2px;background:#E8521A;transition:height .06s linear}
-
-  .iq-stage-label{font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.55)}
-  .iq-caption{max-width:640px;text-align:center;color:rgba(255,255,255,.92);font-size:15px;line-height:1.5;font-family:'Plus Jakarta Sans','Noto Sans Devanagari','Noto Sans',sans-serif;overflow:hidden;overflow-wrap:anywhere;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;animation:iqRise .3s ease}
-  /* "Heard: …" — 3s confirmation of the transcript that was just auto-submitted. */
-  .iq-heard{max-width:640px;text-align:center;color:rgba(255,255,255,.92);font-size:14px;line-height:1.55;font-family:'Plus Jakarta Sans','Noto Sans Devanagari','Noto Sans',sans-serif;padding:10px 16px;border-radius:12px;background:rgba(0,196,160,.10);border:1px solid rgba(0,196,160,.35);overflow:hidden;overflow-wrap:anywhere;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;animation:iqRise .25s ease}
-
-  /* Learner strip (bottom) */
-  .iq-strip{flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:10px;padding:16px 20px 20px;background:#0B1628;border-top:1px solid rgba(255,255,255,.07)}
-  .iq-micpill{display:inline-flex;align-items:center;gap:10px;padding:10px 20px;border-radius:999px;border:1.5px solid rgba(255,255,255,.18);background:rgba(255,255,255,.05);color:#fff;font-family:'Plus Jakarta Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;transition:all .18s}
-  .iq-micpill:hover{background:rgba(255,255,255,.11);border-color:rgba(255,255,255,.3)}
-  .iq-micpill:focus-visible{outline:2px solid #00C4A0;outline-offset:2px}
-  .iq-micpill:disabled{opacity:.45;cursor:not-allowed}
-  .iq-micpill-live{border-color:#E8521A;background:rgba(232,82,26,.14);color:#fff;animation:iqMicPulse 1.4s ease-in-out infinite}
   .iq-ghostbtn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.05);color:rgba(255,255,255,.85);font-size:12px;font-weight:600;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;transition:all .15s}
   .iq-ghostbtn:hover{background:rgba(255,255,255,.12);color:#fff}
   .iq-ghostbtn:focus-visible{outline:2px solid #00C4A0;outline-offset:2px}
-
-  /* Review card ("here's what I heard") */
-  .iq-review{width:100%;max-width:620px;background:#fff;border:1.5px solid #e8e9f0;border-radius:12px;padding:14px 16px;animation:iqRise .25s ease}
-  .iq-review-h{font-size:12px;font-weight:800;color:#0B1628;letter-spacing:.02em;margin-bottom:8px}
-  .iq-review-t{width:100%;border:1.5px solid #e8e9f0;border-radius:8px;padding:10px 12px;font-size:14px;line-height:1.55;font-family:'Plus Jakarta Sans',sans-serif;resize:none;outline:none;box-sizing:border-box;min-height:72px;max-height:160px}
-  .iq-review-t:focus{border-color:#0B1628;box-shadow:0 0 0 3px rgba(11,22,40,.06)}
-  .iq-countbar{height:3px;border-radius:2px;background:#e8e9f0;overflow:hidden;margin-top:10px}
-  .iq-countbar-fill{height:100%;background:#C8992A;transition:width 1s linear}
 
   /* Transcript drawer: side sheet >=760px, bottom sheet below. */
   .iq-drawer-back{position:fixed;inset:0;background:rgba(11,22,40,.5);z-index:60;animation:iqFade .2s ease}
@@ -727,7 +703,6 @@ const CSS = `
   @media(max-width:760px){
     .iq-drawer{top:auto;left:0;right:0;bottom:0;width:auto;height:72vh;border-radius:16px 16px 0 0;box-shadow:0 -8px 30px rgba(0,0,0,.22);animation:iqSheetIn .24s ease}
   }
-  @media(max-width:420px){ .iq-orb-wrap{width:150px;height:150px} .iq-orb{width:110px;height:110px} .iq-stage{gap:14px;padding:18px 14px} }
 
   /* Settings menu (header) */
   .iq-menu{position:absolute;top:calc(100% + 8px);right:0;min-width:240px;background:#fff;border:1px solid #e8e9f0;border-radius:12px;box-shadow:0 12px 34px rgba(11,22,40,.20);z-index:80;padding:8px;animation:iqRise .18s ease}
@@ -740,42 +715,147 @@ const CSS = `
   .iq-switch-knob{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .18s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
   .iq-switch-on .iq-switch-knob{transform:translateX(18px)}
 
-  /* ── INTERVIEW ROOM (Phase B) — a two-person call, not a chat log ───────── */
-  /* The room is a COLUMN: the stage (interviewer + self-view + overlays) and, below it,
-     a caption band with its own reserved height. The caption used to be absolutely
-     positioned in the same space as the self-view tile, so a long third line clipped
-     against it. Giving captions their own row makes that collision structurally
-     impossible — not just visually patched. */
-  .iq-room{flex:1;display:flex;flex-direction:column;background:#0B1628;overflow:hidden;min-height:0}
-  .iq-room-stage{flex:1;position:relative;display:flex;align-items:center;justify-content:center;padding:20px;min-height:0}
-  .iq-room-main{display:flex;flex-direction:column;align-items:center;gap:12px;position:relative}
-  /* Interviewer name chip, bottom-left of the tile — like a Meet participant label. */
-  .iq-name-chip{position:absolute;left:8px;bottom:8px;display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:8px;background:rgba(11,22,40,.72);border:1px solid rgba(255,255,255,.12);color:#fff;font-size:12px;font-weight:700;font-family:'Plus Jakarta Sans',sans-serif;max-width:90%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  /* Student self-view, bottom-right. LOCAL ONLY — never recorded, never uploaded. */
-  .iq-room-self{position:absolute;right:16px;bottom:16px;width:168px;aspect-ratio:4/3;border-radius:12px;overflow:hidden;background:#0a1220;border:1px solid rgba(255,255,255,.14);box-shadow:0 8px 24px rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center}
-  .iq-room-self video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
-  .iq-room-self-dot{position:absolute;left:8px;bottom:8px;width:9px;height:9px;border-radius:50%;border:1px solid rgba(0,0,0,.35)}
-  .iq-room-self-initial{width:54px;height:54px;border-radius:50%;background:#1a2744;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,.85);font-weight:800;font-size:20px}
-  /* Caption band: its OWN row, with height reserved for exactly two lines. Reserving the
-     height also stops the layout jumping as captions come and go. */
-  .iq-cc-band{flex-shrink:0;display:flex;align-items:center;justify-content:center;min-height:72px;padding:4px 20px 12px}
-  /* Meet-style caption bar (CC) — the interviewer's current sentence, HARD-clamped to
-     two lines with an ellipsis. -webkit-line-clamp alone was not enough (a third line
-     was still rendering and clipping), so max-height is the belt to its braces:
-     2 lines x 1.4 line-height, plus the 20px of vertical padding. */
-  .iq-cc{max-width:min(760px,100%);box-sizing:border-box;padding:10px 16px;border-radius:12px;background:rgba(11,22,40,.86);border:1px solid rgba(255,255,255,.10);color:#fff;font-size:15px;line-height:1.4;text-align:center;font-family:'Plus Jakarta Sans','Noto Sans Devanagari',sans-serif;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-overflow:ellipsis;max-height:calc(2 * 1.4em + 20px)}
-  /* Item 6: the live self-caption. Same band as the interviewer's, but clearly THEIRS —
-     DM Mono, a teal "You" tag, left-aligned running text. Never beautified. */
-  .iq-cc--self{display:flex;align-items:baseline;gap:10px;text-align:left;justify-content:flex-start;background:rgba(0,196,160,.10);border-color:rgba(0,196,160,.35)}
-  .iq-cc-you{flex-shrink:0;font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:11px;font-weight:700;letter-spacing:.10em;text-transform:uppercase;color:#00C4A0}
-  .iq-cc-selftext{font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:14px;line-height:1.4;color:#eafaf5}
-  .iq-cc-listening{font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:13px;color:rgba(234,250,245,.55);animation:iqPulse 1.4s ease-in-out infinite}
-  /* "You're muted" — sits directly above the self-view tile, never over it. */
-  .iq-muted-chip{position:absolute;right:16px;bottom:150px;display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;background:rgba(232,82,26,.20);border:1px solid #E8521A;color:#fff;font-size:11px;font-weight:700;font-family:'Plus Jakarta Sans',sans-serif;white-space:nowrap}
-  /* Item 1: an answer is due but they are muted — the chip pulses and brightens to send the
-     eye to the mic button in the bar below. */
-  .iq-muted-chip--cue{background:rgba(232,82,26,.30);box-shadow:0 0 0 0 rgba(232,82,26,.45);animation:iqMutedCue 1.6s ease-in-out infinite}
+  /* ── INTERVIEW ROOM — a two-person call, not a chat log ─────────────────── */
+  /* THE SPACING RHYTHM. Every gap, pad and radius in the room comes from these four
+     numbers, so the room has one rhythm instead of sixteen opinions. The old room had
+     gaps of 8/10/12/16/20/22 and three different radii, which is what "it looks a bit
+     off and I can't say why" is made of. */
+  .iq-room{
+    --gap:16px;          /* between the big boxes: tiles, panel, caption area */
+    --pad:20px;          /* the room's own outer margin */
+    --tile-pad:10px;     /* inside a tile, to its overlays */
+    --radius:14px;       /* every big box */
+    --radius-sm:8px;     /* chips and tags */
+    flex:1;display:flex;flex-direction:column;background:#0B1628;overflow:hidden;min-height:0;
+  }
+
+  /* THE GRID. Two EQUAL tiles (1fr 1fr — equal by construction, not by eye), plus an
+     optional third track for the chat panel. The tiles stay equal to each other whether
+     the panel is open or not: the panel takes its width from the room, never from one
+     tile, so opening it can never make the call lopsided. */
+  .iq-room-grid{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;gap:var(--gap);padding:var(--pad) var(--pad) 0;box-sizing:border-box}
+  .iq-room-grid--chat{grid-template-columns:1fr 1fr minmax(300px,340px)}
+
+  /* A TILE is a column: a body that flexes, and (on the student's) a surface below it.
+     The name tag lives INSIDE the body and the surface is the body's SIBLING — so the
+     tag cannot collide with the surface no matter how long either grows. The old room
+     pinned the muted chip at bottom:150px to clear the self-view, which held exactly
+     until the thing below it changed height. Structure, not magic numbers. */
+  .iq-tile{position:relative;min-width:0;min-height:0;display:flex;flex-direction:column;border-radius:var(--radius);overflow:hidden;background:#0a1220;border:1px solid rgba(255,255,255,.10);transition:border-color .18s,box-shadow .18s}
+  .iq-tile-body{flex:1;min-height:0;min-width:0;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  /* ACTIVE SPEAKER: the teal ring follows whoever is talking. Exactly one tile can carry
+     it (see roomLayout.activeSpeaker) — two lit tiles would be the same as none. */
+  .iq-tile--active{border-color:rgba(0,196,160,.85);box-shadow:0 0 0 2px rgba(0,196,160,.5),0 0 26px rgba(0,196,160,.22)}
+  .iq-tile--active.iq-tile--talking{animation:iqTileGlow 2s ease-in-out infinite}
+  @keyframes iqTileGlow{
+    0%,100%{box-shadow:0 0 0 2px rgba(0,196,160,.5),0 0 26px rgba(0,196,160,.22)}
+    50%{box-shadow:0 0 0 2px rgba(0,196,160,.75),0 0 34px rgba(0,196,160,.36)}
+  }
+  /* Participant name tag, bottom-left of the tile — like a Meet label. It now has that
+     corner to itself: the state text that used to land on top of it is the status strip. */
+  .iq-tile-name{position:absolute;left:var(--tile-pad);bottom:var(--tile-pad);display:inline-flex;align-items:center;gap:7px;padding:5px 10px;border-radius:var(--radius-sm);background:rgba(11,22,40,.78);border:1px solid rgba(255,255,255,.12);color:#fff;font-size:12px;font-weight:700;font-family:'Plus Jakarta Sans',sans-serif;max-width:calc(100% - var(--tile-pad) * 2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;backdrop-filter:blur(4px)}
+  .iq-tile-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  /* Student camera. LOCAL ONLY — never recorded, never uploaded, no MediaRecorder on
+     this track anywhere. Mirrored, because a self-view that is not mirrored is unnerving. */
+  .iq-tile-video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+  .iq-tile-initial{width:88px;height:88px;border-radius:50%;background:#1a2744;border:1px solid rgba(255,255,255,.10);display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,.88);font-weight:800;font-size:32px;font-family:'Plus Jakarta Sans',sans-serif}
+
+  /* THE STUDENT'S INPUT SURFACE — their own tile's bottom row, open only while their
+     answer is in flight. Speaking an answer finally has a surface of its own; it used to
+     borrow the interviewer's caption band and float over the stage. */
+  .iq-surface{flex-shrink:0;display:flex;flex-direction:column;gap:8px;padding:10px 12px;background:rgba(0,196,160,.07);border-top:1px solid rgba(0,196,160,.28);animation:iqRise .2s ease}
+  .iq-surface--captured{background:rgba(0,196,160,.10)}
+  .iq-surface-top{display:flex;align-items:center;gap:10px;min-width:0}
+  /* The waveform takes the slack between the "You" tag and the counter, so the row reads
+     as one instrument at any tile width instead of a centred blob with gaps either side. */
+  .iq-surface-top .iq-livewave{flex:1;min-width:0;height:26px;overflow:hidden}
+  .iq-surface-tag{flex-shrink:0;display:inline-flex;align-items:center;gap:6px;font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:10.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#00C4A0}
+  .iq-surface-time{margin-left:auto;flex-shrink:0;font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:12px;color:#E8521A;font-variant-numeric:tabular-nums}
+  /* Their running "You:" transcript. DM Mono, verbatim, never beautified — and it scrolls
+     inside a fixed height rather than growing the tile out from under the room. */
+  .iq-surface-text{font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:12.5px;line-height:1.5;color:#eafaf5;max-height:54px;overflow-y:auto;overflow-wrap:anywhere}
+  .iq-surface-idle{font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:12px;color:rgba(234,250,245,.5);animation:iqPulse 1.4s ease-in-out infinite}
+
+  /* CAPTIONS — a FIXED-HEIGHT area of its own, and the height is reserved whether or not
+     there is a caption in it, so the room never jumps as she starts and stops speaking.
+     It SCROLLS; it does not clamp. The old band cut long questions off at two lines with
+     an ellipsis, which on a three-sentence case prompt meant the question was literally
+     unreadable — a caption that clips mid-sentence is worse than no caption, because it
+     looks like it worked. */
+  .iq-cc-area{flex-shrink:0;box-sizing:border-box;height:104px;margin:var(--gap) var(--pad) 0;padding:12px 16px;border-radius:var(--radius);background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.09);overflow-y:auto;scrollbar-width:thin}
+  .iq-cc{color:#fff;font-size:15px;line-height:1.5;font-family:'Plus Jakarta Sans','Noto Sans Devanagari',sans-serif;overflow-wrap:anywhere}
+  .iq-cc-empty{color:rgba(255,255,255,.3);font-size:13px;font-family:'DM Mono','SFMono-Regular',Menlo,monospace}
+
+  /* Room notices: a blocked autoplay, an error, the rating, time running out. Genuinely
+     exceptional, so the row exists only when one of them does — no permanent slot, and
+     nothing floating in the middle of the call. */
+  .iq-notice-row{flex-shrink:0;display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:10px;padding:var(--gap) var(--pad) 0}
+  .iq-notice{padding:9px 14px;border-radius:var(--radius-sm);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.9);font-size:13px;font-weight:700;font-family:'Plus Jakarta Sans',sans-serif;text-align:center;max-width:100%;overflow-wrap:anywhere}
+  .iq-notice--gold{background:rgba(200,153,42,.14);border-color:#C8992A;color:#F5B800}
+  .iq-notice--err{background:rgba(232,82,26,.16);border-color:rgba(232,82,26,.5);color:#ffbda6}
+  .iq-notice--warn{background:rgba(232,82,26,.10);border-color:rgba(232,82,26,.35);color:#ff9068;font-size:12px}
+
+  /* THE ONE STATUS STRIP — under the tiles, above the captions. Every "what is happening"
+     the room used to say in three floating places at once (a label under her face, a
+     muted chip pinned over the stage, a chip in the header) it now says here, once.
+     Colour never carries it alone: the label is always words. */
+  .iq-strip-row{flex-shrink:0;display:flex;align-items:center;justify-content:center;padding:var(--gap) var(--pad) 0;min-height:34px;box-sizing:border-box}
+  .iq-strip{display:inline-flex;align-items:center;gap:9px;max-width:100%;padding:6px 14px;border-radius:999px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);min-width:0}
+  .iq-strip-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .iq-strip-label{font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .iq-strip-detail{font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:11.5px;color:rgba(255,255,255,.62);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .iq-strip--teal{border-color:rgba(0,196,160,.45);background:rgba(0,196,160,.10)}
+  .iq-strip--teal .iq-strip-label{color:#00C4A0}
+  .iq-strip--teal .iq-strip-dot{background:#00C4A0}
+  .iq-strip--orange{border-color:rgba(232,82,26,.5);background:rgba(232,82,26,.12)}
+  .iq-strip--orange .iq-strip-label{color:#ff9068}
+  .iq-strip--orange .iq-strip-dot{background:#E8521A;animation:iqRecDot 1.1s ease-in-out infinite}
+  .iq-strip--navy{border-color:rgba(200,153,42,.42);background:rgba(200,153,42,.10)}
+  .iq-strip--navy .iq-strip-label{color:#F5B800}
+  .iq-strip--navy .iq-strip-dot{background:#C8992A;animation:iqPulse 1.2s ease-in-out infinite}
+  .iq-strip--idle .iq-strip-label{color:rgba(255,255,255,.55)}
+  .iq-strip--idle .iq-strip-dot{background:rgba(255,255,255,.28)}
+  /* Muted with an answer due: the strip stops describing and starts asking. It pulses to
+     carry the eye down to the mic button in the bar below it. */
+  .iq-strip--cue{animation:iqMutedCue 1.6s ease-in-out infinite}
   @keyframes iqMutedCue{0%{box-shadow:0 0 0 0 rgba(232,82,26,.45)}70%{box-shadow:0 0 0 8px rgba(232,82,26,0)}100%{box-shadow:0 0 0 0 rgba(232,82,26,0)}}
+
+  /* THE CHAT PANEL — the full session transcript AND the composer, in one place, and
+     deliberately MODE-AGNOSTIC: a collapsible third column in voice mode, and the second
+     tile itself in text mode. Same component, same bubbles, same send path. */
+  .iq-chat{display:flex;flex-direction:column;min-height:0;min-width:0;border-radius:var(--radius);overflow:hidden;background:#0f1c33;border:1px solid rgba(255,255,255,.10)}
+  .iq-chat-h{flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 12px;border-bottom:1px solid rgba(255,255,255,.08)}
+  .iq-chat-title{font-size:12px;font-weight:800;color:#fff;font-family:'Plus Jakarta Sans',sans-serif;letter-spacing:.02em}
+  /* Sentence case, not mono caps: this is a quiet aside telling them typing is always an
+     option, and a shouted one reads as a warning about something. */
+  .iq-chat-sub{font-family:'Plus Jakarta Sans',sans-serif;font-size:11px;color:rgba(255,255,255,.45);margin-top:2px}
+  .iq-chat-b{flex:1;min-height:0;overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:12px;scrollbar-width:thin}
+  .iq-chat-f{flex-shrink:0;display:flex;gap:8px;align-items:flex-end;padding:10px 12px;border-top:1px solid rgba(255,255,255,.08);background:rgba(0,0,0,.16)}
+  .iq-chat-empty{font-size:12.5px;line-height:1.6;color:rgba(255,255,255,.42);font-family:'Plus Jakarta Sans',sans-serif}
+  .iq-turn{display:flex;flex-direction:column;gap:4px;min-width:0}
+  .iq-turn--me{align-items:flex-end}
+  .iq-turn-who{font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:9.5px;font-weight:700;letter-spacing:.10em;text-transform:uppercase;color:rgba(255,255,255,.38)}
+  .iq-bub{max-width:92%;padding:9px 12px;font-size:13px;line-height:1.6;font-family:'Plus Jakarta Sans','Noto Sans Devanagari',sans-serif;overflow-wrap:anywhere}
+  .iq-bub--iq{align-self:flex-start;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.10);color:#eaf0fb;border-radius:3px var(--radius) var(--radius) var(--radius)}
+  .iq-bub--me{align-self:flex-end;background:rgba(0,196,160,.13);border:1px solid rgba(0,196,160,.32);color:#eafaf5;border-radius:var(--radius) 3px var(--radius) var(--radius)}
+  /* The "heard you" tick. A spoken answer is the one with no receipt — they typed nothing,
+     they just talked at a laptop — so the tick is the receipt. */
+  .iq-bub-meta{display:flex;align-items:center;gap:6px;font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:9.5px;color:rgba(255,255,255,.4)}
+  .iq-bub-tick{display:inline-flex;color:#00C4A0}
+  .iq-bub-fix{background:none;border:none;padding:0;cursor:pointer;font-size:9.5px;font-weight:700;color:rgba(255,255,255,.55);text-decoration:underline;font-family:'DM Mono','SFMono-Regular',Menlo,monospace}
+  .iq-bub-fix:hover{color:#fff}
+  .iq-chat-close{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:var(--radius-sm);border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);color:rgba(255,255,255,.7);cursor:pointer;flex-shrink:0}
+  .iq-chat-close:hover{background:rgba(255,255,255,.12);color:#fff}
+  .iq-chat-close:focus-visible{outline:2px solid #00C4A0;outline-offset:2px}
+  /* The composer, in the room's dark register. */
+  .iq-chat-in{flex:1;min-width:0;resize:none;min-height:40px;max-height:120px;padding:9px 11px;border-radius:var(--radius-sm);border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#fff;font-size:13px;line-height:1.5;font-family:'Plus Jakarta Sans',sans-serif;outline:none;box-sizing:border-box}
+  .iq-chat-in::placeholder{color:rgba(255,255,255,.35)}
+  .iq-chat-in:focus{border-color:rgba(0,196,160,.6);box-shadow:0 0 0 3px rgba(0,196,160,.14)}
+  .iq-chat-in:disabled{opacity:.5;cursor:not-allowed}
+  .iq-chat-send{flex-shrink:0;height:40px;padding:0 15px;border-radius:var(--radius-sm);border:none;background:#00C4A0;color:#04231d;font-size:13px;font-weight:800;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;transition:opacity .15s}
+  .iq-chat-send:disabled{opacity:.35;cursor:not-allowed}
+  .iq-chat-send:focus-visible{outline:2px solid #fff;outline-offset:2px}
+
   /* Bottom control bar — centred Meet-style pills. */
   .iq-bar{flex-shrink:0;display:flex;align-items:center;justify-content:center;gap:10px;padding:14px 16px;background:#0B1628;border-top:1px solid rgba(255,255,255,.07);flex-wrap:wrap}
   .iq-ctl{display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:50%;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#fff;cursor:pointer;transition:all .15s;flex-shrink:0}
@@ -789,26 +869,38 @@ const CSS = `
   .iq-ctl--end{width:auto;padding:0 20px;border-radius:24px;background:#c0392b;border-color:#c0392b;font-weight:700;font-size:14px;font-family:'Plus Jakarta Sans',sans-serif}
   .iq-ctl--end:hover{background:#a33228}
   .iq-ctl-label{font-size:10px;color:rgba(255,255,255,.45);font-family:'DM Mono',monospace;letter-spacing:.06em;text-transform:uppercase}
-  /* Typing drawer — always one tap away, on every question. */
-  .iq-typebar{flex-shrink:0;display:flex;gap:10px;align-items:flex-end;padding:12px 20px;background:#0f1c33;border-top:1px solid rgba(255,255,255,.08)}
+  /* THE LMS EMBED (~1100–1400px) IS THE TARGET, and the layout is verified at 1100 /
+     1280 / 1920. Everything below is what happens OUTSIDE that band — it degrades, it
+     never breaks, and at no width does anything overflow or clip.
+     At 1100 with the panel open the tiles are still ~350px each and still equal. */
+  @media(max-width:1000px){
+    /* The panel can no longer be a third column without squeezing the call to nothing,
+       so it becomes an overlay ON the room — still the same panel, same component. */
+    .iq-room-grid--chat{grid-template-columns:1fr 1fr}
+    .iq-chat--side{position:absolute;top:var(--pad);right:var(--pad);bottom:var(--pad);width:min(340px,calc(100% - var(--pad) * 2));z-index:12;box-shadow:0 16px 44px rgba(0,0,0,.5)}
+    .iq-room-grid{position:relative}
+  }
+  @media(max-width:820px){
+    /* Under the embed's floor the two tiles stack rather than shrink into slivers. */
+    .iq-room-grid{grid-template-columns:1fr;grid-auto-rows:1fr}
+    .iq-room{--gap:12px;--pad:12px}
+    .iq-cc-area{height:92px}
+  }
   @media(max-width:640px){
-    .iq-room-self{width:118px;right:10px;bottom:10px}
     .iq-cc{font-size:14px}
-    .iq-cc-band{min-height:64px;padding:4px 12px 10px}
-    .iq-muted-chip{right:10px;bottom:106px;font-size:10px;padding:4px 9px}
+    .iq-cc-area{height:86px;padding:10px 12px}
     .iq-ctl{width:44px;height:44px}
+    .iq-tile-initial{width:64px;height:64px;font-size:24px}
   }
 
-  /* Accessibility: collapse the orb to a static, state-coloured ring. Labels
-     always persist, so state is never conveyed by colour/motion alone. */
+  /* Accessibility: nothing in the room may carry meaning by motion. Every state that
+     animates also has WORDS — the strip's label, the tile's name tag — so switching the
+     motion off costs nothing but the motion. Note what stays: the active-speaker RING
+     itself, because it is the thing saying who has the floor; only its breathing stops.
+     (InterviewerCharacter owns its own reduced-motion handling for the face.) */
   @media (prefers-reduced-motion: reduce) {
-    .iq-orb,.iq-orb-aurora,.iq-orb-ring,.iq-orb-halo,.iq-orb-sweep,.iq-wavebar,.iq-micpill-live{animation:none!important}
-    .iq-orb-aurora,.iq-orb-sweep{display:none}
-    .iq-orb{box-shadow:none;border:3px solid #00C4A0}
-    .iq-orb-speaking .iq-orb{border-color:#00C4A0}
-    .iq-orb-thinking .iq-orb{border-color:#C8992A}
-    .iq-orb-listening .iq-orb{border-color:#E8521A}
-    .iq-wavebar{transform:scaleY(.6)}
+    .iq-tile--active.iq-tile--talking,.iq-strip--cue,.iq-strip-dot,.iq-surface-idle{animation:none!important}
+    .iq-livebar{transition:none}
   }
 `;
 
@@ -1236,37 +1328,94 @@ function VoiceConsentModal({ onAccept, onDecline, busy }) {
 // scoring logic lives here. Colour never carries meaning alone: every state also
 // shows a persistent text label (and reduced-motion collapses the orb to a ring).
 
-// The persistent text state label (accessibility): state is never carried by the
-// character's expression alone.
-const STATE_LABEL = { speaking: "Speaking", thinking: "Thinking", listening: "Listening", idle: "Ready" };
+/**
+ * useTileHeight — measure a tile so the interviewer's portrait can be sized to fit it.
+ *
+ * InterviewerCharacter is a fixed-aspect card (size x size*1.25), not a fluid box, so it
+ * cannot simply be told to fill. Rather than pick a number and hope — the old room hard-
+ * coded 220 and let it overflow whatever it landed in — we measure the tile and derive the
+ * size from it. This is what makes 1100→1920 hold without a single width breakpoint for
+ * the portrait: it is always exactly as big as the room it is standing in.
+ */
+function useTileSize(ref) {
+  const [box, setBox] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const read = (w, h) => setBox(p => (p.w === w && p.h === h ? p : { w, h }));
+    const ro = new ResizeObserver(([e]) => read(e.contentRect.width, e.contentRect.height));
+    ro.observe(el);
+    const r = el.getBoundingClientRect();
+    read(r.width, r.height);
+    return () => ro.disconnect();
+  }, [ref]);
+  return box;
+}
 
-// The interviewer presence. InterviewerCharacter (v4.2) owns BOTH the roster (face +
-// name, picked by voice/difficulty and seeded on the session id) and the TTS analyser
-// that drives its speaking waveform — there must be exactly one analyser in the app,
-// because createMediaElementSource() may be called only once per audio element.
-function InterviewerPresence({ state, voice, difficulty, seed, tone, escalationLevel, stage, group }) {
+/**
+ * InterviewerTile — her half of the call.
+ *
+ * InterviewerCharacter (v4.2) owns BOTH the roster (face + name, picked by voice/difficulty
+ * and seeded on the session id) and the TTS analyser that drives its speaking waveform —
+ * there must be exactly one analyser in the app, because createMediaElementSource() may be
+ * called only once per audio element.
+ *
+ * The state LABEL that used to sit under her (and land on top of her name tag) is gone from
+ * here: it is the status strip's job now, and there is exactly one of it.
+ */
+function InterviewerTile({ state, active, voice, difficulty, seed, tone, escalationLevel, stage, group, name }) {
+  const bodyRef = useRef(null);
+  const { w, h } = useTileSize(bodyRef);
+  // The card is size x size*1.25 — TALLER than it is wide — so it can run out of either
+  // axis, and the size is whichever runs out first. Height alone is the tempting version
+  // and it is wrong: at 1100 with the chat panel open the tile is ~350px wide, and a size
+  // picked off a 460px-tall body would push a 368px-wide portrait straight out through the
+  // sides of its own tile.
+  const byHeight = ((h || 260) - 24) / 1.25;
+  const byWidth = (w || 260) - 24;
+  const size = Math.max(110, Math.min(400, Math.round(Math.min(byHeight, byWidth))));
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-      <InterviewerCharacter state={state} voice={voice} size={220}
-        difficulty={difficulty} seed={seed}
-        tone={tone} escalationLevel={escalationLevel} stage={stage} group={group} />
-      <div className="iq-stage-label" role="status" aria-live="polite">{STATE_LABEL[state]}</div>
-    </div>
+    <section className={"iq-tile" + (active ? " iq-tile--active iq-tile--talking" : "")}
+      aria-label="Interviewer">
+      <div className="iq-tile-body" ref={bodyRef}>
+        {h > 0 && (
+          <InterviewerCharacter state={state} voice={voice} size={size}
+            difficulty={difficulty} seed={seed}
+            tone={tone} escalationLevel={escalationLevel} stage={stage} group={group} />
+        )}
+        <div className="iq-tile-name">
+          <span className="iq-tile-dot" style={{ background: active ? IQ.teal : "rgba(255,255,255,.3)" }} />
+          {(name || "Interviewer")} · InterviewIQ
+        </div>
+      </div>
+    </section>
   );
 }
 
 /**
- * RoomSelfView — the student's corner tile (absorbs SelfView's stream logic).
+ * StudentTile — their half of the call: camera (or their initial), name tag, and the
+ * INPUT SURFACE that opens underneath while their answer is in flight.
  *
  * PRIVACY (unchanged from SelfView, and the reason this is worth restating):
  *   The camera stream is LOCAL ONLY. It is rendered into a muted <video> and is NEVER
  *   recorded, captured to a canvas, uploaded, or transmitted. There is deliberately no
  *   MediaRecorder anywhere on this track. Attention monitoring (when it lands) runs
  *   on-device and emits event STRINGS — never a frame.
+ *
+ * The surface is a SIBLING of the body, not an overlay on it, so it cannot collide with the
+ * name tag however long the transcript runs. See the CSS note on .iq-tile.
  */
-function RoomSelfView({ on, micOn, initial }) {
+function StudentTile({ on, micOn, initial, name, active, surface, levels, recLabel }) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
+  const textRef = useRef(null);
+
+  // Their running transcript scrolls itself, so the newest words are the visible ones —
+  // a caption you have to scroll to read is a caption you do not read.
+  useEffect(() => {
+    const el = textRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [surface.caption]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1292,15 +1441,173 @@ function RoomSelfView({ on, micOn, initial }) {
     return () => { cancelled = true; stop(); };
   }, [on]);
 
+  const live = surface.phase === SURFACE_LIVE;
   return (
-    <div className="iq-room-self">
-      {on
-        ? <video ref={videoRef} autoPlay muted playsInline />
-        : <div className="iq-room-self-initial">{initial}</div>}
-      <span className="iq-room-self-dot"
-        style={{ background: micOn ? IQ.teal : IQ.orange }}
-        title={micOn ? "Mic on" : "Mic off"} aria-label={micOn ? "Mic on" : "Mic off"} />
-    </div>
+    <section className={"iq-tile" + (active ? " iq-tile--active iq-tile--talking" : "")}
+      aria-label="You">
+      <div className="iq-tile-body">
+        {on
+          ? <video className="iq-tile-video" ref={videoRef} autoPlay muted playsInline />
+          : <div className="iq-tile-initial">{initial}</div>}
+        <div className="iq-tile-name">
+          <span className="iq-tile-dot" style={{ background: micOn ? IQ.teal : IQ.orange }}
+            title={micOn ? "Mic on" : "Mic off"} />
+          {name || "You"}
+        </div>
+      </div>
+
+      {/* THE INPUT SURFACE. Live: the real waveform (heights come from the AnalyserNode,
+          not an animation) and their own running transcript. Captured: the tick — the
+          answer is ours, and they can see that it is, before she starts replying. */}
+      {surface.open && (
+        <div className={"iq-surface" + (live ? "" : " iq-surface--captured")}>
+          <div className="iq-surface-top">
+            {live ? (
+              <>
+                <span className="iq-surface-tag">You</span>
+                <LiveWave levels={levels} />
+                <span className="iq-surface-time">{recLabel}</span>
+              </>
+            ) : (
+              <span className="iq-surface-tag">
+                <span className="iq-bub-tick"><IconCheck size={13} /></span> Answer captured
+              </span>
+            )}
+          </div>
+          {surface.showCaption && (
+            surface.caption
+              ? <div className="iq-surface-text" ref={textRef}>{surface.caption}</div>
+              : live && <div className="iq-surface-idle">listening…</div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * ChatPanel — the session, as a conversation you can read and write.
+ *
+ * This is ONE component doing three jobs that used to be three places:
+ *   - the full transcript (was: a modal drawer you had to open, read, and dismiss);
+ *   - the composer (was: `iq-typebar`, a separate slide-out under the control bar);
+ *   - the correction affordance for a mis-transcribed answer (was: in the drawer).
+ *
+ * It is MODE-AGNOSTIC on purpose. In voice mode it is a collapsible third column; in text
+ * mode it takes the student tile's place and becomes the primary surface — the room stays
+ * two tiles either way. Nothing in here asks which mode it is in; the caller picks the slot
+ * (roomLayout.chatSlot) and the panel is the same panel.
+ *
+ * TYPED = SPOKEN. `onSend` is the same send path a spoken answer takes — the composer is
+ * not a fallback for when the mic fails, it is the other way to answer, available on every
+ * question, always.
+ *
+ * READING IS NOT TYPING. The panel reports composer FOCUS to its caller (`onComposer`), not
+ * its own visibility. Opening this to re-read an earlier question must not disarm the
+ * microphone — see roomLayout.composerIntent, which exists entirely because of this.
+ */
+function ChatPanel({
+  messages, name, onClose, onSend, onEditLast, editBusy,
+  input, setInput, disabled, placeholder, onComposer, composerRef,
+}) {
+  const bodyRef = useRef(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const lastUserIdx = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "user") return i;
+    return -1;
+  })();
+  // Follow the conversation. A transcript panel that sits on turn 1 while she is asking
+  // turn 6 is a panel showing you the wrong question.
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages.length, editing]);
+
+  const handleKey = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!disabled && input.trim()) onSend(); }
+  };
+
+  return (
+    <aside className="iq-chat" aria-label="Chat and transcript">
+      <div className="iq-chat-h">
+        <div style={{ minWidth: 0 }}>
+          <div className="iq-chat-title">Chat</div>
+          <div className="iq-chat-sub">Type an answer any time</div>
+        </div>
+        {onClose && (
+          <button className="iq-chat-close" onClick={onClose}
+            aria-label="Close chat" title="Close chat"><IconClose size={15} /></button>
+        )}
+      </div>
+
+      <div className="iq-chat-b" ref={bodyRef}>
+        {messages.length === 0 && (
+          <div className="iq-chat-empty">
+            Every question and answer appears here, so you can look back at any of them.
+            You can type an answer here at any time.
+          </div>
+        )}
+        {messages.map((m, i) => {
+          const isV = m.role === "assistant";
+          const isLastAnswer = !isV && i === lastUserIdx && !!onEditLast;
+          const meta = isV ? null : bubbleMeta(m.meta);
+          return (
+            <div key={i} className={"iq-turn" + (isV ? "" : " iq-turn--me")}>
+              <span className="iq-turn-who">{isV ? "InterviewIQ" : (name || "You")}</span>
+              {isLastAnswer && editing ? (
+                <div style={{ width: "100%" }}>
+                  <textarea value={draft} onChange={e => setDraft(e.target.value.slice(0, 4000))} rows={4} autoFocus
+                    aria-label="Correct your last answer" className="iq-chat-in"
+                    style={{ width: "100%", maxHeight: 160 }} />
+                  <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
+                    <button className="iq-chat-close" style={{ width: "auto", padding: "0 12px", height: 32, fontSize: 12, fontWeight: 700 }}
+                      onClick={() => setEditing(false)} disabled={editBusy}>Cancel</button>
+                    <button className="iq-chat-send" style={{ height: 32, fontSize: 12 }}
+                      disabled={editBusy || !draft.trim()}
+                      onClick={async () => { await onEditLast(draft.trim()); setEditing(false); }}>
+                      {editBusy ? "Saving…" : "Save correction"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className={"iq-bub " + (isV ? "iq-bub--iq" : "iq-bub--me")}>
+                  {isV ? renderMd(m.content) : m.content}
+                </div>
+              )}
+              {!isV && !editing && (meta || isLastAnswer) && (
+                <div className="iq-bub-meta">
+                  {meta && (
+                    <>
+                      {/* The receipt for an answer they only ever spoke. */}
+                      {meta.tick && <span className="iq-bub-tick"><IconCheck size={11} /></span>}
+                      <span>{meta.label}</span>
+                    </>
+                  )}
+                  {isLastAnswer && (
+                    // Fix a mis-transcription: rewrites the stored answer so the debrief
+                    // scores what you meant. (IQ has already replied to the original.)
+                    <button className="iq-bub-fix" onClick={() => { setDraft(m.content); setEditing(true); }}>
+                      Correct this
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="iq-chat-f">
+        <textarea ref={composerRef} className="iq-chat-in" value={input} rows={1} maxLength={4000}
+          onChange={e => setInput(e.target.value.slice(0, 4000))}
+          onKeyDown={handleKey}
+          onFocus={() => onComposer(true)}
+          onBlur={() => onComposer(false)}
+          disabled={disabled} placeholder={placeholder} aria-label="Type your answer" />
+        <button className="iq-chat-send" onClick={onSend} disabled={disabled || !input.trim()}>Send</button>
+      </div>
+    </aside>
   );
 }
 
@@ -2021,7 +2328,17 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // Device toggles start from what they committed to in the lobby.
   const [micOn, setMicOn] = useState(() => config.mic !== false);
   const [camOn, setCamOn] = useState(() => !!config.camera);
-  const [typeOpen, setTypeOpen] = useState(false);   // the typing drawer
+  // The chat panel's visibility and, SEPARATELY, whether the student has actually chosen to
+  // type. These used to be one flag — "the typing drawer is open" — which was a fair proxy
+  // while that drawer did nothing but type. The panel does something else: it is where you
+  // RE-READ an earlier question. Left as one flag, opening the transcript to check what was
+  // asked would have silently disarmed the microphone. Reading is not typing.
+  const [chatOpen, setChatOpen] = useState(false);
+  const [composerFocused, setComposerFocused] = useState(false);
+  const composerRef = useRef(null);
+  // Text mode (INTAKE/MODES, landing later) puts the panel in the student tile's slot. The
+  // room stays two tiles; the panel is already mode-agnostic, so this is the whole change.
+  const textMode = config.mode === "text";
 
   // E2 CC: the caption is the sentence ACTUALLY being spoken. Because the reply is
   // synthesised one clip per sentence, the sequencer knows exactly which line is in the
@@ -2035,6 +2352,16 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const idleCaption = lastAssistantMsg?.spoken_prefix || lastAssistantText || "";
   const ccLine = spokenLine || (audioPlaying ? "" : idleCaption);
 
+  // PROGRESSIVE REVEAL. The caption area is a fixed height that SCROLLS rather than a clamp
+  // that clips, so a long question is fully readable — but only if the area follows her
+  // voice down. Each sentence she reaches scrolls into view; when she finishes, the area is
+  // holding the whole question, scrolled to the end, and they can scroll back through it.
+  const ccRef = useRef(null);
+  useEffect(() => {
+    const el = ccRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [ccLine, connecting]);
+
   // Mirror state into refs — the <audio> 'ended' handler and the rAF meter loop are
   // registered once and would otherwise close over stale values.
   useEffect(() => { micOnRef.current = micOn; }, [micOn]);
@@ -2043,7 +2370,10 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   useEffect(() => { consentRef.current = voiceConsented; }, [voiceConsented]);
   useEffect(() => { recordingRef.current = recording; }, [recording]);
   useEffect(() => { transcribingRef.current = transcribing; }, [transcribing]);
-  useEffect(() => { typedInVoiceRef.current = typeOpen; }, [typeOpen]);
+  // THE CAPTURE INVARIANT's `typing` input: the composer itself (focused, or holding a
+  // draft), never the panel's visibility. See roomLayout.composerIntent.
+  const typingNow = composerIntent({ focused: composerFocused, draft: input });
+  useEffect(() => { typedInVoiceRef.current = typingNow; }, [typingNow]);
   useEffect(() => { awaitingRatingRef.current = awaitingRating; }, [awaitingRating]);
   useEffect(() => { ratingPillsRef.current = ratingPills; }, [ratingPills]);
   useEffect(() => { endedRef.current = ended; }, [ended]);
@@ -2458,7 +2788,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     if (!canArmCapture(captureState())) return;  // the invariant + "is it their turn?" gate
     startGrace();
   }, [voiceMode, micOn, canAnswer, audioPlaying, connecting, recording, transcribing,
-      loading, awaitingRating, ratingPills, typeOpen, ended, voiceConsented, graceMs]); // eslint-disable-line react-hooks/exhaustive-deps
+      loading, awaitingRating, ratingPills, typingNow, ended, voiceConsented, graceMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Realism v2: the spoken confidence rating ──
   // IQ asks aloud; we open the mic and parse the reply. The pills are the FALLBACK,
@@ -2822,7 +3152,9 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   }, [questionKey]);
   useEffect(() => {
     clearMuteFork();
-    if (!voiceMode || micOn || typeOpen) return;
+    // Not while they are typing: somebody mid-sentence in the composer has already picked
+    // their fork, and offering it aloud would be talking over an answer in progress.
+    if (!voiceMode || micOn || typingNow) return;
     if (!canAnswer || loading || audioPlaying || recording || transcribing) return;
     if (muteForkedForRef.current === questionKey) return;   // already offered for this question
     muteForkRef.current = setTimeout(async () => {
@@ -2833,7 +3165,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       } catch { /* a nudge must never break the interview */ }
     }, MUTE_FORK_DELAY_MS);
     return clearMuteFork;
-  }, [voiceMode, micOn, typeOpen, canAnswer, loading, audioPlaying, recording, transcribing, questionKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [voiceMode, micOn, typingNow, canAnswer, loading, audioPlaying, recording, transcribing, questionKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Interview Room (Phase C/E) ──
   // Attention signals are derived ON-DEVICE and reported as STRINGS. The camera never
@@ -3159,9 +3491,37 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const showQChip = qLeft != null && (
     !voiceMode || qWarnNow || (!recording && !heardSpeechThisQ)
   );
-  // Item 1: while muted with an answer genuinely due (she has finished, it is their turn),
-  // the muted chip stops being a passive label and points them at the fix.
-  const mutedAnswerDue = !micOn && canAnswer && !audioPlaying && !connecting && !loading;
+  // ── THE ROOM, DERIVED ONCE ───────────────────────────────────────────────
+  // The lit tile, the strip and her face are three renderings of ONE state, so they are
+  // computed from one set of signals, in one place, by tested functions. The room used to
+  // answer "what is happening?" in three floating overlays that each did their own
+  // arithmetic — which is how the state label ended up on top of the name tag, and how
+  // "You're muted" ended up pinned 150px off an edge that moved.
+  const roomSignals = {
+    recording, transcribing, loading, connecting, speaking: audioPlaying,
+    micOn, answerDue: canAnswer, ended,
+  };
+  const speaker = activeSpeaker(roomSignals);
+  const strip = statusStrip({ ...roomSignals, recLabel: mmss(recSeconds) });
+  const surface = studentSurface({
+    recording, transcribing, heard: heard || "", selfCaption, selfCaptionsOn: selfCaptions,
+  });
+  const slot = chatSlot({ textMode, chatOpen });
+
+  // Typing is always available, on every question — never a fallback of last resort — and it
+  // routes through exactly the same answer path as speech.
+  const composerPlaceholder = awaitingRating ? "Rate your confidence to continue"
+    : ended ? "Interview ended"
+    : reverseMode ? "Ask your question…"
+    : "Type your answer…";
+
+  const openChat = () => {
+    setChatOpen(true);
+    // Opening it from the keyboard button is a request to TYPE, so land in the composer.
+    // (Opening it from the transcript button is a request to READ, and does not focus —
+    // focusing would tell canArmCapture they chose the composer, and kill hands-free.)
+    setTimeout(() => composerRef.current?.focus(), 0);
+  };
 
   return (
     <div style={{ fontFamily: T.font, width: "100%", maxWidth: "100%", boxSizing: "border-box", overflowX: "hidden", display: "flex", flexDirection: "column", height: "100%", minHeight: 500 }}>
@@ -3184,8 +3544,19 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
                 </button>
               </div>
             )}
-            {/* Voice Stage: the transcript lives in a drawer (no chat bubbles on stage). */}
-            {voiceMode && (
+            {/* The transcript is the chat panel. This opens it to READ — deliberately
+                without focusing the composer, because focus is what tells the capture gate
+                they chose to type, and looking up an earlier question must not cost them
+                the microphone. In text mode the panel is always on screen already. */}
+            {voiceMode && !textMode && (
+              <button className="iq-audio-btn" onClick={() => setChatOpen(true)}
+                title="Open transcript" aria-label="Open transcript">
+                <IconTranscript />
+              </button>
+            )}
+            {/* Classic typed mode keeps the modal drawer — there is no room column to put
+                a panel in when the whole screen is already the conversation. */}
+            {!voiceMode && (
               <button className="iq-audio-btn" onClick={() => setDrawerOpen(true)} title="Open transcript" aria-label="Open transcript">
                 <IconTranscript />
               </button>
@@ -3238,100 +3609,86 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
 
       {voiceMode ? (
         <>
-          {/* ══ THE INTERVIEW ROOM ══ A two-person call, not a chat log. The question is
-              spoken and captioned; the full transcript lives in the drawer. */}
+          {/* ══ THE INTERVIEW ROOM ══ A two-person call, not a chat log.
+              Read top to bottom, the room is now four rows and nothing floats:
+                the GRID    — two equal tiles (+ the chat panel's column when open)
+                the STRIP   — the one line saying what is happening
+                the CAPTIONS— a fixed-height area that scrolls rather than clips
+                the BAR     — the controls
+              Everything that used to be absolutely positioned over the stage — the state
+              label, the muted chip, the waveform, the "Heard:" flash — now lives in the row
+              that owns it. */}
           <div className="iq-room">
-            <div className="iq-room-stage">
-            <div className="iq-room-main">
-              <InterviewerPresence state={orbState} voice={voicePref}
-                difficulty={config.difficulty} seed={config.roomSeed || sessionId}
+            <div className={"iq-room-grid" + (slot === "side" ? " iq-room-grid--chat" : "")}>
+              <InterviewerTile state={orbState} active={speaker === SPEAKER_INTERVIEWER}
+                voice={voicePref} difficulty={config.difficulty}
+                seed={config.roomSeed || sessionId}
                 tone={tone} escalationLevel={escalationLevel}
-                stage={sstate?.current_stage || ""} group={messages.length} />
-              <div className="iq-name-chip">
-                {(config.interviewerName || "Interviewer")} · InterviewIQ
-              </div>
+                stage={sstate?.current_stage || ""} group={messages.length}
+                name={config.interviewerName} />
+
+              {/* The second tile is THEIRS — the camera in voice mode, the chat panel in
+                  text mode. Two tiles either way; only the occupant changes. */}
+              {slot === "student-tile" ? (
+                <ChatPanel
+                  messages={messages} name={config.name}
+                  onSend={send} input={input} setInput={setInput}
+                  disabled={inputDisabled} placeholder={composerPlaceholder}
+                  onComposer={setComposerFocused} composerRef={composerRef}
+                  onEditLast={ended ? null : onEditLast} editBusy={editBusy} />
+              ) : (
+                <StudentTile on={camOn} micOn={micOn}
+                  initial={(config.name || "You").trim().charAt(0).toUpperCase() || "Y"}
+                  name={config.name || "You"} active={speaker === SPEAKER_STUDENT}
+                  surface={surface} levels={levels} recLabel={mmss(recSeconds)} />
+              )}
+
+              {/* The collapsible third column. Below ~1000px the CSS floats it over the
+                  grid instead — same panel, same component, it just runs out of room. */}
+              {slot === "side" && (
+                <div className="iq-chat--side" style={{ display: "flex", minHeight: 0, minWidth: 0 }}>
+                  <ChatPanel
+                    messages={messages} name={config.name} onClose={() => setChatOpen(false)}
+                    onSend={send} input={input} setInput={setInput}
+                    disabled={inputDisabled} placeholder={composerPlaceholder}
+                    onComposer={setComposerFocused} composerRef={composerRef}
+                    onEditLast={ended ? null : onEditLast} editBusy={editBusy} />
+                </div>
+              )}
             </div>
 
-            {/* Student tile. LOCAL ONLY — never recorded, never uploaded. */}
-            <RoomSelfView on={camOn} micOn={micOn}
-              initial={(config.name || "You").trim().charAt(0).toUpperCase() || "Y"} />
-
-            {/* MUTED: no capture can occur. Stated plainly, never silently. Item 1: when an
-                answer is actually due, the chip stops being a passive label and points them
-                at the mic — "You're muted — tap the mic to answer" — and pulses to draw the
-                eye down to the control bar. */}
-            {!micOn && (
-              <div className={"iq-muted-chip" + (mutedAnswerDue ? " iq-muted-chip--cue" : "")}
+            {/* ══ THE ONE STATUS STRIP ══ Under both tiles: SPEAKING / LISTENING (with the
+                rec counter) / THINKING, and — the only state that is an instruction rather
+                than a description — muted-with-an-answer-due. It replaces the label that
+                used to sit under her face and land on her name tag, and the muted chip that
+                floated over the stage. One place, one answer. */}
+            <div className="iq-strip-row">
+              <div className={`iq-strip iq-strip--${strip.tone}` + (strip.cue ? " iq-strip--cue" : "")}
                 role="status" aria-live="polite">
-                <IconMicOff size={13} /> {mutedAnswerDue ? "You're muted — tap the mic to answer" : "You're muted"}
-              </div>
-            )}
-
-            {/* Centre-stage overlays: rating, "Heard:", errors. */}
-            <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)",
-              display: "flex", flexDirection: "column", alignItems: "center", gap: 12, pointerEvents: "none", width: "min(620px, 92%)" }}>
-              <div style={{ pointerEvents: "auto", display: "flex", flexDirection: "column", alignItems: "center", gap: 12, width: "100%" }}>
-                {heard && (
-                  <div className="iq-heard" aria-live="polite">
-                    <span style={{ fontFamily: IQ.mono, fontSize: 10, letterSpacing: ".12em", textTransform: "uppercase", color: IQ.teal, marginRight: 8 }}>Heard</span>
-                    {heard}
-                  </div>
-                )}
-                {awaitingRating && !loading && (ratingPills || typeOpen || !micOn) && (
-                  <RatingWidget busy={ratingBusy} onRate={rate} />
-                )}
-                {reverseMode && !loading && !awaitingRating && (
-                  <div style={{ padding: "10px 16px", borderRadius: 10, background: "rgba(200,153,42,.14)", border: "1px solid " + IQ.gold, color: IQ.gold, fontSize: 13, fontWeight: 700, fontFamily: IQ.sans, textAlign: "center" }}>
-                    Your turn to interview us. Ask us two questions.
-                  </div>
-                )}
-                {/* Embedded audio seatbelt: playback was blocked (autoplay policy /
-                    suspended context inside the iframe). Rather than fail silently, we offer
-                    one in-brand tap that unlocks sound and replays the current question. */}
-                {needsTap && canReplay && !muted && (
-                  <button onClick={enableAudio} className="iq-ghostbtn">
-                    <IconSpeaker size={15} /> Tap to enable audio
-                  </button>
-                )}
-                {error && <div style={{ padding: "10px 14px", borderRadius: 8, background: "rgba(232,82,26,.16)", color: "#ffbda6", fontSize: 13, textAlign: "center" }}>{error}</div>}
-                {sttToast && <div style={{ fontSize: 12, color: IQ.orange, fontWeight: 700 }}>{sttToast}</div>}
-                {/* The session clock ran out. There is no "no answers given" cul-de-sac
-                    any more: we wrap the interview server-side and score what happened,
-                    however little of it there was. */}
-                {secondsLeft <= 0 && (
-                  <div style={{ color: "rgba(255,255,255,.85)", fontSize: 14, textAlign: "center", fontWeight: 700 }}>
-                    That's time — wrapping up. Generating your report...
-                  </div>
+                {strip.key === "muted"
+                  ? <span style={{ display: "inline-flex", color: IQ.orange }}><IconMicOff size={13} /></span>
+                  : <span className="iq-strip-dot" />}
+                <span className="iq-strip-label">{strip.label}</span>
+                {strip.detail && <span className="iq-strip-detail">{strip.detail}</span>}
+                {/* The auto-listen grace beat: the one thing the strip counts DOWN to.
+                    Shown here rather than as its own overlay, because "the mic is about to
+                    open" is a state of the room like any other. */}
+                {graceMs > 0 && !recording && (
+                  <span className="iq-strip-detail">
+                    Listening in {(graceMs / 1000).toFixed(1)}s — mute to cancel
+                  </span>
                 )}
               </div>
             </div>
 
-            {/* While listening, the real mic waveform sits above the bar. */}
-            {recording && (
-              <div style={{ position: "absolute", left: "50%", bottom: 16, transform: "translateX(-50%)",
-                display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
-                <LiveWave levels={levels} />
-                <span style={{ fontFamily: IQ.mono, fontSize: 12, color: IQ.orange, fontVariantNumeric: "tabular-nums" }}>
-                  {mmss(recSeconds)}
-                </span>
-              </div>
-            )}
-            {graceMs > 0 && !recording && (
-              <div style={{ position: "absolute", left: "50%", bottom: 22, transform: "translateX(-50%)", textAlign: "center" }}>
-                <div style={{ fontSize: 12, color: "rgba(255,255,255,.7)", marginBottom: 5 }}>
-                  Listening in {(graceMs / 1000).toFixed(1)}s — mute to cancel
-                </div>
-                <div style={{ width: 150, height: 3, borderRadius: 2, background: "rgba(255,255,255,.15)", overflow: "hidden", margin: "0 auto" }}>
-                  <div style={{ height: "100%", width: ((graceMs / AUTO_LISTEN_GRACE_MS) * 100) + "%", background: IQ.teal }} />
-                </div>
-              </div>
-            )}
-            </div>
-
-            {/* CC band — its own reserved row, so a two-line caption can never collide
-                with the self-view tile or run off the viewport. Speaking: the sentence in
-                the air. Idle: the whole question, so it can always be read. */}
-            <div className="iq-cc-band">
+            {/* ══ CAPTIONS ══ Fixed height, reserved whether or not there is anything in it,
+                so the room does not jump as she starts and stops. It SCROLLS: a long case
+                prompt is fully readable, where the old two-line clamp cut it off with an
+                ellipsis and looked like it had worked. Speaking: the sentence in the air.
+                Idle: the whole question, so it can always be re-read.
+                It is HERS alone now — the student's running transcript has its own surface
+                in their own tile, which is where their words belong. */}
+            <div className="iq-cc-area" ref={ccRef}>
               {/* FAST START: the room is up and she is on screen — this is the beat in
                   which she is drawing breath, and it should read as exactly that rather
                   than as a page that has not finished loading. */}
@@ -3342,18 +3699,45 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
                   <span className="iq-connecting-dot" />
                   <span>Connecting you with your interviewer…</span>
                 </div>
-              ) : (recording && selfCaptions) ? (
-                /* Item 6: while the student has the floor, their OWN running transcript —
-                   labelled "You:", DM Mono, visually distinct from the interviewer's caption.
-                   Verbatim (never beautified). Empty until the recogniser produces partials,
-                   or throughout on browsers without one, in which case it reads as listening. */
-                <div className="iq-cc iq-cc--self" aria-live="off">
-                  <span className="iq-cc-you">You</span>
-                  {selfCaption ? <span className="iq-cc-selftext">{selfCaption}</span>
-                    : <span className="iq-cc-listening">listening…</span>}
+              ) : captions && ccLine ? (
+                <div className="iq-cc">{ccLine}</div>
+              ) : (
+                <div className="iq-cc-empty">
+                  {captions ? "Captions will appear here." : "Captions are off."}
                 </div>
-              ) : (captions && !heard && ccLine ? <div className="iq-cc">{ccLine}</div> : null)}
+              )}
             </div>
+
+            {/* Room-level notices. These are genuinely exceptional — a blocked autoplay, an
+                error, the session clock running out — so they get a row only when one is
+                actually live, rather than a permanent slot or a floating overlay. */}
+            {(needsTap && canReplay && !muted) || error || sttToast || reverseMode || secondsLeft <= 0
+              || (awaitingRating && !loading && (ratingPills || chatOpen || !micOn)) ? (
+              <div className="iq-notice-row">
+                {awaitingRating && !loading && (ratingPills || chatOpen || !micOn) && (
+                  <RatingWidget busy={ratingBusy} onRate={rate} />
+                )}
+                {reverseMode && !loading && !awaitingRating && (
+                  <div className="iq-notice iq-notice--gold">Your turn to interview us. Ask us two questions.</div>
+                )}
+                {/* Embedded audio seatbelt: playback was blocked (autoplay policy /
+                    suspended context inside the iframe). Rather than fail silently, we offer
+                    one in-brand tap that unlocks sound and replays the current question. */}
+                {needsTap && canReplay && !muted && (
+                  <button onClick={enableAudio} className="iq-ghostbtn">
+                    <IconSpeaker size={15} /> Tap to enable audio
+                  </button>
+                )}
+                {error && <div className="iq-notice iq-notice--err">{error}</div>}
+                {sttToast && <div className="iq-notice iq-notice--warn">{sttToast}</div>}
+                {/* The session clock ran out. There is no "no answers given" cul-de-sac
+                    any more: we wrap the interview server-side and score what happened,
+                    however little of it there was. */}
+                {secondsLeft <= 0 && (
+                  <div className="iq-notice">That&apos;s time — wrapping up. Generating your report...</div>
+                )}
+              </div>
+            ) : null}
           </div>
 
           {/* ══ CONTROL BAR ══ Meet-style. The mic doubles as push-to-talk in the
@@ -3390,29 +3774,25 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
               <IconCC />
             </button>
 
-            <button className={"iq-ctl" + (typeOpen ? " iq-ctl--on" : "")}
-              onClick={() => setTypeOpen(o => !o)}
-              title="Type your answer" aria-pressed={typeOpen} aria-label="Type your answer">
-              <IconKeyboard />
-            </button>
+            {/* TYPING and the TRANSCRIPT were two buttons opening two surfaces (a slide-out
+                composer and a modal drawer) that were really one thing: the conversation.
+                One toggle now, one panel. Typing is ALWAYS available, on every question —
+                never a fallback of last resort — and it routes through exactly the same
+                answer path as speech. In text mode the panel IS the second tile and cannot
+                be collapsed away, so there is nothing here to toggle. */}
+            {!textMode && (
+              <button className={"iq-ctl" + (chatOpen ? " iq-ctl--on" : "")}
+                onClick={() => (chatOpen ? setChatOpen(false) : openChat())}
+                title={chatOpen ? "Close chat" : "Chat — read the transcript or type an answer"}
+                aria-pressed={chatOpen} aria-label="Chat and transcript">
+                <IconKeyboard />
+              </button>
+            )}
 
             <button className="iq-ctl iq-ctl--end" onClick={handleEndClick} aria-label="End interview">
               End
             </button>
           </div>
-
-          {/* Typing is ALWAYS available, on every question — never a fallback of last
-              resort. It routes through exactly the same answer path as typed mode. */}
-          {typeOpen && (
-            <div className="iq-typebar">
-              <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value.slice(0, 4000))}
-                onKeyDown={handleKey} rows={1} maxLength={4000} disabled={inputDisabled} className="vi"
-                placeholder={awaitingRating ? "Rate your confidence to continue" : reverseMode ? "Ask your question…" : "Type your answer…"}
-                style={{ flex: 1, resize: "none", minHeight: 44, maxHeight: 120, borderRadius: 10 }} />
-              <button onClick={() => { send(); }} disabled={inputDisabled || !input.trim()} className="mba-btn-primary"
-                style={{ padding: "10px 20px", fontSize: 14, opacity: inputDisabled || !input.trim() ? 0.5 : 1 }}>Send</button>
-            </div>
-          )}
         </>
       ) : (
         <>
@@ -3479,11 +3859,17 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
         </>
       )}
 
-      {/* The full conversation always remains one tap away, in either mode. Because the
-          answer is now auto-submitted, this is also where a mis-transcription is fixed. */}
-      <TranscriptDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}
-        messages={messages} name={config.name}
-        onEditLast={ended ? null : onEditLast} editBusy={editBusy} />
+      {/* The full conversation is always one tap away in either mode — but it is a
+          different object in each. On the stage it is the CHAT PANEL, a column of the room.
+          In classic typed mode the whole screen is already the conversation, so there is no
+          column to put a panel in, and the modal drawer stays. Both carry the correction
+          affordance, because the answer is auto-submitted and a mis-transcription has to be
+          fixable wherever you are reading it. */}
+      {!voiceMode && (
+        <TranscriptDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}
+          messages={messages} name={config.name}
+          onEditLast={ended ? null : onEditLast} editBusy={editBusy} />
+      )}
 
       {showVoiceConsent && <VoiceConsentModal onAccept={acceptVoiceConsent} onDecline={declineVoiceConsent} busy={consentBusy} />}
     </div>
