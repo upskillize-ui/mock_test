@@ -757,6 +757,52 @@ def mute_fork_line(seed: int) -> str:
     return MUTE_FORK_LINES[abs(int(seed)) % len(MUTE_FORK_LINES)]
 
 
+# The mic was open and their turn was captured, but the signal was unusable. Two distinct
+# causes, two distinct lines — and neither blames the candidate or their answer (we never
+# heard it): the problem is the room, and typing is always offered as a first-class escape.
+QUIET_MIC_DIRECTIVE = (
+    "The candidate's answer came through almost SILENT — their microphone is very quiet or "
+    "too far away, so nothing usable reached you. In ONE short spoken line, IN YOUR "
+    "IDENTITY, tell them their mic sounds very quiet, and give them the fix: come closer to "
+    "the mic (or move it closer), or type the answer instead and you'll carry on. Typing is "
+    "fully first-class. Do NOT comment on their answer (you never heard it), do NOT repeat "
+    "your question, do NOT sound impatient. One sentence."
+)
+
+NOISE_DIRECTIVE = (
+    "The candidate IS speaking, but there is heavy background noise on their end and their "
+    "words keep arriving garbled. In ONE short spoken line, IN YOUR IDENTITY, tell them "
+    "there's a lot of noise coming through and suggest they move somewhere quieter if they "
+    "can, or type their answers. Say it kindly, ONCE, as a real interviewer would. Their "
+    "surroundings are NEVER their fault and NEVER affect how they're judged. Do NOT repeat "
+    "your question, do NOT comment on the content of their answer. One sentence."
+)
+
+QUIET_MIC_LINES = [
+    "Your mic seems very quiet — come closer to it, or type your answer and we'll carry on.",
+    "I'm barely picking you up — move a little closer to the mic, or type it out instead.",
+    "You're coming through very faintly — try getting closer to the mic, or type your answer.",
+    "That was almost silent on my end — come nearer the mic, or switch to typing; both work.",
+]
+
+NOISE_LINES = [
+    "There's a lot of noise on your end — move somewhere quieter if you can, or type your answers.",
+    "It's quite noisy where you are — a quieter spot would help, or you can type your answers.",
+    "I'm getting a lot of background noise — try a quieter room if you can, or type instead.",
+    "There's some noise coming through — somewhere quieter would help, or feel free to type.",
+]
+
+
+def quiet_mic_line(seed: int) -> str:
+    """Fallback when the in-character quiet-mic line is unavailable."""
+    return QUIET_MIC_LINES[abs(int(seed)) % len(QUIET_MIC_LINES)]
+
+
+def noise_line(seed: int) -> str:
+    """Fallback when the in-character noise-coaching line is unavailable."""
+    return NOISE_LINES[abs(int(seed)) % len(NOISE_LINES)]
+
+
 MUTE_FORK_DIRECTIVE = (
     "The candidate's microphone is MUTED and an answer is due. In ONE short spoken line, "
     "IN YOUR IDENTITY, tell them they're on mute and give them the fork: unmute, or switch "
@@ -1040,6 +1086,12 @@ RULES OF THE VOICE:
 - Quote them. A readout that could have been written without listening to THIS person is a failure, however polished it sounds.
 - Describe what they DID and what it won or cost them — never what they felt, and never what kind of person they are. "You opened with the number and then justified it" is coaching. "You seemed nervous" is a claim you cannot support, and it is forbidden.
 - No praise sandwiches, no hedging, no lecturing. If an answer was weak, say so plainly, then say exactly what to do instead.
+
+THESE ANSWERS ARE SPEECH — READ BEFORE YOU SCORE:
+- Most answers were SPOKEN and machine-transcribed. The transcript is an imperfect record of what they SAID, not a piece of writing they submitted. Score the CONTENT, the STRUCTURE and the SPECIFICS — never the surface of the text.
+- Do NOT penalise spelling, capitalisation, punctuation, run-on sentences, missing words, homophones, or any garbling that plausibly came from speech-to-text (e.g. "our KPI's were flat" heard as "are KPIs were flat", "SQL" as "sequel", a proper noun mangled). If a weakness could be a transcription artefact rather than something they actually said, it is NOT a weakness — resolve every such doubt in their favour.
+- Indian English is the STANDARD here, not a deviation. "Do the needful", "prepone", "revert back", "passed out in 2019", "years of experience" phrasings, Hinglish code-switching — none of these are ever errors, and none may be flagged, mentioned as a gap, or reflected in any score.
+- When you QUOTE them (strengths evidence, interviewerThoughts, starBreakdown), you may lightly clean an obvious transcription slip for readability — fix a dropped word or mis-heard homophone so the quote reads as what they clearly meant. NEVER change their meaning, upgrade their vocabulary, or put words in their mouth. If you cannot tell what they meant, quote it as-is rather than guess.
 
 CRITICAL SCORING RULE — READ FIRST:
 - Count how many questions the candidate actually answered with substantive content.

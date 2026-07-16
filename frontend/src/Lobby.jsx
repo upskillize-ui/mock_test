@@ -38,6 +38,15 @@ const IconCam = (p) => <Icon {...p} d={<><path d="M23 7l-7 5 7 5V7z" /><rect x="
 const IconCamOff = (p) => <Icon {...p} d={<><line x1="2" y1="2" x2="22" y2="22" /><path d="M16 16H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2" /><path d="M10 5h4a2 2 0 0 1 2 2v3l5-3.5v9" /></>} />;
 const IconKeyboard = (p) => <Icon {...p} d={<><rect x="2" y="6" width="20" height="12" rx="2" /><line x1="8" y1="14" x2="16" y2="14" /><line x1="6" y1="10" x2="6" y2="10" /><line x1="10" y1="10" x2="10" y2="10" /><line x1="14" y1="10" x2="14" y2="10" /><line x1="18" y1="10" x2="18" y2="10" /></>} />;
 
+// Pre-flight mic check (item 5). The 5-second "we heard" test runs entirely in the browser,
+// BEFORE Join — no session exists yet, so it never touches the backend and never creates any
+// state (item 2). The platform SpeechRecognition gives us the words where the browser has it;
+// where it does not, the level meter still proves the mic works, just without a transcript.
+const PREFLIGHT_SR = typeof window !== "undefined"
+  && (window.SpeechRecognition || window.webkitSpeechRecognition);
+const MIC_TEST_MS = 5000;          // the 5-second test window
+const NOISE_FLOOR_RMS = 0.045;     // ambient RMS above this (between words) reads as "noisy"
+
 // [PENDING LEGAL REVIEW] — draft lobby consent copy. Do not ship without legal sign-off.
 const CONSENT_COPY =
   "Your mic converts answers to text — audio is never stored. Your camera stays on your " +
@@ -54,17 +63,33 @@ export default function Lobby({ name, role, onJoin }) {
   const [level, setLevel] = useState(0);         // 0..1 mic meter
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  // Pre-flight mic check (item 5).
+  const [testState, setTestState] = useState("idle");  // idle | testing | result
+  const [heardText, setHeardText] = useState("");       // verbatim transcript of the 5s test
+  const [noisy, setNoisy] = useState(false);            // measured ambient noise floor is high
+  const [micOk, setMicOk] = useState(false);            // they confirmed "sounds right"
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const ctxRef = useRef(null);
   const rafRef = useRef(null);
+  // Mic-check refs: the recogniser, its 5s timer, and the loud/quiet extremes seen while
+  // testing (peak proves they were heard; the quiet floor estimates the room noise).
+  const recogRef = useRef(null);
+  const testTimerRef = useRef(null);
+  const testingRef = useRef(false);
+  const peakRef = useRef(0);
+  const floorRef = useRef(1);
 
   // ── Teardown. Called before Join and on unmount: the lobby must not hold the
   // camera or mic open once the room takes over.
   const teardown = () => {
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
     if (ctxRef.current) { try { ctxRef.current.close(); } catch { /* noop */ } ctxRef.current = null; }
+    if (testTimerRef.current) { clearTimeout(testTimerRef.current); testTimerRef.current = null; }
+    testingRef.current = false;
+    const rec = recogRef.current; recogRef.current = null;
+    if (rec) { try { rec.onresult = null; rec.stop(); } catch { /* noop */ } }
     const s = streamRef.current;
     if (s) { try { s.getTracks().forEach(t => t.stop()); } catch { /* noop */ } streamRef.current = null; }
     if (videoRef.current) videoRef.current.srcObject = null;
@@ -86,7 +111,14 @@ export default function Lobby({ name, role, onJoin }) {
         an.getByteTimeDomainData(buf);
         let sum = 0;
         for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
-        setLevel(Math.min(1, Math.sqrt(sum / buf.length) * 5));
+        const rms = Math.sqrt(sum / buf.length);
+        setLevel(Math.min(1, rms * 5));
+        // While the 5s test runs, track the loudest frame (proves they were heard) and the
+        // quietest (a proxy for the room's noise floor — silence between words).
+        if (testingRef.current) {
+          if (rms > peakRef.current) peakRef.current = rms;
+          if (rms < floorRef.current) floorRef.current = rms;
+        }
         rafRef.current = requestAnimationFrame(tick);
       };
       rafRef.current = requestAnimationFrame(tick);
@@ -142,7 +174,50 @@ export default function Lobby({ name, role, onJoin }) {
     }
   }, [phase, camera]);
 
-  const typeOnly = () => { teardown(); setMic(false); setCamera(false); setPhase("ready"); };
+  // ── The 5-second mic test (item 5) ──
+  // Records for 5s in the browser, shows the running transcript, then "We heard: '…'.
+  // Sound right?". Also measures the room's noise floor. Entirely local — no session, no
+  // backend, nothing stored — so it can run before Join without breaking item 2.
+  const finishMicTest = () => {
+    testingRef.current = false;
+    if (testTimerRef.current) { clearTimeout(testTimerRef.current); testTimerRef.current = null; }
+    const rec = recogRef.current; recogRef.current = null;
+    if (rec) { try { rec.onresult = null; rec.stop(); } catch { /* noop */ } }
+    // A quiet floor that is still loud means a noisy room. Guard the all-silent case
+    // (floorRef never updated) so "no mic input at all" doesn't read as noise.
+    setNoisy(peakRef.current > 0.02 && floorRef.current > NOISE_FLOOR_RMS);
+    setTestState("result");
+  };
+
+  const startMicTest = () => {
+    if (!mic) return;
+    setMicOk(false);
+    setHeardText("");
+    setNoisy(false);
+    peakRef.current = 0; floorRef.current = 1;
+    testingRef.current = true;
+    setTestState("testing");
+    if (PREFLIGHT_SR) {
+      let rec;
+      try { rec = new PREFLIGHT_SR(); } catch { rec = null; }
+      if (rec) {
+        try { rec.lang = "en-IN"; rec.interimResults = true; rec.continuous = true; } catch { /* noop */ }
+        rec.onresult = (e) => {
+          let text = "";
+          for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript;
+          setHeardText(text);   // verbatim
+        };
+        rec.onerror = () => { /* the level meter still carries the test */ };
+        recogRef.current = rec;
+        try { rec.start(); } catch { recogRef.current = null; }
+      }
+    }
+    testTimerRef.current = setTimeout(finishMicTest, MIC_TEST_MS);
+  };
+
+  const soundsRight = () => { setMicOk(true); setTestState("idle"); };
+
+  const typeOnly = () => { teardown(); setMic(false); setCamera(false); setTestState("idle"); setPhase("ready"); };
 
   const join = () => {
     teardown();                       // hand the devices back before the room takes them
@@ -189,7 +264,7 @@ export default function Lobby({ name, role, onJoin }) {
               <>
                 {/* Device toggles */}
                 <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 14 }}>
-                  <button onClick={() => (mic ? (setMic(false)) : request(camera))}
+                  <button onClick={() => (mic ? (setMic(false), setTestState("idle"), setMicOk(false)) : request(camera))}
                     aria-pressed={mic} aria-label={mic ? "Turn mic off" : "Turn mic on"}
                     style={pill(mic)}>{mic ? <IconMic /> : <IconMicOff />}</button>
                   <button onClick={() => (camera ? setCamera(false) : request(true))}
@@ -197,15 +272,67 @@ export default function Lobby({ name, role, onJoin }) {
                     style={pill(camera)}>{camera ? <IconCam /> : <IconCamOff />}</button>
                 </div>
 
-                {/* Mic check */}
+                {/* Mic check (item 5). Skipped entirely in text mode — with the mic off
+                    there is nothing to check. */}
                 <div style={{ marginTop: 14, textAlign: "center" }}>
                   <div style={{ fontSize: 12, color: "rgba(255,255,255,.6)", marginBottom: 7 }}>
-                    {mic ? "Say something — the bar should move." : "Mic is off — you can type your answers."}
+                    {!mic ? "Mic is off — you can type your answers."
+                      : testState === "testing" ? "Listening… say a full sentence."
+                      : micOk ? "Mic check passed — you're good to go."
+                      : "Say something — the bar should move."}
                   </div>
                   <div style={{ height: 6, borderRadius: 3, background: "rgba(255,255,255,.10)", overflow: "hidden" }}>
                     <div style={{ height: "100%", width: `${Math.round((mic ? level : 0) * 100)}%`,
-                      background: IQ.teal, transition: "width .08s linear" }} />
+                      background: micOk ? IQ.teal : IQ.gold, transition: "width .08s linear" }} />
                   </div>
+
+                  {mic && testState === "idle" && !micOk && (
+                    <button onClick={startMicTest} style={{ ...btnGhost, width: "auto", margin: "12px auto 0", padding: "9px 16px", fontSize: 13 }}>
+                      <IconMic size={15} /> Test my mic (5s)
+                    </button>
+                  )}
+
+                  {mic && testState === "testing" && (
+                    <div style={{ marginTop: 12, fontSize: 13, color: "#fff", fontFamily: IQ.mono,
+                      minHeight: 20, textAlign: "left", padding: "8px 12px", borderRadius: 8,
+                      background: "rgba(0,196,160,.10)", border: "1px solid rgba(0,196,160,.30)" }}>
+                      <span style={{ color: IQ.teal, fontSize: 11, letterSpacing: ".08em", marginRight: 8 }}>YOU</span>
+                      {heardText || <span style={{ color: "rgba(255,255,255,.5)" }}>listening…</span>}
+                    </div>
+                  )}
+
+                  {mic && testState === "result" && (
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ fontSize: 13, color: "#fff", lineHeight: 1.5, textAlign: "left",
+                        padding: "10px 12px", borderRadius: 8, background: "rgba(255,255,255,.05)",
+                        border: "1px solid rgba(255,255,255,.10)" }}>
+                        {PREFLIGHT_SR
+                          ? (heardText
+                              ? <>We heard: <span style={{ fontFamily: IQ.mono, color: IQ.teal }}>&ldquo;{heardText}&rdquo;</span>. Sound right?</>
+                              : <>We didn&apos;t catch any words — check your mic is close, then try again.</>)
+                          : (peakRef.current > 0.02
+                              ? <>Your mic is picking you up clearly.</>
+                              : <>We couldn&apos;t hear you — check your mic is close, then try again.</>)}
+                      </div>
+                      {noisy && (
+                        <div style={{ marginTop: 8, fontSize: 12, color: IQ.gold, lineHeight: 1.5, textAlign: "left" }}>
+                          Your surroundings are quite noisy — a quieter spot will help the interviewer hear you.
+                        </div>
+                      )}
+                      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                        <button onClick={soundsRight} style={{ ...btnPrimary, width: "auto", flex: "1 1 auto", padding: "9px 14px", fontSize: 13, justifyContent: "center" }}>Sounds right</button>
+                        <button onClick={startMicTest} style={{ ...btnGhost, width: "auto", flex: "1 1 auto", padding: "9px 14px", fontSize: 13, justifyContent: "center" }}>Try again</button>
+                        <button onClick={typeOnly} style={{ ...btnGhost, width: "auto", flex: "1 1 auto", padding: "9px 14px", fontSize: 13, justifyContent: "center" }}>Switch to typing</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Range guidance (item 11). */}
+                  {mic && (
+                    <div style={{ marginTop: 12, fontSize: 11.5, color: "rgba(255,255,255,.45)", lineHeight: 1.5 }}>
+                      Best within arm&apos;s reach of your mic, in a quiet room.
+                    </div>
+                  )}
                 </div>
               </>
             )}

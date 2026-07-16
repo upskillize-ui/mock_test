@@ -78,6 +78,11 @@ async function fetchAudioObjectUrl(path) {
   return URL.createObjectURL(blob);
 }
 
+// Item 10(c): a fire-and-forget warm-up ping. The lobby renders instantly off local state;
+// this wakes the backend (cold container / DB pool) in the background so the FIRST real call
+// — /session/start on Join — is not the one that pays the cold-start cost. It never blocks
+// anything and never surfaces an error: a failed warm-up just means the room warms on Join.
+const pingHealth = () => api("/health").catch(() => {});
 const startSession = (c) => api("/session/start", { method: "POST", body: JSON.stringify(c) });
 // FAST START: /session/start now returns the session ROW and nothing else, so the room can
 // render immediately. These two are the rest of the greeting, fetched from inside the room.
@@ -175,10 +180,16 @@ const setFlagPref = (key, on) => { try { localStorage.setItem(key, on ? "1" : "0
 // Web Audio tuning for the learner strip (real mic input, not a fake animation).
 const WAVE_BARS = 28;              // bars in the live waveform
 const SILENCE_RMS = 0.018;         // below this counts as silence
-const SILENCE_HOLD_MS = 2500;      // 2.5s trailing silence -> auto-stop (auto-listen only)
+const SILENCE_HOLD_MS = 2200;      // ~2.2s trailing silence -> end-of-answer (auto-listen)
+const MIN_SPEECH_MS = 2000;        // must have spoken >=2s before trailing silence submits
 const AUTO_LISTEN_GRACE_MS = 600;  // grace beat before the mic opens
 const RATING_SILENCE_MS = 8000;    // no spoken rating in 8s -> fall back to the pills
 const MUTE_FORK_DELAY_MS = 5000;   // muted with an answer due -> IQ offers the fork aloud
+// A "full" answer that comes through near-silent means the mic is too quiet/far. A "full"
+// answer with strong signal that STILL fails to transcribe means the room is too noisy.
+const QUIET_ANSWER_MIN_MS = 2500;  // a real attempt, not a half-second cough
+const QUIET_PEAK_RMS = 0.05;       // peak below this over a full answer == a very quiet mic
+const NOISE_COACH_AFTER = 2;       // clear-speech-but-unusable attempts before we coach once
 
 // One shared <audio> element across screens so the iOS unlock (done on the Start
 // button gesture) carries over to programmatic playback in the interview.
@@ -207,9 +218,37 @@ const BACKCHANNEL_VOLUME = 0.32;
 // barge-in and backchannels possible at all: the interviewer's voice is coming out of the
 // same laptop the mic is listening through, and without cancellation she would hear herself
 // speak, decide the candidate had interrupted, and stop talking. To herself.
+// The processing flags we ASK for on every mic. If the browser grants the mic but silently
+// drops one (some Android / Bluetooth stacks do), the per-answer instrumentation line says
+// so — a dropped echoCancellation is exactly the kind of thing that turns into "she keeps
+// interrupting herself" three bug reports later.
+const MIC_DESIRED = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
 const MIC_CONSTRAINTS = {
-  audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  audio: {
+    ...MIC_DESIRED,
+    // Saarika (Sarvam STT) transcribes 16 kHz mono; ask for it so we upload what the model
+    // wants rather than a 48 kHz stereo stream it has to downsample. `ideal`, never `exact`:
+    // a device that cannot hit these must still hand us a working mic.
+    sampleRate: { ideal: 16000 },
+    channelCount: { ideal: 1 },
+  },
 };
+// Platform SpeechRecognition, if this browser has it — drives the live "You:" self-caption
+// (item 6). Display-only; the authoritative transcript is always Saarika's. Undefined on
+// browsers without it, in which case the self-caption line simply stays empty.
+const SELF_CAPTION_SR = typeof window !== "undefined"
+  && (window.SpeechRecognition || window.webkitSpeechRecognition);
+// Compare granted MediaTrackSettings against what we asked for; returns the flags the
+// browser refused (dropped or forced false). Empty object == everything honoured.
+function micSettingsShortfall(settings) {
+  const dropped = {};
+  if (!settings) return dropped;
+  for (const k of Object.keys(MIC_DESIRED)) {
+    // A key the browser doesn't report is unknown, not refused — only flag an explicit false.
+    if (k in settings && settings[k] === false) dropped[k] = false;
+  }
+  return dropped;
+}
 // Minimal silent WAV — played inside the Start-button gesture to unlock autoplay
 // on iOS Safari, which otherwise blocks programmatic .play().
 const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
@@ -376,6 +415,13 @@ const CRITICAL = {
   d: "Pressure panel. Your answers will be challenged and criticised. Not a gentle experience.",
   confirm: "I want the pressure panel",
 };
+// Item 10(a): the difficulty selector is one row of four equal chips. Critical rides in the
+// same row as the other three — a red dot and a short "Pressure panel" subtext are all that
+// set it apart on the chip; the full warning lives below the row and only when it is chosen.
+const DIFF_CHIPS = [
+  ...DIFFICULTIES,
+  { v: CRITICAL.v, l: CRITICAL.l, d: "Pressure panel", critical: true },
+];
 const MODES = [{ v: "interview", l: "Interview mode", d: "Feedback at end only" }, { v: "coach", l: "Coach mode", d: "Feedback after each answer" }];
 const ROUNDS = [
   { v: "screening", l: "Screening Round", d: "Motivation, fitment & communication", badge: "SCREEN", detail: "Covers: Why this role? Why this company? Career goals, salary expectations, notice period. Short answers, rapid-fire pace. No technical depth." },
@@ -464,6 +510,11 @@ const CSS = `
   .vg2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
   .vg3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
   @media(max-width:800px){.vg2{grid-template-columns:1fr!important}}
+  /* Item 10(a): difficulty — one row of four equal chips, wrapping to 2×2 under ~700px. */
+  .iq-diff4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+  @media(max-width:700px){.iq-diff4{grid-template-columns:1fr 1fr}}
+  .vopt-crit-on{border:2px solid #c0392b;background:#fdf1f0}
+  .iq-critical-warn{margin-top:10px;padding:12px 14px;border-radius:10px;background:#fdf1f0;border:1px solid #e2b3ac;font-size:12px;line-height:1.6;color:#7a2318;font-family:'Plus Jakarta Sans',sans-serif;animation:iqFade .2s ease}
   /* The pressure panel (difficulty: Critical). Set apart from the three-up grid on
      purpose — it is not a fourth flavour, it is a different kind of thing, and the UI
      should say so before the interviewer does. */
@@ -628,8 +679,18 @@ const CSS = `
      was still rendering and clipping), so max-height is the belt to its braces:
      2 lines x 1.4 line-height, plus the 20px of vertical padding. */
   .iq-cc{max-width:min(760px,100%);box-sizing:border-box;padding:10px 16px;border-radius:12px;background:rgba(11,22,40,.86);border:1px solid rgba(255,255,255,.10);color:#fff;font-size:15px;line-height:1.4;text-align:center;font-family:'Plus Jakarta Sans','Noto Sans Devanagari',sans-serif;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-overflow:ellipsis;max-height:calc(2 * 1.4em + 20px)}
+  /* Item 6: the live self-caption. Same band as the interviewer's, but clearly THEIRS —
+     DM Mono, a teal "You" tag, left-aligned running text. Never beautified. */
+  .iq-cc--self{display:flex;align-items:baseline;gap:10px;text-align:left;justify-content:flex-start;background:rgba(0,196,160,.10);border-color:rgba(0,196,160,.35)}
+  .iq-cc-you{flex-shrink:0;font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:11px;font-weight:700;letter-spacing:.10em;text-transform:uppercase;color:#00C4A0}
+  .iq-cc-selftext{font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:14px;line-height:1.4;color:#eafaf5}
+  .iq-cc-listening{font-family:'DM Mono','SFMono-Regular',Menlo,monospace;font-size:13px;color:rgba(234,250,245,.55);animation:iqPulse 1.4s ease-in-out infinite}
   /* "You're muted" — sits directly above the self-view tile, never over it. */
   .iq-muted-chip{position:absolute;right:16px;bottom:150px;display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;background:rgba(232,82,26,.20);border:1px solid #E8521A;color:#fff;font-size:11px;font-weight:700;font-family:'Plus Jakarta Sans',sans-serif;white-space:nowrap}
+  /* Item 1: an answer is due but they are muted — the chip pulses and brightens to send the
+     eye to the mic button in the bar below. */
+  .iq-muted-chip--cue{background:rgba(232,82,26,.30);box-shadow:0 0 0 0 rgba(232,82,26,.45);animation:iqMutedCue 1.6s ease-in-out infinite}
+  @keyframes iqMutedCue{0%{box-shadow:0 0 0 0 rgba(232,82,26,.45)}70%{box-shadow:0 0 0 8px rgba(232,82,26,0)}100%{box-shadow:0 0 0 0 rgba(232,82,26,0)}}
   /* Bottom control bar — centred Meet-style pills. */
   .iq-bar{flex-shrink:0;display:flex;align-items:center;justify-content:center;gap:10px;padding:14px 16px;background:#0B1628;border-top:1px solid rgba(255,255,255,.07);flex-wrap:wrap}
   .iq-ctl{display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:50%;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#fff;cursor:pointer;transition:all .15s;flex-shrink:0}
@@ -690,9 +751,6 @@ function SetupScreen({ onStart, userName }) {
   const [companyName, setCompanyName] = useState("");
   const [duration, setDuration] = useState(20);
   const [difficulty, setDifficulty] = useState("Realistic");
-  // The pressure panel needs a second, explicit tap. `criticalArmed` is the state between
-  // the two: they have opened it and read what it is, but have not yet said yes.
-  const [criticalArmed, setCriticalArmed] = useState(false);
   const [mode, setMode] = useState("interview");
   const [round, setRound] = useState("full");
   const [focus, setFocus] = useState([]);
@@ -724,6 +782,10 @@ function SetupScreen({ onStart, userName }) {
   }, [finalCompany, finalRole]);
 
   useEffect(() => { if (!starting) return; const t = setInterval(() => setTipIdx(i => (i + 1) % LOADING_TIPS.length), 2500); return () => clearInterval(t); }, [starting]);
+
+  // Item 10(c): warm the backend the moment the lobby is on screen — non-blocking, so the
+  // lobby itself never waits on it, and the first real call on Join isn't the cold one.
+  useEffect(() => { pingHealth(); }, []);
 
   const handleStart = async () => {
     // Voice Phase 1: unlock audio inside this user gesture so iOS Safari will
@@ -884,57 +946,40 @@ function SetupScreen({ onStart, userName }) {
                 {DURATIONS.map(d => <button key={d.v} className={"vchip" + (duration === d.v ? " vchip-on" : "")} onClick={() => setDuration(d.v)}>{d.l}</button>)}
               </div>
 
+              {/* Item 10(a): difficulty is ONE row of four equal chips. Critical is a chip
+                  like the others — a red dot + "Pressure panel" subtext mark it apart — and
+                  its full warning appears BELOW the row only once it is actually selected.
+                  The row wraps to 2×2 under ~700px. */}
               <label className="vl" style={{ marginTop: 14 }}>Difficulty</label>
-              <div className="vg3">
-                {DIFFICULTIES.map(d => (
-                  <button key={d.v} className={"vopt" + (difficulty === d.v ? " vopt-on" : "")} onClick={() => { setDifficulty(d.v); setCriticalArmed(false); }} style={{ textAlign: "center", padding: "12px 10px" }}>
-                    <div style={{ fontWeight: 700, fontSize: 13, color: T.navy }}>{d.l}</div>
-                    <div style={{ fontSize: 11, color: T.subtle, marginTop: 2 }}>{d.d}</div>
-                  </button>
-                ))}
-              </div>
-
-              {/* The pressure panel. Two taps, deliberately: the first arms it and tells
-                  them exactly what they are choosing, the second confirms it. Nobody
-                  arrives here by accident, and nobody arrives here uninformed. */}
-              <div className={"iq-critical" + (difficulty === CRITICAL.v ? " iq-critical-on" : "")}>
-                <button
-                  className="iq-critical-head"
-                  aria-pressed={difficulty === CRITICAL.v}
-                  onClick={() => {
-                    if (difficulty === CRITICAL.v) { setDifficulty("Realistic"); setCriticalArmed(false); return; }
-                    setCriticalArmed(a => !a);
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span className="iq-critical-dot" />
-                    <span style={{ fontWeight: 800, fontSize: 13, color: difficulty === CRITICAL.v ? T.red : T.navy }}>
-                      {CRITICAL.l}
-                    </span>
-                    {difficulty === CRITICAL.v && <span className="iq-critical-badge">SELECTED</span>}
-                  </div>
-                  <div style={{ fontSize: 11, color: T.muted, marginTop: 3, lineHeight: 1.5 }}>{CRITICAL.d}</div>
-                </button>
-
-                {criticalArmed && difficulty !== CRITICAL.v && (
-                  <div className="iq-critical-confirm">
-                    <div style={{ fontSize: 12, color: T.muted, lineHeight: 1.6, marginBottom: 10 }}>
-                      The interviewer will challenge every answer you give, push back on weak
-                      reasoning, and cut you off if you ramble. She will never insult you — the
-                      criticism lands on your answers, never on you — but she will not be kind
-                      about the answers.
-                    </div>
-                    <button
-                      className="iq-critical-btn"
-                      onClick={() => { setDifficulty(CRITICAL.v); setCriticalArmed(false); }}
-                    >
-                      {CRITICAL.confirm}
+              <div className="iq-diff4">
+                {DIFF_CHIPS.map(d => {
+                  const on = difficulty === d.v;
+                  return (
+                    <button key={d.v}
+                      className={"vopt" + (on ? (d.critical ? " vopt-crit-on" : " vopt-on") : "")}
+                      onClick={() => setDifficulty(d.v)} aria-pressed={on}
+                      style={{ textAlign: "center", padding: "12px 10px" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                        {d.critical && <span className="iq-critical-dot" />}
+                        <span style={{ fontWeight: 700, fontSize: 13, color: d.critical && on ? T.red : T.navy }}>{d.l}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: T.subtle, marginTop: 2 }}>{d.d}</div>
                     </button>
-                  </div>
-                )}
+                  );
+                })}
               </div>
+              {difficulty === CRITICAL.v && (
+                <div className="iq-critical-warn" role="note">
+                  The interviewer will challenge every answer you give, push back on weak
+                  reasoning, and cut you off if you ramble. She will never insult you — the
+                  criticism lands on your answers, never on you — but she will not be kind
+                  about the answers.
+                </div>
+              )}
 
-              <label className="vl" style={{ marginTop: 14 }}>Mode</label>
+              {/* Item 10(b): heading only — the Interview / Coach options and their behaviour
+                  are unchanged. "Feedback" says what the choice actually controls. */}
+              <label className="vl" style={{ marginTop: 14 }}>Feedback</label>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 {MODES.map(m => (
                   <button key={m.v} className={"vopt" + (mode === m.v ? " vopt-on" : "")} onClick={() => setMode(m.v)}>
@@ -1402,6 +1447,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const [editBusy, setEditBusy] = useState(false);           // drawer correction in flight
   const [levels, setLevels] = useState(() => new Array(WAVE_BARS).fill(0));
   const [graceMs, setGraceMs] = useState(0);                 // auto-listen grace beat
+  const [selfCaption, setSelfCaption] = useState("");        // live "You:" transcript (item 6)
+  const [heardSpeechThisQ, setHeardSpeechThisQ] = useState(false);  // failsafe-chip visibility
   const setVoiceStage = (v) => { setVoiceStageState(v); setFlagPref(STAGE_KEY, v); };
   const setCaptions = (v) => { setCaptionsState(v); setFlagPref(CAPTIONS_KEY, v); };
   const setVoicePref = (v) => { setVoicePrefState(v); try { localStorage.setItem(VOICE_KEY, v); } catch { /* noop */ } };
@@ -1414,6 +1461,17 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const spokeRef = useRef(false);      // only arm silence-stop once they've actually spoken
   const graceRafRef = useRef(null);
   const heardTimerRef = useRef(null);
+  // ── Capture instrumentation (item 3/4/8) ──
+  const peakRmsRef = useRef(0);          // loudest frame this recording (0..1)
+  const rmsSumRef = useRef(0);           // running sum + count -> mean RMS over the answer
+  const rmsFramesRef = useRef(0);
+  const grantedSettingsRef = useRef(null);   // MediaTrackSettings the browser actually gave
+  const turnLogRef = useRef(null);       // the one-line-per-answer accumulator
+  const noiseCoachCountRef = useRef(0);  // clear-speech-but-unusable attempts, this question run
+  const noiseCoachedRef = useRef(false); // the in-session noise line has been said once
+  // The failsafe timer chip surfaces only when nothing has been heard yet on this question.
+  const heardSpeechThisQRef = useRef(false);
+  const selfRecogRef = useRef(null);     // live self-caption recogniser (display-only, item 6)
   // Realism v2 flow refs.
   const sttFailRef = useRef(0);          // consecutive STT failures (typed fallback at 2)
   const ratingListeningRef = useRef(false);  // the open mic is capturing a SPOKEN RATING
@@ -1738,6 +1796,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     bargedRef.current = false;
     spokenSoFarRef.current = "";
     setSpeaking(true);
+    // Instrumentation (item 3): her reply is now going out — the last hop. Stamp it and
+    // close this answer's log line (a no-op unless a spoken answer is actually in flight).
+    if (turnLogRef.current && !turnLogRef.current.playbackTs) {
+      turnLogRef.current.playbackTs = Date.now();
+      emitTurnLog();
+    }
 
     const restP = segments.some(s => s.pending)
       ? fetchSpeechRest(sessionId, voicePref || "female", 1).catch(() => null)
@@ -2031,27 +2095,107 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     heardTimerRef.current = setTimeout(() => setHeard(null), 6000);
   };
 
-  // Realism v2: a failed transcription is NOT a dead end and NOT a lost question.
-  // IQ says (in character) that it didn't catch the answer and the mic reopens — the
-  // backend /session/reask changes no state, so no question slot is consumed. Only
-  // after TWO consecutive failures do we give up on voice and swap in the composer.
-  const handleSttFailure = async () => {
+  // Instrumentation (item 3): ONE line per answer attempt, emitted once. It carries the
+  // shapes and timings a "my answer wasn't heard" report needs — granted mic settings,
+  // RMS/peak, capture duration, bytes, STT status, transcript length/confidence, and the
+  // per-hop latency (capture→STT→LLM/TTS→playback) — and NEVER the transcript text or audio.
+  const emitTurnLog = () => {
+    const t = turnLogRef.current;
+    if (!t || t.emitted) return;
+    t.emitted = true;
+    const r3 = (x) => Math.round((x || 0) * 1000) / 1000;
+    const d = (a, b) => (a && b && b >= a) ? (b - a) : null;
+    const dropped = t.dropped ? Object.keys(t.dropped) : [];
+    try {
+      console.info("[answer] " + JSON.stringify({
+        capture_ms: Math.round(t.captureMs || 0),
+        bytes: t.bytes || 0,
+        mime: t.mime || "",
+        peak_rms: r3(t.peakRms),
+        mean_rms: r3(t.meanRms),
+        mic_flags_dropped: dropped.length ? dropped : "none",
+        sample_rate: t.granted?.sampleRate ?? null,
+        channels: t.granted?.channelCount ?? null,
+        stt: t.sttStatus || "n/a",
+        transcript_len: t.transcriptLen || 0,
+        confidence: t.confidence ?? null,
+        latency_ms: {
+          capture: Math.round(t.captureMs || 0),
+          stt: d(t.sttStartTs, t.sttEndTs),
+          llm_tts: d(t.llmStartTs, t.llmEndTs),
+          playback: d(t.llmEndTs, t.playbackTs),
+        },
+      }));
+    } catch { /* logging must never break the interview */ }
+    turnLogRef.current = null;
+  };
+
+  // Realism v2: a failed transcription is NOT a dead end and NOT a lost question. IQ says
+  // (in character) that it didn't catch the answer and the mic reopens — the backend
+  // /session/reask changes no state, so no question slot is consumed.
+  //
+  // `kind` picks WHICH line she says: "reask" (generic), "quiet" (mic too quiet/far, item
+  // 4), or "noise" (heavy background noise, item 8). Environmental kinds do NOT count toward
+  // the two-strikes-then-type rule — the fix is in the room, not in the pipeline, and the
+  // invisible per-question timer is the ultimate backstop against a loop. A generic failure
+  // still swaps in the composer after two in a row so voice can never become a dead end.
+  const doReask = async (kind = "reask", { strike = true } = {}) => {
     if (!voiceModeRef.current) { voiceFallback(); return; }
-    sttFailRef.current += 1;
-    if (sttFailRef.current >= 2) { sttFailRef.current = 0; voiceFallback(); return; }
+    if (strike) {
+      sttFailRef.current += 1;
+      if (sttFailRef.current >= 2) { sttFailRef.current = 0; voiceFallback(); return; }
+    } else {
+      sttFailRef.current = 0;   // environmental issue — don't hold it against the mic
+    }
     busyRef.current = true;
     try {
-      const r = await reaskTurn(sessionId, voicePref || "female");
+      const r = await reaskTurn(sessionId, voicePref || "female", kind);
       sayNext({ role: "assistant", content: r.reply, audio_url: r.audio_url });
       busyRef.current = false;
       // Playback (and the hand-off back to the mic when it finishes) is the autoplay
-      // sequencer's job — see the effect below. This used to ALSO play the clip itself,
-      // which started the same audio twice on the same element.
+      // sequencer's job — see the effect below.
       if (!r.audio_url) startGrace();                  // TTS off -> just reopen the mic
     } catch {
       busyRef.current = false;
       voiceFallback();
     }
+  };
+  const handleSttFailure = () => doReask("reask");
+
+  // ── Live self-captions (item 6) ──
+  // While the student speaks, a "You:" line shows their running transcript. It is DISPLAY
+  // ONLY: it never feeds the capture gate, never becomes the answer, and never touches the
+  // authoritative Saarika transcript (that still comes from the uploaded recording). We use
+  // the platform SpeechRecognition for interim (partial) results where the browser has it;
+  // where it is absent the line stays empty and the waveform carries the "listening" signal.
+  // The interim text is shown VERBATIM — exactly as the recogniser reports it, never cleaned.
+  // A caption failure can never become a capture failure: everything here is wrapped, and
+  // the recording (MediaRecorder + Saarika) is entirely independent of it.
+  const startSelfCaption = () => {
+    setSelfCaption("");
+    if (!SELF_CAPTION_SR || !captions) return;   // unsupported or captions off -> waveform only
+    let rec;
+    try { rec = new SELF_CAPTION_SR(); } catch { return; }
+    try {
+      rec.lang = "en-IN";          // Indian English is the standard here
+      rec.interimResults = true;   // we WANT the partials — that is the whole point
+      rec.continuous = true;
+    } catch { /* noop */ }
+    rec.onresult = (e) => {
+      let text = "";
+      for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript;
+      setSelfCaption(text);        // verbatim, never beautified
+    };
+    rec.onerror = () => { /* a caption failure is never a capture failure */ };
+    rec.onend = () => { if (selfRecogRef.current === rec) selfRecogRef.current = null; };
+    selfRecogRef.current = rec;
+    try { rec.start(); } catch { selfRecogRef.current = null; }
+  };
+  const stopSelfCaption = () => {
+    const rec = selfRecogRef.current;
+    selfRecogRef.current = null;
+    if (rec) { try { rec.onresult = null; rec.stop(); } catch { /* noop */ } }
+    setSelfCaption("");
   };
 
   // ── Web Audio meter: the REAL mic level drives the live waveform and the
@@ -2089,12 +2233,23 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       let sum = 0;
       for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
       const rms = Math.sqrt(sum / buf.length);
+      // Instrumentation (item 3/4/8): the loudest frame and the running mean over the whole
+      // answer. finishRecording reads these to tell a too-quiet mic apart from a too-noisy
+      // room — a distinction the transcript alone cannot make.
+      if (rms > peakRmsRef.current) peakRmsRef.current = rms;
+      rmsSumRef.current += rms; rmsFramesRef.current += 1;
       // Throttle React updates to ~20fps; the rAF itself stays at display rate.
       if (frame++ % 3 === 0) setLevels(prev => { const next = prev.slice(1); next.push(rms); return next; });
-      if (rms > SILENCE_RMS * 1.6) spokeRef.current = true;
-      // Trailing-silence auto-stop — ONLY in auto-listen mode, and only after they
-      // have actually spoken, so the thinking pause before an answer never cuts in.
-      if (micOnRef.current && spokeRef.current) {
+      if (rms > SILENCE_RMS * 1.6 && !spokeRef.current) {
+        spokeRef.current = true;
+        // Item 7: something was heard this question, so the failsafe timer chip can recede.
+        if (!heardSpeechThisQRef.current) { heardSpeechThisQRef.current = true; setHeardSpeechThisQ(true); }
+      }
+      // End-of-answer auto-stop (item 7) — ONLY in auto-listen mode, only after they have
+      // actually spoken, and only once the answer is a real one (>=2s): the thinking pause
+      // before an answer, and a half-second cough, must never be read as "finished".
+      const spokeEnoughMs = recStartRef.current ? Date.now() - recStartRef.current : 0;
+      if (micOnRef.current && spokeRef.current && spokeEnoughMs >= MIN_SPEECH_MS) {
         if (rms < SILENCE_RMS) {
           if (!silenceStartRef.current) silenceStartRef.current = performance.now();
           else if (performance.now() - silenceStartRef.current >= SILENCE_HOLD_MS) { stopRecording(); return; }
@@ -2156,6 +2311,24 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     if (!canArmCapture(captureState())) return;
     startGrace();
   };
+
+  // ── ITEM 1: LISTENING is LEVEL-TRIGGERED, not edge-triggered ──
+  // The mic must arm whenever ALL of "a question is open", "the student is unmuted", and
+  // "the interviewer has finished" hold — no matter which of the three became true LAST.
+  // The old flow armed only on discrete EVENTS (she finished / they tapped unmute), so
+  // unmuting mid-question and then having her finish could fall between the events and
+  // strand the mic on READY. This effect closes that gap: any time the gate is open and it
+  // is genuinely an ANSWER that is due (never a rating — that has its own capture path), it
+  // starts the same auto-listen grace beat. canArmCapture() remains the ONE authority; this
+  // only decides WHEN to ask it, so the capture invariant is untouched — connecting /
+  // speaking / speechQueued still hold the mic shut here exactly as everywhere else.
+  useEffect(() => {
+    if (!voiceMode || awaitingRating) return;   // rating capture is startRatingCapture's job
+    if (graceMs > 0) return;                     // a grace beat is already counting down
+    if (!canArmCapture(captureState())) return;  // the invariant + "is it their turn?" gate
+    startGrace();
+  }, [voiceMode, micOn, canAnswer, audioPlaying, connecting, recording, transcribing,
+      loading, awaitingRating, ratingPills, typeOpen, ended, voiceConsented, graceMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Realism v2: the spoken confidence rating ──
   // IQ asks aloud; we open the mic and parse the reply. The pills are the FALLBACK,
@@ -2281,15 +2454,24 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     // A fresh answer: it has had no backchannels, and it is not mid-pause.
     bcCountRef.current = 0;
     bcPauseStartRef.current = 0;
+    // Instrumentation (item 3/4): what the browser ACTUALLY granted us, and which of the
+    // processing flags it refused. Read from the live track, once, per answer.
+    try {
+      const tr = stream.getAudioTracks?.()[0];
+      grantedSettingsRef.current = tr?.getSettings ? tr.getSettings() : null;
+    } catch { grantedSettingsRef.current = null; }
+    // Reset the RMS aggregates for this answer (they drive the quiet-mic / noise verdicts).
+    peakRmsRef.current = 0; rmsSumRef.current = 0; rmsFramesRef.current = 0;
+    startSelfCaption(stream);   // live "You:" caption while they speak (display-only, item 6)
     let mr;
     try { mr = new MediaRecorder(stream); }   // mimeType left to the browser (the STT fix handles it)
-    catch { stopMediaStream(); voiceFallback(); return; }
+    catch { stopMediaStream(); stopSelfCaption(); voiceFallback(); return; }
     recChunksRef.current = [];
     mr.ondataavailable = (e) => { if (e.data && e.data.size) recChunksRef.current.push(e.data); };
     mr.onstop = () => finishRecording(mr.mimeType);
     mediaRecorderRef.current = mr;
     try { mr.start(); }
-    catch { stopMediaStream(); voiceFallback(); return; }
+    catch { stopMediaStream(); stopSelfCaption(); voiceFallback(); return; }
     recStartRef.current = Date.now();
     recordingRef.current = true;   // set before the meter loop reads it
     startMeter(stream);
@@ -2305,6 +2487,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     clearRecTimer();
     recordingRef.current = false;   // stops the meter loop on its next frame
     teardownMeter();
+    stopSelfCaption();              // the live "You:" caption ends with the recording
     const mr = mediaRecorderRef.current;
     if (mr && mr.state !== "inactive") { try { mr.stop(); } catch { /* noop */ } }   // fires onstop → finishRecording
     setRecording(false);
@@ -2335,10 +2518,32 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       const { timeout, text } = expiryAction({ draft: inputRef.current?.value || "" });
       send(text, { timeout });
     };
+    // Instrumentation (item 3): open this answer's log line with everything known at capture
+    // time — granted mic settings, the flags the browser refused, RMS peak/mean, bytes and
+    // duration. A rating capture is not an answer and is never logged as one.
+    const meanRms = rmsFramesRef.current ? rmsSumRef.current / rmsFramesRef.current : 0;
+    const peakRms = peakRmsRef.current;
+    if (!isRating) {
+      const dropped = micSettingsShortfall(grantedSettingsRef.current);
+      turnLogRef.current = {
+        captureMs: durationSeconds * 1000, bytes: blob.size, mime: type,
+        peakRms, meanRms, granted: grantedSettingsRef.current,
+        dropped: Object.keys(dropped).length ? dropped : null,
+        sttStatus: "", transcriptLen: 0, confidence: null,
+        sttStartTs: 0, sttEndTs: 0, llmStartTs: 0, llmEndTs: 0, playbackTs: 0, emitted: false,
+      };
+    }
     setTranscribing(true); transcribingRef.current = true;
     try {
+      if (turnLogRef.current) turnLogRef.current.sttStartTs = Date.now();
       const res = await sttTranscribe(sessionId, blob, `answer.${ext}`, durationSeconds);
       const transcript = res && res.transcript ? res.transcript : null;
+      if (turnLogRef.current) {
+        turnLogRef.current.sttEndTs = Date.now();
+        turnLogRef.current.transcriptLen = (transcript || "").length;
+        turnLogRef.current.confidence = res?.delivery_metrics?.articulation ?? null;
+        turnLogRef.current.sttStatus = transcript ? "ok" : "empty";
+      }
 
       if (isRating) {
         clearRatingSilence();
@@ -2351,6 +2556,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
 
       if (transcript) {
         sttFailRef.current = 0;
+        noiseCoachCountRef.current = 0;   // a clean transcript resets the noise streak
         // Phase 3: mark this answer as SPOKEN and stash its delivery metrics for Send.
         answeredByVoiceRef.current = true;
         pendingDeliveryRef.current = res.delivery_metrics || null;
@@ -2370,14 +2576,39 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
           setTimeout(() => inputRef.current?.focus(), 50);
         }
       } else if (forcedTimeout) {
+        emitTurnLog();
         submitExpiry();
       } else {
-        await handleSttFailure();
+        // Nothing usable came back on a real attempt. The RMS aggregates tell us WHY, and
+        // that decides which line she says (items 4 + 8):
+        //   near-silent over a full answer -> the mic is too quiet/far  -> "quiet"
+        //   strong signal but still unusable, twice -> the room is noisy -> "noise" (once)
+        //   otherwise -> the generic "I didn't catch that".
+        emitTurnLog();
+        const durMs = durationSeconds * 1000;
+        const fullAttempt = durMs >= QUIET_ANSWER_MIN_MS;
+        if (fullAttempt && peakRms < QUIET_PEAK_RMS) {
+          await doReask("quiet", { strike: false });
+        } else if (fullAttempt) {
+          noiseCoachCountRef.current += 1;
+          if (noiseCoachCountRef.current >= NOISE_COACH_AFTER && !noiseCoachedRef.current) {
+            noiseCoachedRef.current = true;   // in-session noise coaching is said ONCE
+            await doReask("noise", { strike: false });
+          } else {
+            await handleSttFailure();
+          }
+        } else {
+          await handleSttFailure();
+        }
       }
     } catch {
       if (isRating) failRatingToPills();
-      else if (forcedTimeout) submitExpiry();
-      else await handleSttFailure();
+      else if (forcedTimeout) { emitTurnLog(); submitExpiry(); }
+      else {
+        if (turnLogRef.current) turnLogRef.current.sttStatus = "fail";
+        emitTurnLog();
+        await handleSttFailure();
+      }
     } finally { setTranscribing(false); transcribingRef.current = false; }
   };
 
@@ -2453,6 +2684,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     if (cameraGraceRef.current) { clearTimeout(cameraGraceRef.current); cameraGraceRef.current = null; }
   };
   const questionKey = `${sstate?.current_stage || ""}|${sstate?.round_index ?? 0}|${sstate?.answer_count ?? 0}`;
+  // Item 7: a new question opens with nothing heard yet, so the failsafe timer chip shows
+  // until they start speaking. Reset the signal whenever the question changes.
+  useEffect(() => {
+    heardSpeechThisQRef.current = false;
+    setHeardSpeechThisQ(false);
+  }, [questionKey]);
   useEffect(() => {
     clearMuteFork();
     if (!voiceMode || micOn || typeOpen) return;
@@ -2637,6 +2874,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     const mr = mediaRecorderRef.current;
     if (mr && mr.state !== "inactive") { try { mr.stop(); } catch { /* noop */ } }
     stopMediaStream();
+    // The live self-caption recogniser (item 6) holds its own audio path — stop it too.
+    try { const rec = selfRecogRef.current; selfRecogRef.current = null; rec?.stop(); } catch { /* noop */ }
     // The barge-in listener's mic outlives any single recording, so it has to be stopped
     // here explicitly — otherwise leaving the interview leaves the mic light on.
     const warm = warmStreamRef.current;
@@ -2678,7 +2917,9 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     if (!skipped) playAck();
 
     try {
+      if (turnLogRef.current) turnLogRef.current.llmStartTs = Date.now();   // instrumentation
       const res = await sendTurn(sessionId, textVal, sstate?.current_stage, voicePref || "female", spoken ? metrics : null, timeout);
+      if (turnLogRef.current) turnLogRef.current.llmEndTs = Date.now();     // LLM+first-clip TTS
       sayNext({ role: "assistant", content: res.reply, audio_segments: res.audio_segments || [] });
       setSstate(res.state);
       // The engagement floor: a check-in is a direct question and carries its own short
@@ -2698,8 +2939,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       // are the only thing a reply is spoken from now, and keying it off the old
       // whole-reply audio_url would hand the floor back while IQ was still asking.
       if (voiceModeRef.current && !res.audio_segments?.length) setTimeout(() => audioEndedRef.current?.(), 300);
+      // TTS off (no audio) -> there is no playback hop to wait for; close the log line now.
+      if (!res.audio_segments?.length) emitTurnLog();
     } catch (e) {
       setError(e.message);
+      if (turnLogRef.current) turnLogRef.current.sttStatus = turnLogRef.current.sttStatus || "ok";
+      emitTurnLog();   // the turn errored — still record the line rather than lose it
       try { setSstate(await fetchSessionState(sessionId)); } catch { /* noop */ }
     } finally {
       setLoading(false);
@@ -2774,6 +3019,19 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
 
   const inputDisabled = loading || ended || awaitingRating;
 
+  // Item 7: the per-question clock is now an INVISIBLE FAILSAFE on the stage. It still runs
+  // exactly as before (the expiry ladder is untouched), but its chip surfaces only when it
+  // is actually useful: in the final 30 seconds, or when no speech has been detected at all
+  // for this question (dead air, where a visible clock is reassuring rather than pressuring).
+  // In classic typed mode there is no speech signal, so the clock stays visible as before.
+  const qWarnNow = qLeft != null && qLeft <= QUESTION_WARN_SECONDS;
+  const showQChip = qLeft != null && (
+    !voiceMode || qWarnNow || (!recording && !heardSpeechThisQ)
+  );
+  // Item 1: while muted with an answer genuinely due (she has finished, it is their turn),
+  // the muted chip stops being a passive label and points them at the fix.
+  const mutedAnswerDue = !micOn && canAnswer && !audioPlaying && !connecting && !loading;
+
   return (
     <div style={{ fontFamily: T.font, width: "100%", maxWidth: "100%", boxSizing: "border-box", overflowX: "hidden", display: "flex", flexDirection: "column", height: "100%", minHeight: 500 }}>
       {/* Interview HUD — responsive header (replaces the legacy fixed-row header
@@ -2824,10 +3082,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
             <span className="iq-hud-stage-dot" />
             <span className="iq-hud-stage-label">{stageLabel}</span>
           </span>
-          {/* E7.7: the clock on THIS question. Always visible while it runs — a countdown
-              the candidate cannot see is a trap, and when it hits zero we submit what they
-              have or move on, so it is never a cliff either. */}
-          {qLeft != null && (
+          {/* E7.7 + item 7: the clock on THIS question. On the stage it is an INVISIBLE
+              failsafe — it runs the whole time (the expiry ladder is unchanged), but the
+              chip only surfaces in the final 30s or when no speech has been heard at all, so
+              a relaxed answerer is never watched by a ticking clock. When it hits zero we
+              submit what they have or move on, so it is never a cliff either. */}
+          {showQChip && (
             <span aria-live="off" title="Time left on this question"
               style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 10, padding: "2px 10px", borderRadius: 999, background: "rgba(255,255,255,0.10)", fontFamily: IQ.mono, fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", fontVariantNumeric: "tabular-nums", color: qLeft <= 10 ? "#ff6b6b" : qLeft <= QUESTION_WARN_SECONDS ? T.gold : "rgba(255,255,255,.75)" }}>
               This question {mmss(qLeft)}
@@ -2863,10 +3123,14 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
             <RoomSelfView on={camOn} micOn={micOn}
               initial={(config.name || "You").trim().charAt(0).toUpperCase() || "Y"} />
 
-            {/* MUTED: no capture can occur. Stated plainly, never silently. */}
+            {/* MUTED: no capture can occur. Stated plainly, never silently. Item 1: when an
+                answer is actually due, the chip stops being a passive label and points them
+                at the mic — "You're muted — tap the mic to answer" — and pulses to draw the
+                eye down to the control bar. */}
             {!micOn && (
-              <div className="iq-muted-chip" role="status" aria-live="polite">
-                <IconMicOff size={13} /> You&apos;re muted
+              <div className={"iq-muted-chip" + (mutedAnswerDue ? " iq-muted-chip--cue" : "")}
+                role="status" aria-live="polite">
+                <IconMicOff size={13} /> {mutedAnswerDue ? "You're muted — tap the mic to answer" : "You're muted"}
               </div>
             )}
 
@@ -2944,6 +3208,16 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
                   <span className="iq-connecting-dot" />
                   <span className="iq-connecting-dot" />
                   <span>Connecting you with your interviewer…</span>
+                </div>
+              ) : (recording && captions) ? (
+                /* Item 6: while the student has the floor, their OWN running transcript —
+                   labelled "You:", DM Mono, visually distinct from the interviewer's caption.
+                   Verbatim (never beautified). Empty until the recogniser produces partials,
+                   or throughout on browsers without one, in which case it reads as listening. */
+                <div className="iq-cc iq-cc--self" aria-live="off">
+                  <span className="iq-cc-you">You</span>
+                  {selfCaption ? <span className="iq-cc-selftext">{selfCaption}</span>
+                    : <span className="iq-cc-listening">listening…</span>}
                 </div>
               ) : (captions && !heard && ccLine ? <div className="iq-cc">{ccLine}</div> : null)}
             </div>

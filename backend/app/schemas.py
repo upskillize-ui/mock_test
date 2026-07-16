@@ -203,8 +203,10 @@ class ReaskRequest(BaseModel):
     voice: Literal["female", "male"] = "female"
     # "reask" — the transcription failed, ask them to say it again.
     # "mute"  — the mic is MUTED and an answer is due: offer the unmute-or-type fork.
-    # Neither inserts a message or touches the stage machine, so neither costs a slot.
-    kind: Literal["reask", "mute"] = "reask"
+    # "quiet" — the mic was open but the answer came through near-silent (too quiet/far).
+    # "noise" — speech is present but heavy background noise keeps garbling it.
+    # None of these insert a message or touch the stage machine, so none costs a slot.
+    kind: Literal["reask", "mute", "quiet", "noise"] = "reask"
 
 
 class ReaskResponse(BaseModel):

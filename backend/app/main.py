@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -46,6 +47,7 @@ from .prompts import (
     build_system_prompt, debrief_instruction, stage_turn_directive,
     build_kickoff, parse_kickoff, rating_ask, reask_line, REASK_DIRECTIVE, turn_tone,
     mute_fork_line, MUTE_FORK_DIRECTIVE, WRAP_DISENGAGED,
+    quiet_mic_line, QUIET_MIC_DIRECTIVE, noise_line, NOISE_DIRECTIVE,
     partial_opening, first_complete_sentence,
 )
 from .claude_client import call_claude, stream_claude, extract_resume_text
@@ -1389,6 +1391,10 @@ async def session_reask(
                    reopens.
     kind="mute"  — the mic is MUTED and an answer is due: IQ offers the fork (unmute, or
                    type). We NEVER auto-unmute — that is always the candidate's act.
+    kind="quiet" — the mic was open but the answer arrived near-silent (mic too quiet/far):
+                   IQ says the mic sounds very quiet and offers come-closer / type.
+    kind="noise" — speech is present but background noise keeps garbling it: IQ suggests a
+                   quieter spot or typing. The environment NEVER affects their score.
 
     Deliberately side-effect-free on the interview: NO message is inserted, NO stage /
     round_index / answer_count changes. A failed transcription must never cost the
@@ -1400,8 +1406,11 @@ async def session_reask(
 
     cfg = _session_to_cfg(session_row)
     seed = int(session_row.get("answer_count") or 0)
-    is_mute = body.kind == "mute"
-    directive = MUTE_FORK_DIRECTIVE if is_mute else REASK_DIRECTIVE
+    directive, fallback = {
+        "mute": (MUTE_FORK_DIRECTIVE, mute_fork_line),
+        "quiet": (QUIET_MIC_DIRECTIVE, quiet_mic_line),
+        "noise": (NOISE_DIRECTIVE, noise_line),
+    }.get(body.kind, (REASK_DIRECTIVE, reask_line))
     line = ""
     try:
         # One short in-character line (the system prompt carries the improvised identity).
@@ -1414,7 +1423,7 @@ async def session_reask(
     except HTTPException:
         line = ""   # upstream model failed — fall back, never block the candidate
     if not line:
-        line = mute_fork_line(seed) if is_mute else reask_line(seed)
+        line = fallback(seed)
 
     audio_url = await _try_tts(body.session_id, line, body.voice)
     return ReaskResponse(reply=line, audio_url=audio_url)
@@ -1589,13 +1598,28 @@ async def session_stt(
     # Count the vendor attempt against the cap, then transcribe. Audio is not
     # retained beyond this call.
     stt.note_stt_call(session_id)
+    _t0 = time.perf_counter()
     result = await stt.transcribe_full(
         audio_bytes, audio.content_type, want_timestamps=settings.STT_WITH_TIMESTAMPS
     )
-    if result is None:
-        return STTResponse(transcript=None, delivery_metrics=None)
+    _stt_ms = int((time.perf_counter() - _t0) * 1000)
 
-    transcript = result.get("transcript")
+    transcript = result.get("transcript") if result else None
+    # INSTRUMENTATION (item 3): one diagnostic line per answer attempt, server side. It
+    # carries NO transcript text and NO audio — only shapes and timings — so a future
+    # "my answer wasn't heard" complaint is diagnosable from logs without ever storing
+    # what was said. status: ok = usable transcript, empty = vendor returned nothing,
+    # fail = the vendor call itself failed.
+    _status = "ok" if transcript else ("fail" if result is None else "empty")
+    log.info(
+        "stt_attempt session=%s status=%s bytes=%d mime=%s dur_s=%.1f "
+        "transcript_len=%d confidence=%s stt_ms=%d",
+        session_id, _status, len(audio_bytes), (audio.content_type or "?"),
+        float(duration_seconds or 0.0), len(transcript or ""),
+        (result.get("confidence") if result else None), _stt_ms,
+    )
+    if result is None or not transcript:
+        return STTResponse(transcript=None, delivery_metrics=None)
 
     # Phase 3 Part C: compute-and-discard delivery metrics from the transcript +
     # recording duration (+ vendor timestamps/confidence if present). The audio is

@@ -170,3 +170,38 @@ def test_reask_lines_vary_and_never_add_a_question():
     assert len({p.reask_line(i) for i in range(4)}) > 1
     assert "do NOT ask a new question" in p.REASK_DIRECTIVE
     assert "never heard it" in p.REASK_DIRECTIVE
+
+
+# ── Item 4/8: the quiet-mic and noise-coaching nudges ──────────────────────
+
+def test_quiet_mic_lines_offer_the_fork_and_never_blame_the_answer():
+    lines = [p.quiet_mic_line(i) for i in range(4)]
+    assert len(set(lines)) > 1                                   # varied across the session
+    # Every fallback names the fix (get closer / type) — never a dead end.
+    for ln in lines:
+        low = ln.lower()
+        assert "typ" in low or "closer" in low or "nearer" in low or "close" in low
+    # The directive tells IQ not to comment on an answer she never heard.
+    assert "never heard it" in p.QUIET_MIC_DIRECTIVE
+    assert "type" in p.QUIET_MIC_DIRECTIVE.lower()
+
+
+def test_noise_lines_coach_the_room_never_the_person_and_never_the_score():
+    lines = [p.noise_line(i) for i in range(4)]
+    assert len(set(lines)) > 1
+    for ln in lines:
+        assert "quiet" in ln.lower() or "noise" in ln.lower() or "type" in ln.lower()
+    # The environment must never bleed into judgement.
+    assert "NEVER affect" in p.NOISE_DIRECTIVE or "never affect" in p.NOISE_DIRECTIVE.lower()
+
+
+# ── Item 9: transcripts are speech, and the scorer is told so ───────────────
+
+def test_debrief_never_penalises_transcription_or_indian_english():
+    text = p.DEBRIEF_INSTRUCTION
+    assert "SPEECH" in text
+    low = text.lower()
+    assert "spelling" in low and "punctuation" in low
+    assert "indian english" in low
+    # Quotes may be lightly cleaned but never have their meaning changed.
+    assert "meaning" in low
