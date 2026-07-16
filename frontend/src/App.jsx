@@ -172,6 +172,9 @@ const getMutePref = () => { try { return localStorage.getItem(MUTE_KEY) === "1";
 // is actually available — with voice off the session renders exactly as before).
 const STAGE_KEY = "interviewiq_voice_stage";
 const CAPTIONS_KEY = "interviewiq_captions";
+// Item 6: live self-captions default OFF — turning them on opts into the browser's speech
+// service, so it must be the student's explicit choice, made with the honest line shown.
+const SELFCAP_KEY = "interviewiq_self_captions";
 const getFlagPref = (key, dflt = true) => {
   try { const v = localStorage.getItem(key); return v === null ? dflt : v === "1"; }
   catch { return dflt; }
@@ -1323,7 +1326,8 @@ function Switch({ on, onChange, label }) {
 }
 
 function StageSettingsMenu({ onClose, voiceStage, setVoiceStage,
-                            captions, setCaptions, voice, setVoice }) {
+                            captions, setCaptions, selfCaptions, setSelfCaptions,
+                            selfCaptionsSupported, voice, setVoice }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -1338,6 +1342,15 @@ function StageSettingsMenu({ onClose, voiceStage, setVoiceStage,
           <Switch on={voiceStage} onChange={setVoiceStage} label="Voice mode" /></div>
         <div className="iq-menu-row" style={dim}><span>Captions</span>
           <Switch on={captions} onChange={setCaptions} label="Captions" /></div>
+        {selfCaptionsSupported && (
+          <div className="iq-menu-row" style={dim}>
+            <span>Live captions of me
+              <span style={{ display: "block", fontSize: 10.5, color: "rgba(0,0,0,.45)", marginTop: 2, maxWidth: 190, lineHeight: 1.4 }}>
+                Uses your browser's speech service
+              </span>
+            </span>
+            <Switch on={selfCaptions} onChange={setSelfCaptions} label="Live captions of me" /></div>
+        )}
         <div className="iq-menu-sep" />
         <div className="iq-menu-row"><span>Interviewer voice</span>
           <div style={{ display: "flex", gap: 6 }}>
@@ -1448,9 +1461,16 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const [levels, setLevels] = useState(() => new Array(WAVE_BARS).fill(0));
   const [graceMs, setGraceMs] = useState(0);                 // auto-listen grace beat
   const [selfCaption, setSelfCaption] = useState("");        // live "You:" transcript (item 6)
+  const [selfCaptions, setSelfCaptionsState] = useState(() => getFlagPref(SELFCAP_KEY, false));  // default OFF
   const [heardSpeechThisQ, setHeardSpeechThisQ] = useState(false);  // failsafe-chip visibility
   const setVoiceStage = (v) => { setVoiceStageState(v); setFlagPref(STAGE_KEY, v); };
   const setCaptions = (v) => { setCaptionsState(v); setFlagPref(CAPTIONS_KEY, v); };
+  // Item 6: turning live self-captions ON opts into the browser's speech service — say so,
+  // honestly, the moment they enable it. Off by default; their explicit choice to turn on.
+  const setSelfCaptions = (v) => {
+    setSelfCaptionsState(v); setFlagPref(SELFCAP_KEY, v);
+    if (v) showToast("Live captions use your browser's speech service.");
+  };
   const setVoicePref = (v) => { setVoicePrefState(v); try { localStorage.setItem(VOICE_KEY, v); } catch { /* noop */ } };
 
   // Web Audio (real mic level: live waveform + trailing-silence auto-stop).
@@ -2173,7 +2193,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // the recording (MediaRecorder + Saarika) is entirely independent of it.
   const startSelfCaption = () => {
     setSelfCaption("");
-    if (!SELF_CAPTION_SR || !captions) return;   // unsupported or captions off -> waveform only
+    if (!SELF_CAPTION_SR || !selfCaptions) return;   // unsupported or opted-out -> waveform only
     let rec;
     try { rec = new SELF_CAPTION_SR(); } catch { return; }
     try {
@@ -3072,6 +3092,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
                 onClose={() => setMenuOpen(false)}
                 voiceStage={voiceStage} setVoiceStage={setVoiceStage}
                 captions={captions} setCaptions={setCaptions}
+                selfCaptions={selfCaptions} setSelfCaptions={setSelfCaptions}
+                selfCaptionsSupported={!!SELF_CAPTION_SR}
                 voice={voicePref} setVoice={setVoicePref}
               />
             )}
@@ -3209,7 +3231,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
                   <span className="iq-connecting-dot" />
                   <span>Connecting you with your interviewer…</span>
                 </div>
-              ) : (recording && captions) ? (
+              ) : (recording && selfCaptions) ? (
                 /* Item 6: while the student has the floor, their OWN running transcript —
                    labelled "You:", DM Mono, visually distinct from the interviewer's caption.
                    Verbatim (never beautified). Empty until the recogniser produces partials,

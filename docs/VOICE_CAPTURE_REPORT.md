@@ -140,18 +140,29 @@ navy caption. Verbatim — the interim text is shown exactly as reported, never 
 
 **Display-only, and deliberately isolated from capture:** it never feeds the gate, never
 becomes the answer, and never touches the authoritative Saarika transcript. It is driven by
-the platform `SpeechRecognition` when present (gated on the captions toggle); where absent,
-the line reads *"listening…"* and the waveform carries the signal. Every call is wrapped so a
-caption failure can never become a capture failure.
+the platform `SpeechRecognition` when present; where absent, the line reads *"listening…"*
+and the waveform carries the signal. Every call is wrapped so a caption failure can never
+become a capture failure.
 
-> **⚠ PRIVACY CAVEAT — validate before GA.** On Chrome, `SpeechRecognition` routes audio
-> through the platform (Google) speech service, and runs a second capture alongside
-> MediaRecorder. This is consistent with how live captions are normally built, but it (a)
+**Default OFF — opt-in, with an honest line.** Live self-captions ship **OFF**. A dedicated
+"Live captions of me" toggle in the stage settings menu (shown only where the browser
+supports it, with the sub-label *"Uses your browser's speech service"*) lets the student
+switch them on. The moment they do, a one-line disclosure is shown:
+**"Live captions use your browser's speech service."** The interviewer's own captions
+(default ON) are a separate, local, unaffected toggle.
+
+> **⚠ PRIVACY CAVEAT.** On Chrome, `SpeechRecognition` routes audio through the platform
+> (Google) speech service, and runs a second capture alongside MediaRecorder — so it (a)
 > sends audio to a third party and (b) has a small hardware-dependent risk of contending with
-> the authoritative recording. It is **gated on the captions toggle** (one tap to disable)
-> and wrapped defensively. Recommend confirming on target Chrome/Windows hardware, and a
-> Legal note on the third-party path, before enabling in production — same posture as the
-> existing `[PENDING LEGAL REVIEW]` consent copy.
+> the authoritative recording. This is why the feature is **default OFF and opt-in with the
+> disclosure above**, and why every call is wrapped defensively.
+>
+> **PLANNED PERMANENT FIX.** The platform `SpeechRecognition` path is a stopgap. The intended
+> permanent implementation replaces it with **chunked partials from our own Saarika STT
+> path** — the live "You:" line is fed by short rolling segments of the SAME recording we
+> already upload, transcribed by Saarika, so **no second audio path and no third-party
+> service exist at all**. At that point the feature can default back ON without the caveat.
+> Tracked as a follow-up; the current OFF-by-default + disclosure is the interim posture.
 
 ## 7. TURN-TAKING BY SILENCE + INVISIBLE TIMER
 
@@ -254,8 +265,10 @@ Frontend changes (`App.jsx`, `Lobby.jsx`) are static assets, deployed with the f
 1. Unmute mid-question → mic arms the instant she finishes (LISTENING). Repeat unmute-before
    and unmute-during-reask.
 2. Muted with an answer due → chip reads "You're muted — tap the mic to answer" and pulses.
-3. Speak an answer → "You:" self-caption tracks live; on stop, "Heard:" flashes; check the
-   `[answer]` console line for granted settings, RMS, and per-hop latency.
+3. Speak an answer → on stop, "Heard:" flashes; check the `[answer]` console line for granted
+   settings, RMS, and per-hop latency. Enable "Live captions of me" in the settings menu →
+   the disclosure line appears, then the "You:" self-caption tracks live while speaking.
+   Confirm it is OFF by default.
 4. Very quiet mic on a full answer → quiet-mic re-ask ("come closer…").
 5. Noisy room, two garbled attempts → one in-persona noise line; scores unaffected.
 6. Timer chip hidden while answering, appears in the final 30 s / on dead air.
