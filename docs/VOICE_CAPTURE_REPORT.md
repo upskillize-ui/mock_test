@@ -132,37 +132,46 @@ is the ultimate backstop.
 - Where `SpeechRecognition` is absent, the level meter still confirms the mic works (no
   transcript line).
 
-## 6. LIVE SELF-CAPTIONS (`App.jsx` + CSS)
+## 6. LIVE SELF-CAPTIONS — now from our OWN Saarika STT (`App.jsx`, `main.py`, `stt.py`, `config.py`)
 
 While the student speaks, a **"You:"** line shows their running transcript — DM Mono, a teal
 `YOU` tag, left-aligned, in a teal-tinted band **visually distinct** from the interviewer's
-navy caption. Verbatim — the interim text is shown exactly as reported, never beautified.
+navy caption. Verbatim — window transcripts are joined as-is, never beautified.
 
-**Display-only, and deliberately isolated from capture:** it never feeds the gate, never
-becomes the answer, and never touches the authoritative Saarika transcript. It is driven by
-the platform `SpeechRecognition` when present; where absent, the line reads *"listening…"*
-and the waveform carries the signal. Every call is wrapped so a caption failure can never
-become a capture failure.
+**Source (permanent fix — the browser recognizer is gone):** the caption is built from
+**short rolling windows of the SAME mic recording**, transcribed through **our own Saarika
+STT**. A separate short-lived `MediaRecorder` on the same stream produces a ~3.5 s clip; it
+is POSTed to the new **`/session/stt/partial`** endpoint; the returned text is appended to the
+running line; repeat while recording. **There is ONE audio path (the mic) and ONE vendor
+(Saarika) — no browser speech service, no second capture of a third party.** The platform
+`SpeechRecognition` path has been **removed entirely** from the in-session self-captions.
 
-**Default OFF — opt-in, with an honest line.** Live self-captions ship **OFF**. A dedicated
-"Live captions of me" toggle in the stage settings menu (shown only where the browser
-supports it, with the sub-label *"Uses your browser's speech service"*) lets the student
-switch them on. The moment they do, a one-line disclosure is shown:
-**"Live captions use your browser's speech service."** The interviewer's own captions
-(default ON) are a separate, local, unaffected toggle.
+**Display-only, and isolated from capture:** the window recorder is independent of the
+authoritative recorder, so a partial that fails — or the whole caption path — can never
+disturb the recording it describes. The endpoint is side-effect-free: **no turn, no delivery
+metrics, no storage, no stage change**; audio is transcribed in-memory and discarded.
 
-> **⚠ PRIVACY CAVEAT.** On Chrome, `SpeechRecognition` routes audio through the platform
-> (Google) speech service, and runs a second capture alongside MediaRecorder — so it (a)
-> sends audio to a third party and (b) has a small hardware-dependent risk of contending with
-> the authoritative recording. This is why the feature is **default OFF and opt-in with the
-> disclosure above**, and why every call is wrapped defensively.
->
-> **PLANNED PERMANENT FIX.** The platform `SpeechRecognition` path is a stopgap. The intended
-> permanent implementation replaces it with **chunked partials from our own Saarika STT
-> path** — the live "You:" line is fed by short rolling segments of the SAME recording we
-> already upload, transcribed by Saarika, so **no second audio path and no third-party
-> service exist at all**. At that point the feature can default back ON without the caveat.
-> Tracked as a follow-up; the current OFF-by-default + disclosure is the interim posture.
+**Cost, bounded on both sides:**
+- Client: at most **30 windows/answer** (`SELFCAP_MAX_WINDOWS`); after that the caption
+  freezes and the final authoritative transcript still lands on stop.
+- Server [HF PUSH PENDING]: a **separate** per-session cap `STT_PARTIAL_MAX_PER_SESSION`
+  (default 400) counted apart from answer STT, so a caption can never spend an answer's
+  allowance. When hit, the endpoint returns a null transcript (never an error) and the
+  caption simply stops growing. Set the cap to 0 to disable partials.
+
+**Default OFF — a cost choice, not a privacy one.** With the third-party path removed, there
+is no new data flow (the audio already goes to our Saarika for the answer). Self-captions stay
+**OFF by default** only because the rolling-window partials cost extra STT calls; a dedicated
+"Live captions of me" toggle (sub-label *"Transcribes your speech as you talk"*) lets the
+student switch them on. **This is now a pure cost/product decision — the team can safely
+default it ON.** The interviewer's own captions remain a separate, local, default-ON toggle.
+
+> **Remaining browser-recognizer use — the PRE-FLIGHT test only (§5), by necessity.** The
+> 5-second "We heard: '…'" mic test in `Lobby.jsx` runs **before Join, when no session
+> exists**, so it cannot call the session-scoped `/session/stt/partial`; forcing a session
+> there would violate §2 (no session/brain before Join). It therefore still uses the browser
+> recognizer for that one local, pre-Join check. If zero browser-recognizer usage is wanted,
+> the follow-up is a session-less STT ping for the pre-flight — flagged, not silently left.
 
 ## 7. TURN-TAKING BY SILENCE + INVISIBLE TIMER
 
@@ -254,9 +263,14 @@ fabricated here. Design targets the instrumentation now lets us verify:
   line banks (`quiet_mic_line`, `noise_line`).
 - `schemas.py` — `ReaskRequest.kind` gains `"quiet"` and `"noise"`.
 - `main.py` — `/session/reask` routes the two new kinds; `/session/stt` emits the per-attempt
-  instrumentation line and imports the new prompt symbols; `import time`.
-- `tests/test_realism.py` — new tests for the quiet/noise lines & directives and the item-9
-  scoring rule.
+  instrumentation line and imports the new prompt symbols; `import time`. **New endpoint
+  `POST /session/stt/partial`** (item 6) — display-only rolling-window transcription for the
+  live self-caption: same gates, separate cost cap, no metrics/storage/state.
+- `stt.py` — separate partial cost counter (`note_stt_partial_call`, `stt_partial_cap_reached`).
+- `config.py` — `STT_PARTIAL_MAX_PER_SESSION` (default 400; 0 disables partials).
+- `tests/test_realism.py` — quiet/noise lines & directives, item-9 scoring rule.
+- `tests/test_stt.py` — the `/session/stt/partial` endpoint (transcribes, no metrics, gated by
+  feature+consent, separate cap that stops without erroring).
 
 Frontend changes (`App.jsx`, `Lobby.jsx`) are static assets, deployed with the frontend.
 
@@ -267,8 +281,9 @@ Frontend changes (`App.jsx`, `Lobby.jsx`) are static assets, deployed with the f
 2. Muted with an answer due → chip reads "You're muted — tap the mic to answer" and pulses.
 3. Speak an answer → on stop, "Heard:" flashes; check the `[answer]` console line for granted
    settings, RMS, and per-hop latency. Enable "Live captions of me" in the settings menu →
-   the disclosure line appears, then the "You:" self-caption tracks live while speaking.
-   Confirm it is OFF by default.
+   the "You:" self-caption grows every ~3.5 s from our own Saarika STT (`/session/stt/partial`
+   in the network tab — no call to any browser/Google speech service). Confirm it is OFF by
+   default and that toggling it never disturbs the authoritative answer transcript.
 4. Very quiet mic on a full answer → quiet-mic re-ask ("come closer…").
 5. Noisy room, two garbled attempts → one in-persona noise line; scores unaffected.
 6. Timer chip hidden while answering, appears in the final 30 s / on dead air.

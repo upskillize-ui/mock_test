@@ -138,6 +138,17 @@ async function sttTranscribe(sessionId, blob, filename = "answer.webm", duration
   }
   return res.json();   // { transcript: string | null, delivery_metrics: object | null }
 }
+// Item 6 (live self-captions): transcribe a SHORT ROLLING WINDOW of the same recording, for
+// the running "You:" caption. Same audio path, same vendor (Saarika) — no browser speech
+// service. Display-only and side-effect-free server-side. Returns { transcript } or throws.
+async function sttPartial(sessionId, blob) {
+  const fd = new FormData();
+  fd.append("session_id", sessionId);
+  fd.append("audio", blob, "partial.webm");
+  const res = await fetch(API_URL + "/session/stt/partial", { method: "POST", headers: { ...authHeaders() }, body: fd });
+  if (!res.ok) throw new Error(`partial stt failed (${res.status})`);
+  return res.json();
+}
 // INT-07 DPDPA data rights + consent.
 const recordConsent = (payload) => api("/consent", { method: "POST", body: JSON.stringify(payload) });
 const fetchMyData = () => api("/me/data");
@@ -236,11 +247,12 @@ const MIC_CONSTRAINTS = {
     channelCount: { ideal: 1 },
   },
 };
-// Platform SpeechRecognition, if this browser has it — drives the live "You:" self-caption
-// (item 6). Display-only; the authoritative transcript is always Saarika's. Undefined on
-// browsers without it, in which case the self-caption line simply stays empty.
-const SELF_CAPTION_SR = typeof window !== "undefined"
-  && (window.SpeechRecognition || window.webkitSpeechRecognition);
+// Live self-captions (item 6) are driven by OUR OWN Saarika STT: short rolling windows of the
+// same mic recording, transcribed as the student speaks. One audio path, one vendor — no
+// browser speech service. Supported wherever we can record at all.
+const SELF_CAPTIONS_SUPPORTED = typeof MediaRecorder !== "undefined";
+const SELFCAP_WINDOW_MS = 3500;    // length of each rolling window we transcribe for the caption
+const SELFCAP_MAX_WINDOWS = 30;    // per-answer cap on partial STT calls (client-side cost guard)
 // Compare granted MediaTrackSettings against what we asked for; returns the flags the
 // browser refused (dropped or forced false). Empty object == everything honoured.
 function micSettingsShortfall(settings) {
@@ -1346,7 +1358,7 @@ function StageSettingsMenu({ onClose, voiceStage, setVoiceStage,
           <div className="iq-menu-row" style={dim}>
             <span>Live captions of me
               <span style={{ display: "block", fontSize: 10.5, color: "rgba(0,0,0,.45)", marginTop: 2, maxWidth: 190, lineHeight: 1.4 }}>
-                Uses your browser's speech service
+                Transcribes your speech as you talk
               </span>
             </span>
             <Switch on={selfCaptions} onChange={setSelfCaptions} label="Live captions of me" /></div>
@@ -1465,11 +1477,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const [heardSpeechThisQ, setHeardSpeechThisQ] = useState(false);  // failsafe-chip visibility
   const setVoiceStage = (v) => { setVoiceStageState(v); setFlagPref(STAGE_KEY, v); };
   const setCaptions = (v) => { setCaptionsState(v); setFlagPref(CAPTIONS_KEY, v); };
-  // Item 6: turning live self-captions ON opts into the browser's speech service — say so,
-  // honestly, the moment they enable it. Off by default; their explicit choice to turn on.
+  // Item 6: live self-captions now transcribe through OUR OWN Saarika STT (the same path the
+  // answer already uses) — no third-party speech service — so enabling them opens no new data
+  // path. Kept OFF by default only because the rolling-window partials cost extra STT calls;
+  // it is a pure cost/product choice now, not a privacy one.
   const setSelfCaptions = (v) => {
     setSelfCaptionsState(v); setFlagPref(SELFCAP_KEY, v);
-    if (v) showToast("Live captions use your browser's speech service.");
   };
   const setVoicePref = (v) => { setVoicePrefState(v); try { localStorage.setItem(VOICE_KEY, v); } catch { /* noop */ } };
 
@@ -1491,7 +1504,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const noiseCoachedRef = useRef(false); // the in-session noise line has been said once
   // The failsafe timer chip surfaces only when nothing has been heard yet on this question.
   const heardSpeechThisQRef = useRef(false);
-  const selfRecogRef = useRef(null);     // live self-caption recogniser (display-only, item 6)
+  // Live self-captions from our own Saarika STT (item 6): the rolling-window loop's state.
+  const selfCapActiveRef = useRef(false);   // the window loop is running
+  const selfCapRecRef = useRef(null);       // the current short-window MediaRecorder
+  const selfCapTextRef = useRef("");         // accumulated caption text across windows
+  const selfCapWindowsRef = useRef(0);       // windows transcribed this answer (cost cap)
   // Realism v2 flow refs.
   const sttFailRef = useRef(0);          // consecutive STT failures (typed fallback at 2)
   const ratingListeningRef = useRef(false);  // the open mic is capturing a SPOKEN RATING
@@ -2182,39 +2199,62 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   };
   const handleSttFailure = () => doReask("reask");
 
-  // ── Live self-captions (item 6) ──
-  // While the student speaks, a "You:" line shows their running transcript. It is DISPLAY
-  // ONLY: it never feeds the capture gate, never becomes the answer, and never touches the
-  // authoritative Saarika transcript (that still comes from the uploaded recording). We use
-  // the platform SpeechRecognition for interim (partial) results where the browser has it;
-  // where it is absent the line stays empty and the waveform carries the "listening" signal.
-  // The interim text is shown VERBATIM — exactly as the recogniser reports it, never cleaned.
-  // A caption failure can never become a capture failure: everything here is wrapped, and
-  // the recording (MediaRecorder + Saarika) is entirely independent of it.
-  const startSelfCaption = () => {
+  // ── Live self-captions from our OWN Saarika STT (item 6) ──
+  // While the student speaks, a "You:" line shows their running transcript. We build it by
+  // transcribing SHORT ROLLING WINDOWS of the SAME mic stream we already record, through our
+  // own STT (/session/stt/partial → Saarika). There is ONE audio path (the mic) and ONE
+  // vendor — no browser speech service, no second capture of a third party.
+  //
+  // It is DISPLAY ONLY: it never feeds the capture gate, never becomes the answer, and never
+  // touches the authoritative transcript (still the full-blob upload on stop). The window
+  // recorder is a SEPARATE MediaRecorder on the same stream, so a partial that fails — or the
+  // whole caption path — can never disturb the recording it is describing. Verbatim: the
+  // window transcripts are joined as-is, never beautified.
+
+  // Record ONE short window off the shared stream and resolve with its blob (or null).
+  const recordSelfCapWindow = (stream, ms) => new Promise((resolve) => {
+    let mr;
+    const chunks = [];
+    try { mr = new MediaRecorder(stream); } catch { resolve(null); return; }
+    selfCapRecRef.current = mr;
+    let settled = false;
+    const finish = (blob) => { if (!settled) { settled = true; resolve(blob); } };
+    mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    mr.onstop = () => finish(chunks.length ? new Blob(chunks, { type: mr.mimeType || "audio/webm" }) : null);
+    try { mr.start(); } catch { finish(null); return; }
+    setTimeout(() => { try { if (mr.state !== "inactive") mr.stop(); } catch { finish(null); } }, ms);
+  });
+
+  const startSelfCaption = (stream) => {
     setSelfCaption("");
-    if (!SELF_CAPTION_SR || !selfCaptions) return;   // unsupported or opted-out -> waveform only
-    let rec;
-    try { rec = new SELF_CAPTION_SR(); } catch { return; }
-    try {
-      rec.lang = "en-IN";          // Indian English is the standard here
-      rec.interimResults = true;   // we WANT the partials — that is the whole point
-      rec.continuous = true;
-    } catch { /* noop */ }
-    rec.onresult = (e) => {
-      let text = "";
-      for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript;
-      setSelfCaption(text);        // verbatim, never beautified
-    };
-    rec.onerror = () => { /* a caption failure is never a capture failure */ };
-    rec.onend = () => { if (selfRecogRef.current === rec) selfRecogRef.current = null; };
-    selfRecogRef.current = rec;
-    try { rec.start(); } catch { selfRecogRef.current = null; }
+    selfCapTextRef.current = "";
+    selfCapWindowsRef.current = 0;
+    if (!SELF_CAPTIONS_SUPPORTED || !selfCaptions || !stream) return;   // opted-out -> waveform only
+    selfCapActiveRef.current = true;
+    (async () => {
+      while (selfCapActiveRef.current && recordingRef.current
+             && selfCapWindowsRef.current < SELFCAP_MAX_WINDOWS) {
+        const clip = await recordSelfCapWindow(stream, SELFCAP_WINDOW_MS);
+        if (!selfCapActiveRef.current) break;
+        if (!clip) continue;
+        selfCapWindowsRef.current += 1;
+        try {
+          const r = await sttPartial(sessionId, clip);
+          if (!selfCapActiveRef.current) break;
+          const text = r && r.transcript ? r.transcript.trim() : "";
+          if (text) {
+            selfCapTextRef.current += (selfCapTextRef.current ? " " : "") + text;
+            setSelfCaption(selfCapTextRef.current);   // verbatim, never beautified
+          }
+        } catch { /* a partial that fails is just a caption that does not grow */ }
+      }
+    })();
   };
   const stopSelfCaption = () => {
-    const rec = selfRecogRef.current;
-    selfRecogRef.current = null;
-    if (rec) { try { rec.onresult = null; rec.stop(); } catch { /* noop */ } }
+    selfCapActiveRef.current = false;
+    const mr = selfCapRecRef.current;
+    selfCapRecRef.current = null;
+    if (mr) { try { if (mr.state !== "inactive") mr.stop(); } catch { /* noop */ } }
     setSelfCaption("");
   };
 
@@ -2894,8 +2934,9 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     const mr = mediaRecorderRef.current;
     if (mr && mr.state !== "inactive") { try { mr.stop(); } catch { /* noop */ } }
     stopMediaStream();
-    // The live self-caption recogniser (item 6) holds its own audio path — stop it too.
-    try { const rec = selfRecogRef.current; selfRecogRef.current = null; rec?.stop(); } catch { /* noop */ }
+    // The live self-caption window recorder (item 6) runs off the same stream — stop it too.
+    selfCapActiveRef.current = false;
+    try { const wr = selfCapRecRef.current; selfCapRecRef.current = null; if (wr && wr.state !== "inactive") wr.stop(); } catch { /* noop */ }
     // The barge-in listener's mic outlives any single recording, so it has to be stopped
     // here explicitly — otherwise leaving the interview leaves the mic light on.
     const warm = warmStreamRef.current;
@@ -3093,7 +3134,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
                 voiceStage={voiceStage} setVoiceStage={setVoiceStage}
                 captions={captions} setCaptions={setCaptions}
                 selfCaptions={selfCaptions} setSelfCaptions={setSelfCaptions}
-                selfCaptionsSupported={!!SELF_CAPTION_SR}
+                selfCaptionsSupported={SELF_CAPTIONS_SUPPORTED}
                 voice={voicePref} setVoice={setVoicePref}
               />
             )}

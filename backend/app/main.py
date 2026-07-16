@@ -1637,6 +1637,53 @@ async def session_stt(
     return STTResponse(transcript=transcript, delivery_metrics=metrics)
 
 
+@app.post("/session/stt/partial", response_model=STTResponse)
+async def session_stt_partial(
+    session_id: str = Form(...),
+    audio: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user_id: str = Depends(current_user),
+):
+    """Item 6: transcribe a SHORT ROLLING WINDOW of the live answer for the "You:" caption.
+
+    This is the same audio path and the same vendor (Saarika) as /session/stt — it just runs
+    on a few seconds at a time while the student is still speaking, so a running transcript can
+    be shown. It exists so there is NO second audio path and NO third-party speech service.
+
+    It is display-only and side-effect-free: NO turn is submitted, NO delivery metrics are
+    computed, NOTHING is stored, and the stage machine is untouched. Audio is transcribed
+    in-memory and discarded immediately. Partial calls are metered on a SEPARATE per-session
+    cap so a caption can never spend an answer's STT allowance. Any failure just returns a
+    null transcript and the caption simply stops growing — it is never an error the student
+    sees.
+    """
+    if not (settings.STT_ENABLED and settings.VOICE_ENABLED):
+        raise HTTPException(404, "Not found")
+
+    _load_session(db, session_id, user_id)
+    if not compliance.consent_gate_ok(settings.VOICE_ENABLED, _has_voice_consent(db, user_id)):
+        raise HTTPException(403, "Voice consent is required before using voice input.")
+
+    # Separate, generous cost cap (0 disables partials entirely). When reached, the caption
+    # simply stops growing — never an error.
+    if settings.STT_PARTIAL_MAX_PER_SESSION <= 0 or stt.stt_partial_cap_reached(
+        session_id, settings.STT_PARTIAL_MAX_PER_SESSION
+    ):
+        return STTResponse(transcript=None)
+
+    limit = settings.STT_MAX_UPLOAD_BYTES
+    audio_bytes = await audio.read(limit + 1)
+    if len(audio_bytes) > limit:
+        raise HTTPException(413, "Recording is too large.")
+    if not audio_bytes:
+        return STTResponse(transcript=None)
+
+    stt.note_stt_partial_call(session_id)
+    # Text only — no timestamps, no metrics, no storage. Audio is not retained beyond here.
+    transcript = await stt.transcribe(audio_bytes, audio.content_type)
+    return STTResponse(transcript=transcript, delivery_metrics=None)
+
+
 @app.post("/session/turn/rating", response_model=RatingResponse)
 def submit_rating(
     body: RatingRequest,

@@ -316,6 +316,71 @@ def test_start_session_does_not_require_voice_consent():
         _cleanup()
 
 
+# ── Item 6: live-caption partial endpoint (/session/stt/partial) ────────────
+# Same audio path + vendor as /session/stt, but display-only: no metrics, no storage, a
+# SEPARATE cost cap, and a null transcript (never an error) when the cap is hit.
+
+def _post_partial(client, audio=b"fake-audio", ct="audio/webm"):
+    return client.post("/session/stt/partial", data={"session_id": "sid-1"},
+                       files={"audio": ("partial.webm", audio, ct)})
+
+
+def test_partial_endpoint_transcribes_a_window_without_metrics():
+    orig = s.transcribe
+    s.transcribe = _fake_transcribe("partial words so far")
+    s._session_stt_partial_counts.pop("sid-1", None)
+    def go():
+        r = _post_partial(_client(_session_row()))
+        assert r.status_code == 200, r.text
+        assert r.json()["transcript"] == "partial words so far"
+        assert r.json().get("delivery_metrics") is None      # display-only, never scored
+    try:
+        _with_flags(True, True, go)
+    finally:
+        s.transcribe = orig
+        s._session_stt_partial_counts.pop("sid-1", None)
+        _cleanup()
+
+
+def test_partial_endpoint_gated_by_feature_and_consent():
+    orig = s.transcribe
+    s.transcribe = _fake_transcribe("x")
+    def off():
+        assert _post_partial(_client(_session_row())).status_code == 404
+    def noconsent():
+        assert _post_partial(_client(_session_row(), has_consent=False)).status_code == 403
+    try:
+        _with_flags(False, True, off); _cleanup()
+        _with_flags(True, True, noconsent)
+    finally:
+        s.transcribe = orig
+        _cleanup()
+
+
+def test_partial_cap_is_separate_and_stops_without_erroring():
+    orig = s.transcribe
+    s.transcribe = _fake_transcribe("y")
+    s._session_stt_partial_counts.pop("sid-1", None)
+    from app import main as m
+    o_cap = m.settings.STT_PARTIAL_MAX_PER_SESSION
+    m.settings.STT_PARTIAL_MAX_PER_SESSION = 1
+    def go():
+        assert _post_partial(_client(_session_row())).json()["transcript"] == "y"   # first: ok
+        _cleanup()
+        # Cap reached -> null transcript (caption simply stops growing), NOT an error...
+        r = _post_partial(_client(_session_row()))
+        assert r.status_code == 200 and r.json()["transcript"] is None
+        # ...and the ANSWER STT allowance is completely untouched by caption partials.
+        assert s.stt_calls_used("sid-1") == 0
+    try:
+        _with_flags(True, True, go)
+    finally:
+        s.transcribe = orig
+        m.settings.STT_PARTIAL_MAX_PER_SESSION = o_cap
+        s._session_stt_partial_counts.pop("sid-1", None)
+        _cleanup()
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

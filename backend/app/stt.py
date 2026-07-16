@@ -54,6 +54,21 @@ def stt_cap_reached(session_id: str, cap: int) -> bool:
     return stt_calls_used(session_id) >= cap
 
 
+# Item 6: live-caption partial transcriptions are counted SEPARATELY from answer STT, so a
+# caption can never spend an answer's allowance (and vice versa). Same in-process, no-DB shape.
+_session_stt_partial_counts: dict[str, int] = {}
+
+
+def note_stt_partial_call(session_id: str) -> None:
+    """Record a live-caption partial STT call for this session (cost accounting)."""
+    _session_stt_partial_counts[session_id] = _session_stt_partial_counts.get(session_id, 0) + 1
+
+
+def stt_partial_cap_reached(session_id: str, cap: int) -> bool:
+    """True when this session has used up its live-caption partial allowance."""
+    return _session_stt_partial_counts.get(session_id, 0) >= cap
+
+
 async def _request(audio_bytes: bytes, mime: str | None, want_timestamps: bool) -> dict | None:
     """POST audio to Saarika and return the parsed JSON body, or None on ANY
     failure. Never raises, never logs the key/audio/transcript.

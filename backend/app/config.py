@@ -99,6 +99,11 @@ class Settings:
     STT_MAX_UPLOAD_BYTES: int = int(os.getenv("STT_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
     # Extra STT attempts allowed beyond the behavioural question count (retries).
     STT_RETRY_ALLOWANCE: int = int(os.getenv("STT_RETRY_ALLOWANCE", "3"))
+    # Item 6 (live self-captions): a SEPARATE, generous per-session cap on the short
+    # rolling-window partial transcriptions that drive the live "You:" caption. Counted
+    # apart from answer STT so a caption never eats an answer's allowance; a safety backstop
+    # only — the client already caps windows per answer. Set to 0 to disable partials.
+    STT_PARTIAL_MAX_PER_SESSION: int = int(os.getenv("STT_PARTIAL_MAX_PER_SESSION", "400"))
     # Voice Phase 3: ask Saarika for word/segment timestamps (same call, no extra
     # cost) so delivery scoring can flag long mid-answer pauses. Off = pauses null.
     STT_WITH_TIMESTAMPS: bool = _env_bool("STT_WITH_TIMESTAMPS", "true")
