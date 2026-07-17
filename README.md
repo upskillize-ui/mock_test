@@ -1,5 +1,5 @@
 ---
-title: Interview-iq : Mock-Interview
+title: InterviewIQ
 colorFrom: indigo
 colorTo: yellow
 sdk: docker
@@ -8,8 +8,4 @@ pinned: false
 license: mit
 short_description: AI mock interview coach for Upskillize learners
 ---
-
-
-
-
 
