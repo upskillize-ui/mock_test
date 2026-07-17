@@ -2126,6 +2126,15 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // fails, the room is exactly what it was, minus the human noises.
   useEffect(() => {
     let cancelled = false;
+    // TEXT has no voice, so it has no human noises either. Without this the room fetched
+    // the pack, downloaded every blob, and then played an audible "Hmm." the instant a
+    // TYPED answer was submitted — a spoken acknowledgment in the one mode that promises
+    // silence. Skipping the fetch is the whole fix: playAck/playBackchannel already return
+    // early on an empty pack.
+    if (textMode) {
+      clipsRef.current = { acks: [], backchannels: [] };
+      return;
+    }
     (async () => {
       try {
         const r = await fetchClipPack(voicePref || "female");
@@ -2433,9 +2442,14 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const [chatOpen, setChatOpen] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
   const composerRef = useRef(null);
-  // Text mode (INTAKE/MODES, landing later) puts the panel in the student tile's slot. The
-  // room stays two tiles; the panel is already mode-agnostic, so this is the whole change.
-  const textMode = config.mode === "text";
+  // Text mode puts the panel in the student tile's slot. The room stays two tiles; the
+  // panel is already mode-agnostic, so this is the whole change.
+  //
+  // This is the sprint that "landing later" meant. It used to read `config.mode === "text"`
+  // — a placeholder that could never fire, because `config.mode` is the FEEDBACK style
+  // (interview | coach) and never once held "text". The MODE lives in `session_mode`, and
+  // its values are upper-case.
+  const textMode = (config.session_mode || "").toUpperCase() === "TEXT";
 
   // E2 CC: the caption is the sentence ACTUALLY being spoken. Because the reply is
   // synthesised one clip per sentence, the sequencer knows exactly which line is in the
@@ -3599,7 +3613,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     micOn, answerDue: canAnswer, ended,
   };
   const speaker = activeSpeaker(roomSignals);
-  const strip = statusStrip({ ...roomSignals, recLabel: mmss(recSeconds) });
+  const strip = statusStrip({ ...roomSignals, recLabel: mmss(recSeconds), textMode });
   const surface = studentSurface({
     recording, transcribing, heard: heard || "", selfCaption, selfCaptionsOn: selfCaptions,
   });
@@ -3840,29 +3854,38 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
           {/* ══ CONTROL BAR ══ Meet-style. The mic doubles as push-to-talk in the
               auto-listen gaps, preserving the existing tap-to-speak semantics. */}
           <div className="iq-bar">
-            {/* MEET SEMANTICS: a persistent MUTE TOGGLE, not tap-to-speak. Unmuted, every
-                answer window captures automatically and this shows live state. Muted, no
-                capture ever happens. We never auto-unmute. */}
-            <button
-              className={"iq-ctl" + (!micOn ? " iq-ctl--off" : recording ? " iq-ctl--live" : "")}
-              onClick={toggleMic}
-              aria-pressed={!micOn}
-              title={micOn ? (recording ? "Listening — click to mute" : "Mute") : "Unmute"}
-              aria-label={micOn ? (recording ? "Listening. Click to mute." : "Mute microphone") : "Unmute microphone"}>
-              {micOn ? <IconMic /> : <IconMicOff />}
-            </button>
+            {/* TEXT shows neither a mic nor a camera control, and that is a PROMISE being
+                kept rather than a tidy-up. Unmuting calls getUserMedia — so leaving the
+                button here left a one-tap route to the exact permission dialog a TEXT
+                session guarantees the student will never see. A control for a device the
+                mode does not use is at best clutter and at worst a broken promise. */}
+            {!textMode && (
+              <>
+                {/* MEET SEMANTICS: a persistent MUTE TOGGLE, not tap-to-speak. Unmuted, every
+                    answer window captures automatically and this shows live state. Muted, no
+                    capture ever happens. We never auto-unmute. */}
+                <button
+                  className={"iq-ctl" + (!micOn ? " iq-ctl--off" : recording ? " iq-ctl--live" : "")}
+                  onClick={toggleMic}
+                  aria-pressed={!micOn}
+                  title={micOn ? (recording ? "Listening — click to mute" : "Mute") : "Unmute"}
+                  aria-label={micOn ? (recording ? "Listening. Click to mute." : "Mute microphone") : "Unmute microphone"}>
+                  {micOn ? <IconMic /> : <IconMicOff />}
+                </button>
 
-            <button
-              className={"iq-ctl" + (camOn ? "" : " iq-ctl--off")}
-              onClick={() => {
-                const next = !camOn;
-                setCamOn(next);
-                if (!next) reportCameraOff();   // the server runs the ladder
-              }}
-              title={camOn ? "Turn camera off" : "Turn camera on"}
-              aria-label={camOn ? "Turn camera off" : "Turn camera on"}>
-              {camOn ? <IconCam /> : <IconCamOff />}
-            </button>
+                <button
+                  className={"iq-ctl" + (camOn ? "" : " iq-ctl--off")}
+                  onClick={() => {
+                    const next = !camOn;
+                    setCamOn(next);
+                    if (!next) reportCameraOff();   // the server runs the ladder
+                  }}
+                  title={camOn ? "Turn camera off" : "Turn camera on"}
+                  aria-label={camOn ? "Turn camera off" : "Turn camera on"}>
+                  {camOn ? <IconCam /> : <IconCamOff />}
+                </button>
+              </>
+            )}
 
             <button className={"iq-ctl" + (captions ? " iq-ctl--on" : "")}
               onClick={() => setCaptions(!captions)}
@@ -4313,7 +4336,11 @@ function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
   const profile = (d.profile && d.profile.role) ? d.profile : {
     role: config.role, company: config.company, level: config.level,
     difficulty: config.difficulty, duration_min: config.duration_min,
-    mode: null, feedback: config.mode, rounds_covered: [], rounds_skipped: [],
+    // `session_mode` = how they answered; `mode` = the feedback style. The lobby knows
+    // both, so the fallback strip no longer has to print "—" for a mode the student
+    // explicitly chose two screens ago.
+    mode: config.session_mode || null, feedback: config.mode,
+    rounds_covered: [], rounds_skipped: [],
   };
   const strengths = (d.strengths || []).map(asStrength).filter((s) => s.strength);
   const gaps = d.gaps || [];

@@ -104,6 +104,32 @@ test("muted never shouts over her — she is still speaking", () => {
   assert.equal(statusStrip({ micOn: false, answerDue: true, loading: true }).key, STRIP_THINKING);
 });
 
+test("TEXT is never told to tap a mic it does not have", () => {
+  // Caught by driving a real TEXT session: micOn=false + answerDue=true printed
+  // "You're muted — tap the mic to answer" at a student who chose to type. It told them
+  // to fix something that was working as chosen, and pointed them at the ONE control the
+  // mode promises never to need — tapping it fires the permission prompt TEXT guarantees
+  // they will never see.
+  const s = statusStrip({ micOn: false, answerDue: true, textMode: true });
+  assert.equal(s.key, STRIP_READY);
+  assert.equal(s.label, "Your turn");
+  assert.equal(s.detail, "Type your answer");
+  assert.equal(s.cue, true, "it is still their turn — it should still prompt");
+  assert.notEqual(s.key, STRIP_MUTED);
+});
+
+test("TEXT with nothing due is not nagged either", () => {
+  const s = statusStrip({ micOn: false, answerDue: false, textMode: true });
+  assert.equal(s.key, STRIP_READY);
+  assert.equal(s.cue, false);
+});
+
+test("TEXT still never shouts over her", () => {
+  assert.equal(statusStrip({ textMode: true, answerDue: true, speaking: true }).key, STRIP_SPEAKING);
+  assert.equal(statusStrip({ textMode: true, answerDue: true, loading: true }).key, STRIP_THINKING);
+  assert.equal(statusStrip({ textMode: true, answerDue: true, ended: true }).key, STRIP_ENDED);
+});
+
 test("ended outranks everything", () => {
   assert.equal(statusStrip({ ended: true, recording: true, speaking: true }).key, STRIP_ENDED);
 });

@@ -92,12 +92,23 @@ export function statusStrip({
   micOn = true,
   answerDue = false,
   recLabel = "",
+  textMode = false,
 } = {}) {
   if (ended) return strip(STRIP_ENDED, "Interview ended", "", "idle");
   if (recording) return strip(STRIP_LISTENING, "Listening", recLabel, "orange");
   if (connecting) return strip(STRIP_THINKING, "Connecting", "", "navy");
   if (transcribing || loading) return strip(STRIP_THINKING, "Thinking", "", "navy");
   if (speaking) return strip(STRIP_SPEAKING, "Speaking", "", "teal");
+  // TEXT: the mic being off is the MODE, not a mistake. "You're muted — tap the mic to
+  // answer" told a typing student to fix something that was working as chosen, and pointed
+  // them at the one control the mode promises never to need — tapping it would have fired
+  // the permission prompt we guarantee a TEXT session never sees. Same job (their turn,
+  // here is how to answer), stated in the vocabulary of the mode they picked.
+  if (textMode) {
+    return answerDue
+      ? strip(STRIP_READY, "Your turn", "Type your answer", "orange", true)
+      : strip(STRIP_READY, "Ready", "", "idle");
+  }
   // Muted with an answer genuinely due: point at the fix, do not merely state the fact.
   if (!micOn && answerDue) {
     return strip(STRIP_MUTED, "You're muted", "Tap the mic to answer", "orange", true);
