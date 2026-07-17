@@ -1,0 +1,77 @@
+{
+  "checks": [
+    {
+      "cell": "QA-05: a denied mic never hard-blocks the lobby",
+      "status": "PASS",
+      "evidence": "lobby still offers a way in; notice=['No mic or camera access. You can still do the full interview by typing.']"
+    },
+    {
+      "cell": "QA-05: the mic really was denied (the failure path actually ran)",
+      "status": "PASS",
+      "evidence": "3 getUserMedia call(s), 3 rejected: ['NotSupportedError: Not supported', 'NotSupportedError: Not supported']"
+    },
+    {
+      "cell": "QA-05: the rescue does not throw ReferenceError",
+      "status": "PASS",
+      "evidence": "errors mentioning an undefined identifier: none"
+    },
+    {
+      "cell": "QA-05: the voice failure hands the student the composer",
+      "status": "PASS",
+      "evidence": "composer before failure: 0 -> after: 1 | toast seen: True"
+    }
+  ],
+  "lobby_notice_after_denial": [
+    "No mic or camera access. You can still do the full interview by typing."
+  ],
+  "composer_before_failure": 0,
+  "mic_button_present": true,
+  "consent_modal_shown": true,
+  "toast_seen": true,
+  "js_errors": [],
+  "getUserMedia": [
+    {
+      "constraints": {
+        "audio": true
+      },
+      "granted": false,
+      "error": "NotSupportedError: Not supported"
+    },
+    {
+      "constraints": {
+        "audio": {
+          "echoCancellation": true,
+          "noiseSuppression": true,
+          "autoGainControl": true,
+          "sampleRate": {
+            "ideal": 16000
+          },
+          "channelCount": {
+            "ideal": 1
+          }
+        }
+      },
+      "granted": false,
+      "error": "NotSupportedError: Not supported"
+    },
+    {
+      "constraints": {
+        "audio": {
+          "echoCancellation": true,
+          "noiseSuppression": true,
+          "autoGainControl": true,
+          "sampleRate": {
+            "ideal": 16000
+          },
+          "channelCount": {
+            "ideal": 1
+          }
+        }
+      },
+      "granted": false,
+      "error": "NotSupportedError: Not supported"
+    }
+  ],
+  "console_errors": [],
+  "errors_before_tap": []
+}

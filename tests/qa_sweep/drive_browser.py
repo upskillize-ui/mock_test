@@ -188,7 +188,8 @@ def run(mode, autoplay_blocked=False, idle_seconds=25):
         # The lobby is TWO steps for AUDIO/VIDEO: grant the device, THEN join.
         # Clicking "Allow mic & camera" alone leaves the student in the lobby.
         clicks = []
-        for label in ("Allow mic & camera", "Mic only", "Join interview", "Join"):
+        # "Allow mic" is AUDIO's primary CTA since QA-04; VIDEO keeps "Allow mic & camera".
+        for label in ("Allow mic & camera", "Allow mic", "Mic only", "Join interview", "Join"):
             btn = pg.get_by_role("button", name=label, exact=False)
             if btn.count() and btn.first.is_visible():
                 btn.first.click()

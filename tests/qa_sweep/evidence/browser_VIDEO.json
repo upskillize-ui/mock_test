@@ -15,12 +15,12 @@
     {
       "cell": "VIDEO (a) server layer: /session/speech returns audio",
       "status": "PASS",
-      "evidence": "11 audio fetch(es), 420462 bytes total"
+      "evidence": "12 audio fetch(es), 366962 bytes total"
     },
     {
       "cell": "VIDEO (b) app layer: client creates + plays an audio element",
       "status": "PASS",
-      "evidence": "2 Audio() constructed, 3 play() call(s)"
+      "evidence": "2 Audio() constructed, 4 play() call(s)"
     },
     {
       "cell": "VIDEO (c) permission layer: playback not blocked",
@@ -124,16 +124,22 @@
       "status": 200
     },
     {
-      "url": "/session/audio/6b063570b6790844ecf3711d353832ca398ab1400414f763a1a70ebaaaef9e23",
+      "url": "/session/audio/37dd911717fe632096c5392e5f5e8fc8505fdb9e7bcbb613a4c42756df06a515",
       "method": "GET",
       "status": 200,
-      "bytes": 142524
+      "bytes": 23823
     },
     {
-      "url": "/session/audio/1397888f1a0b9b9b3a5cae284979b3df48b3e373d51ee37175d55c2d84d7b2fe",
+      "url": "/session/audio/9b814db202644698c7da7997993ba3940e5eed6889f252f27f82bc294816ccd0",
       "method": "GET",
       "status": 200,
-      "bytes": 122044
+      "bytes": 109087
+    },
+    {
+      "url": "/session/audio/7751cfaf94dc347f75fe77a7e06c0b5fbd21446a99b24c57c5e7c22e665582a8",
+      "method": "GET",
+      "status": 200,
+      "bytes": 78158
     }
   ],
   "console": [
@@ -142,13 +148,13 @@
     "debug: [vite] connected.",
     "debug: [voice] stt_available = true | stage = WARMUP",
     "debug: [voice] stt_available = true | stage = WARMUP",
-    "debug: [interviewer identity] wry, unhurried, forensic, peer-adjacent, mines one thread deeply, asks why twice, disarms with candour, no rush to fill silence"
+    "debug: [interviewer identity] Precise, unhurried, no small talk, probes decisions over facts, asks 'why' once per answer, peer-level respect for fresher, ends on substance not reassurance"
   ],
   "screens": [
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots\\VIDEO_1_setup.png",
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots\\VIDEO_2_lobby.png",
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots\\VIDEO_3_room.png",
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots\\VIDEO_4_idle.png"
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_after\\VIDEO_1_setup.png",
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_after\\VIDEO_2_lobby.png",
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_after\\VIDEO_3_room.png",
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_after\\VIDEO_4_idle.png"
   ],
   "consent_accepted": true,
   "lobby_text": "History\nSettings\nReady to join?\nSoftware Engineer (SDE) interview \u2014 check your setup before you go in.\nQ\nBefore you join\n\nYour mic converts answers to text \u2014 audio is never stored. Your camera stays on your device \u2014 never recorded or uploaded. You can type instead at any time.\n\nDuring the interview, InterviewIQ notices attention cues (like looking away) on your device to coach your interview presence. No video is recorded.\n\nDRAFT NOTICE \u2014 PENDING LEGAL REVIEW\nAllow mic & camera\nContinue without camera\nType instead",
@@ -166,7 +172,7 @@
   "reached_room": true,
   "getUserMedia_calls": [
     {
-      "t": 1784281255395,
+      "t": 1784286017594,
       "constraints": {
         "audio": true,
         "video": {
@@ -179,7 +185,7 @@
           "facingMode": "user"
         }
       },
-      "stack": "    at request (http://localhost:5173/src/Lobby.jsx:309:45) |     at onClick (http://localhost:5173/src/Lobby.jsx:857:63) |     at HTMLUnknownElement.callCallback2 (http://localhost:5173/node_modules/.vite/deps/chunk-373CG7ZK.js?v=6e78b748:3672:22)",
+      "stack": "    at request (http://localhost:5173/src/Lobby.jsx?t=1784285352220:310:45) |     at onClick (http://localhost:5173/src/Lobby.jsx?t=1784285352220:859:65) |     at HTMLUnknownElement.callCallback2 (http://localhost:5173/node_modules/.vite/deps/chunk-373CG7ZK.js?v=6e78b748:3672:22)",
       "granted": true,
       "tracks": [
         {
@@ -193,7 +199,7 @@
       ]
     },
     {
-      "t": 1784281258568,
+      "t": 1784286020358,
       "constraints": {
         "video": {
           "width": {
@@ -205,7 +211,7 @@
           "facingMode": "user"
         }
       },
-      "stack": "    at http://localhost:5173/src/App.jsx:2476:48 |     at http://localhost:5173/src/App.jsx:2487:7 |     at commitHookEffectListMount (http://localhost:5173/node_modules/.vite/deps/chunk-373CG7ZK.js?v=6e78b748:16913:34)",
+      "stack": "    at http://localhost:5173/src/App.jsx?t=1784285764435:2476:48 |     at http://localhost:5173/src/App.jsx?t=1784285764435:2487:7 |     at commitHookEffectListMount (http://localhost:5173/node_modules/.vite/deps/chunk-373CG7ZK.js?v=6e78b748:16913:34)",
       "granted": true,
       "tracks": [
         {
@@ -215,7 +221,7 @@
       ]
     },
     {
-      "t": 1784281258581,
+      "t": 1784286020366,
       "constraints": {
         "video": {
           "width": {
@@ -227,7 +233,7 @@
           "facingMode": "user"
         }
       },
-      "stack": "    at http://localhost:5173/src/App.jsx:2476:48 |     at http://localhost:5173/src/App.jsx:2487:7 |     at commitHookEffectListMount (http://localhost:5173/node_modules/.vite/deps/chunk-373CG7ZK.js?v=6e78b748:16913:34)",
+      "stack": "    at http://localhost:5173/src/App.jsx?t=1784285764435:2476:48 |     at http://localhost:5173/src/App.jsx?t=1784285764435:2487:7 |     at commitHookEffectListMount (http://localhost:5173/node_modules/.vite/deps/chunk-373CG7ZK.js?v=6e78b748:16913:34)",
       "granted": true,
       "tracks": [
         {
@@ -237,7 +243,7 @@
       ]
     },
     {
-      "t": 1784281263165,
+      "t": 1784286024141,
       "constraints": {
         "audio": {
           "echoCancellation": true,
@@ -251,7 +257,7 @@
           }
         }
       },
-      "stack": "    at startBargeMonitor (http://localhost:5173/src/App.jsx:3803:47) |     at http://localhost:5173/src/App.jsx:3855:5 |     at commitHookEffectListMount (http://localhost:5173/node_modules/.vite/deps/chunk-373CG7ZK.js?v=6e78b748:16913:34)",
+      "stack": "    at startBargeMonitor (http://localhost:5173/src/App.jsx?t=1784285764435:3805:47) |     at http://localhost:5173/src/App.jsx?t=1784285764435:3857:5 |     at commitHookEffectListMount (http://localhost:5173/node_modules/.vite/deps/chunk-373CG7ZK.js?v=6e78b748:16913:34)",
       "granted": true,
       "tracks": [
         {
@@ -264,11 +270,11 @@
   "idle_seconds_watched": 25,
   "device_lines_while_idle": [
     {
-      "at_s": 19.4,
-      "line": "Listening in 0.1s \u2014 mute to cancel"
+      "at_s": 12.5,
+      "line": "Listening in 0.5s \u2014 mute to cancel"
     }
   ],
-  "room_text": "InterviewIQ\nSoftware Engineer (SDE) \u2014 General\n19:23\nEnd\nWarm-up \u00b7 Question 1 of 2\nNia \u00b7 InterviewIQ\nQA\nYOU\n0:06\nLISTENING\n0:06\nQA, I'm Nia. Look, I've done enough of these to know that twenty minutes either clarifies something real or it doesn't \u2014 so I want to spend it on what actually matters to you. Before we get into the technical stuff, what's one thing you want to feel differently about yourself or this role by the time we wrap up?\nEnd",
+  "room_text": "InterviewIQ\nSoftware Engineer (SDE) \u2014 General\n19:23\nEnd\nWarm-up \u00b7 Question 1 of 2\nNia \u00b7 InterviewIQ\nQA\nYOU\n0:13\nLISTENING\n0:13\nQA, I'm Nia. Good to have you here. So we've got twenty minutes \u2014 let me use it to understand where you actually are right now, not run through a checklist. What's the one thing you'd want to feel clearer about as you're stepping into this role?\nEnd",
   "room_buttons": [
     "Replay question",
     "Open transcript",
@@ -283,20 +289,26 @@
   "silent_unlock_plays": 2,
   "audio_play_calls": [
     {
-      "t": 1784281265859,
-      "src": "blob:http://localhost:5173/1bd8edbb-745c-4c36-8d21-63e528571919",
+      "t": 1784286025674,
+      "src": "blob:http://localhost:5173/affe12a0-c86a-4906-8034-f78cf263fbf4",
       "tag": "AUDIO",
       "result": "played"
     },
     {
-      "t": 1784281271289,
-      "src": "blob:http://localhost:5173/9875a11a-c46c-4d98-8abb-3bb5e718fc31",
+      "t": 1784286029871,
+      "src": "blob:http://localhost:5173/00475f19-4b2a-414a-9844-5ee689fcd894",
       "tag": "AUDIO",
       "result": "played"
     },
     {
-      "t": 1784281281054,
-      "src": "blob:http://localhost:5173/47e7d511-2df0-46c3-9ac8-12d8dfbf77b5",
+      "t": 1784286031821,
+      "src": "blob:http://localhost:5173/099fd274-04a6-4871-9bc4-e14f9ec3cd14",
+      "tag": "AUDIO",
+      "result": "played"
+    },
+    {
+      "t": 1784286039388,
+      "src": "blob:http://localhost:5173/523f0689-6b61-404d-a07e-95154cf59d4c",
       "tag": "AUDIO",
       "result": "played"
     }
@@ -305,10 +317,10 @@
   "layers": {
     "server_speech_calls": 1,
     "clip_pack_calls": 2,
-    "audio_byte_fetches": 11,
-    "audio_bytes_total": 420462,
+    "audio_byte_fetches": 12,
+    "audio_bytes_total": 366962,
     "audio_elements_constructed": 2,
-    "play_attempts": 3,
+    "play_attempts": 4,
     "play_rejected": 0
   },
   "js_errors": []

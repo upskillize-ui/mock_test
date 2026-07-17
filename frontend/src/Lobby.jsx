@@ -59,10 +59,16 @@ const MIC_TEST_MS = 5000;          // the 5-second test window
 const NOISE_FLOOR_RMS = 0.045;     // ambient RMS above this (between words) reads as "noisy"
 
 // [PENDING LEGAL REVIEW] — draft lobby consent copy. Do not ship without legal sign-off.
-const CONSENT_COPY =
+//
+// QA-04: consent copy names the devices the mode actually uses, and no others. AUDIO used
+// to read the camera sentence too, which is not a wording slip — it is asking 2,500
+// students to consent to a device this mode never opens.
+const CONSENT_COPY_MIC =
+  "Your mic converts answers to text — audio is never stored. You can type instead at any time.";
+const CONSENT_COPY_MIC_CAMERA =
   "Your mic converts answers to text — audio is never stored. Your camera stays on your " +
   "device — never recorded or uploaded. You can type instead at any time.";
-// [PENDING LEGAL REVIEW] — shown only when the camera is part of the choice.
+// [PENDING LEGAL REVIEW] — shown only when the camera is part of the choice, i.e. VIDEO.
 const CONSENT_COPY_CAMERA =
   "During the interview, InterviewIQ notices attention cues (like looking away) on your " +
   "device to coach your interview presence. No video is recorded.";
@@ -309,7 +315,8 @@ export default function Lobby({ name, role, onJoin, sessionMode = "AUDIO" }) {
                   fontSize: 34, fontWeight: 800, color: "rgba(255,255,255,.85)",
                   border: "1px solid rgba(255,255,255,.12)" }}>{initial}</div>
               )}
-              {phase === "ready" && !camera && (
+              {/* QA-04: "CAMERA OFF" is only news in a mode that expected one to be on. */}
+              {isVideo && phase === "ready" && !camera && (
                 <div style={{ position: "absolute", bottom: 10, left: 12, fontSize: 11,
                   color: "rgba(255,255,255,.5)", fontFamily: IQ.mono }}>CAMERA OFF</div>
               )}
@@ -322,9 +329,13 @@ export default function Lobby({ name, role, onJoin, sessionMode = "AUDIO" }) {
                   <button onClick={() => (mic ? (setMic(false), setTestState("idle"), setMicOk(false)) : request(camera))}
                     aria-pressed={mic} aria-label={mic ? "Turn mic off" : "Turn mic on"}
                     style={pill(mic)}>{mic ? <IconMic /> : <IconMicOff />}</button>
-                  <button onClick={() => (camera ? setCamera(false) : request(true))}
-                    aria-pressed={camera} aria-label={camera ? "Turn camera off" : "Turn camera on"}
-                    style={pill(camera)}>{camera ? <IconCam /> : <IconCamOff />}</button>
+                  {/* QA-04: a camera toggle in AUDIO is an offer to open a device the mode
+                      does not use — and it called request(true), so pressing it prompted. */}
+                  {isVideo && (
+                    <button onClick={() => (camera ? setCamera(false) : request(true))}
+                      aria-pressed={camera} aria-label={camera ? "Turn camera off" : "Turn camera on"}
+                      style={pill(camera)}>{camera ? <IconCam /> : <IconCamOff />}</button>
+                  )}
                 </div>
 
                 {/* Mic check (item 5). Skipped entirely in text mode — with the mic off
@@ -400,9 +411,11 @@ export default function Lobby({ name, role, onJoin, sessionMode = "AUDIO" }) {
               borderRadius: 14, padding: "18px 18px" }}>
               <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>Before you join</div>
               <p style={{ fontSize: 13, lineHeight: 1.65, color: "rgba(255,255,255,.8)", margin: 0 }}>
-                {CONSENT_COPY}
+                {isVideo ? CONSENT_COPY_MIC_CAMERA : CONSENT_COPY_MIC}
               </p>
-              {(phase === "ask" || camera) && (
+              {/* QA-04: the attention-cue copy is about a camera, so it belongs to the mode
+                  that has one. AUDIO showed it on every pre-flight. */}
+              {isVideo && (phase === "ask" || camera) && (
                 <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "rgba(255,255,255,.6)", marginTop: 10 }}>
                   {CONSENT_COPY_CAMERA}
                 </p>
@@ -413,14 +426,27 @@ export default function Lobby({ name, role, onJoin, sessionMode = "AUDIO" }) {
 
               {phase === "ask" ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 16 }}>
-                  <button onClick={() => request(true)} disabled={busy} style={btnPrimary}>
-                    <IconCam size={16} /> Allow mic &amp; camera
-                  </button>
-                  {/* NEVER HARD-BLOCK holds even in VIDEO: they picked a camera mode, but a
-                      denied or broken camera must never cost them the interview. */}
-                  <button onClick={() => request(false)} disabled={busy} style={btnGhost}>
-                    <IconMic size={16} /> {isVideo ? "Continue without camera" : "Mic only"}
-                  </button>
+                  {/* QA-04: the camera request belongs to the camera mode. AUDIO's primary,
+                      highlighted CTA used to be "Allow mic & camera" — so the default path
+                      through an AUDIO pre-flight raised a real camera permission prompt and
+                      opened the device. The mode contract is mic only; "Mic only" as a
+                      SECONDARY option is not the same promise as never asking. */}
+                  {isVideo ? (
+                    <>
+                      <button onClick={() => request(true)} disabled={busy} style={btnPrimary}>
+                        <IconCam size={16} /> Allow mic &amp; camera
+                      </button>
+                      {/* NEVER HARD-BLOCK holds even in VIDEO: they picked a camera mode, but a
+                          denied or broken camera must never cost them the interview. */}
+                      <button onClick={() => request(false)} disabled={busy} style={btnGhost}>
+                        <IconMic size={16} /> Continue without camera
+                      </button>
+                    </>
+                  ) : (
+                    <button onClick={() => request(false)} disabled={busy} style={btnPrimary}>
+                      <IconMic size={16} /> Allow mic
+                    </button>
+                  )}
                   <button onClick={typeOnly} disabled={busy} style={btnGhost}>
                     <IconKeyboard size={16} /> Type instead
                   </button>

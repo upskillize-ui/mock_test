@@ -2425,6 +2425,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // (interview | coach) and never once held "text". The MODE lives in `session_mode`, and
   // its values are upper-case.
   const textMode = (config.session_mode || "").toUpperCase() === "TEXT";
+  // QA-04: VIDEO is the only mode with a camera. AUDIO shared the camera button (and the
+  // self-view) with VIDEO under a single !textMode gate, so an AUDIO student who took the
+  // lobby's default path got a camera prompt, a live self-view, and a control for a device
+  // their mode never promised.
+  const videoMode = (config.session_mode || "").toUpperCase() === "VIDEO";
 
   // Voice Stage: a presentation mode over the same state machine. Only ever active
   // when voice is available; switch it off and the session renders exactly as today.
@@ -2452,7 +2457,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // ── Interview Room: devices + CC captions ──
   // Device toggles start from what they committed to in the lobby.
   const [micOn, setMicOn] = useState(() => config.mic !== false);
-  const [camOn, setCamOn] = useState(() => !!config.camera);
+  // QA-04: `&& videoMode` is the belt to the lobby's braces. The self-view opens the camera
+  // from this flag alone, so deriving it from `config.camera` unqualified meant any path
+  // that ever set camera:true — a stale config, a future lobby edit — would open a camera
+  // in AUDIO. The mode is the authority on whether this session has one.
+  const [camOn, setCamOn] = useState(() => !!config.camera && videoMode);
   // The chat panel's visibility and, SEPARATELY, whether the student has actually chosen to
   // type. These used to be one flag — "the typing drawer is open" — which was a fair proxy
   // while that drawer did nothing but type. The panel does something else: it is where you
@@ -2640,9 +2649,16 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
 
   // Graceful fallback (unchanged contract): toast +, on the stage, swap straight to
   // the typed composer so a voice failure is never a dead end.
+  //
+  // QA-05: this called setTypeOpen(), which does not exist and never has — one reference
+  // in the whole codebase, no definition. So the rescue threw a ReferenceError on the one
+  // path that exists to rescue: every STT failure and mic denial in voice mode. The
+  // student with the broken mic got the dead end this function's own comment promises
+  // they never would. openChat() is the real thing: it opens the panel AND lands the
+  // caret in the composer, which is what "swap straight to the typed composer" means.
   const voiceFallback = () => {
     showToast("Voice input unavailable — please type your answer");
-    if (roomModeRef.current) setTypeOpen(true);
+    if (roomModeRef.current) openChat();
   };
 
   // Realism v2: "Heard: …" flashes for 3s under the character. The answer itself is
@@ -3900,17 +3916,22 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
                   {micOn ? <IconMic /> : <IconMicOff />}
                 </button>
 
-                <button
-                  className={"iq-ctl" + (camOn ? "" : " iq-ctl--off")}
-                  onClick={() => {
-                    const next = !camOn;
-                    setCamOn(next);
-                    if (!next) reportCameraOff();   // the server runs the ladder
-                  }}
-                  title={camOn ? "Turn camera off" : "Turn camera on"}
-                  aria-label={camOn ? "Turn camera off" : "Turn camera on"}>
-                  {camOn ? <IconCam /> : <IconCamOff />}
-                </button>
+                {/* QA-04: the camera control is VIDEO's, for the same reason the whole
+                    block is not TEXT's — turning it on calls getUserMedia, so in AUDIO it
+                    was a one-tap route to a camera prompt that mode promises never to show. */}
+                {videoMode && (
+                  <button
+                    className={"iq-ctl" + (camOn ? "" : " iq-ctl--off")}
+                    onClick={() => {
+                      const next = !camOn;
+                      setCamOn(next);
+                      if (!next) reportCameraOff();   // the server runs the ladder
+                    }}
+                    title={camOn ? "Turn camera off" : "Turn camera on"}
+                    aria-label={camOn ? "Turn camera off" : "Turn camera on"}>
+                    {camOn ? <IconCam /> : <IconCamOff />}
+                  </button>
+                )}
               </>
             )}
 

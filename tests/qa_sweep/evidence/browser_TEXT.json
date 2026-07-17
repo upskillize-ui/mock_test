@@ -19,13 +19,13 @@
     },
     {
       "cell": "TEXT: persona never says mute/mic while student is idle",
-      "status": "FAIL",
-      "evidence": "device lines during 105s idle: [{\"at_s\": 0.5, \"line\": \"You're on mute \\u2014 go ahead and unmute, or if you'd rather type it out we can roll with that.\"}, {\"at_s\": 93.8, \"line\": \"You're on mute \\u2014 go ahead and unmute, or if you'd rather type it out we can keep moving.\"}]"
+      "status": "PASS",
+      "evidence": "device lines during 30s idle: []"
     },
     {
       "cell": "TEXT: no mic/camera buttons in the room",
       "status": "PASS",
-      "evidence": "visible buttons: ['Voice settings', 'End', 'Correct this', 'Send', 'Toggle captions', 'End']"
+      "evidence": "visible buttons: ['End', 'Send', 'End']"
     },
     {
       "cell": "TEXT: typing composer present",
@@ -59,8 +59,8 @@
     },
     {
       "cell": "TEXT: no voice-only controls in the room",
-      "status": "FAIL",
-      "evidence": "visible buttons: ['Voice settings', 'End', 'Correct this', 'Send', 'Toggle captions', 'End']"
+      "status": "PASS",
+      "evidence": "visible buttons: ['End', 'Send', 'End']"
     }
   ],
   "network": [
@@ -78,37 +78,21 @@
       "url": "/session/greeting",
       "method": "POST",
       "status": 200
-    },
-    {
-      "url": "/session/reask",
-      "method": "POST",
-      "status": 200
-    },
-    {
-      "url": "/session/turn",
-      "method": "POST",
-      "status": 200
-    },
-    {
-      "url": "/session/reask",
-      "method": "POST",
-      "status": 200
     }
   ],
   "console": [
     "debug: [vite] connecting...",
-    "info: %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold",
     "debug: [vite] connected.",
-    "debug: [voice] stt_available = true | stage = WARMUP",
-    "debug: [voice] stt_available = true | stage = WARMUP",
-    "debug: [interviewer identity] wry, deliberate, plain-spoken mentor, sits in the substance, asks short and waits, disarming warmth with sharp underneath",
-    "debug: [voice] stt_available = true | stage = WARMUP"
+    "info: %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold",
+    "debug: [voice] stt_available = false | stage = WARMUP",
+    "debug: [voice] stt_available = false | stage = WARMUP",
+    "debug: [interviewer identity] warm, unhurried, genuinely curious about how candidates think, opens on intent not credentials, asks short questions and listens hard, mentor-like without being patronizing"
   ],
   "screens": [
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots\\TEXT_1_setup.png",
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots\\TEXT_2_lobby.png",
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots\\TEXT_3_room.png",
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots\\TEXT_4_idle.png"
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_after\\TEXT_1_setup.png",
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_after\\TEXT_2_lobby.png",
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_after\\TEXT_3_room.png",
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_after\\TEXT_4_idle.png"
   ],
   "consent_accepted": true,
   "lobby_text": "History\nSettings\nReady to join?\nSoftware Engineer (SDE) interview \u2014 you're answering by typing.\nNo microphone needed, so we won't ask for one. Your interviewer's questions appear as text, and you'll type your answers. Every question is timed the same way, and you're scored on what you say \u2014 not how you said it.\nJoin interview",
@@ -122,24 +106,12 @@
   ],
   "reached_room": true,
   "getUserMedia_calls": [],
-  "idle_seconds_watched": 105,
-  "device_lines_while_idle": [
-    {
-      "at_s": 0.5,
-      "line": "You're on mute \u2014 go ahead and unmute, or if you'd rather type it out we can roll with that."
-    },
-    {
-      "at_s": 93.8,
-      "line": "You're on mute \u2014 go ahead and unmute, or if you'd rather type it out we can keep moving."
-    }
-  ],
-  "room_text": "InterviewIQ\nSoftware Engineer (SDE) \u2014 General\n18:01\nEnd\nWarm-up \u00b7 Question 1 of 2\nTHIS QUESTION 1:07\nNia \u00b7 InterviewIQ\nChat\nType an answer any time\nINTERVIEWIQ\n\nQA, I'm Nia. Good to have you here. So we've got twenty minutes and I want to use it to understand how you actually think when you're building something \u2014 not just what you know, but how you'd approach a problem differently next time. What's the one thing you want to walk out of here feeling more confident about?\n\nINTERVIEWIQ\n\nYou're on mute \u2014 go ahead and unmute, or if you'd rather type it out we can roll with that.\n\nQA\n(No answer \u2014 the time on this question ran out.)\nTime ran out\nCorrect this\nINTERVIEWIQ\n\nWe're out of time on that one \u2014 let's move on.\n\nTell me about yourself. Start wherever makes sense \u2014 school, projects, internships, whatever shaped how you code.\n\nINTERVIEWIQ\n\nYou're on mute \u2014 go ahead and unmute, or if you'd rather type it out we can keep moving.\n\nSend\nYOUR TURN\nType your answer\nYou're on mute \u2014 go ahead and unmute, or if you'd rather type it out we can keep moving.\nEnd",
+  "idle_seconds_watched": 30,
+  "device_lines_while_idle": [],
+  "room_text": "InterviewIQ\nSoftware Engineer (SDE) \u2014 General\n19:18\nEnd\nWarm-up \u00b7 Question 1 of 2\nNia \u00b7 InterviewIQ\nChat\nType an answer any time\nINTERVIEWIQ\n\nQA, I'm Nia \u2014 good to have you here. So look, we've got twenty minutes and I want to use it to understand what you're actually trying to figure out about yourself as an engineer right now. What's the gap you want to close by the time we're done?\n\nSend\nYOUR TURN\nType your answer\nQA, I'm Nia \u2014 good to have you here. So look, we've got twenty minutes and I want to use it to understand what you're actually trying to figure out about yourself as an engineer right now. What's the gap you want to close by the time we're done?\nEnd",
   "room_buttons": [
-    "Voice settings",
     "End",
-    "Correct this",
     "Send",
-    "Toggle captions",
     "End"
   ],
   "silent_unlock_plays": 2,
