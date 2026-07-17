@@ -2056,10 +2056,14 @@ def _store_debrief(
 def _session_profile(session_row: dict, cov: dict) -> SessionProfile:
     """SCORING_CONTEXT item 1 — the strip every readout opens with.
 
-    `mode` (TEXT/VOICE/HYBRID) does not exist until the Intake sprint ships the selector,
-    so it is None and the strip says "—" rather than inventing one. The session's `mode`
-    column is the FEEDBACK style (interview/coach) — the lobby renamed the heading, the
-    column kept its name, and this is the single place the two vocabularies meet.
+    THE TWO "MODE"s MEET HERE, and they are not the same thing:
+      * `session_mode` (TEXT/AUDIO/VIDEO) — HOW they answered. Added by migration 009.
+      * `mode`         (interview/coach)  — the FEEDBACK style, i.e. WHEN they hear how it
+                                            went. The lobby renamed the heading to
+                                            FEEDBACK; the column kept its name.
+    Reading the wrong one silently re-weights the session, because both are live factors
+    with different numbers. On a database without 009 there is no session_mode, so this
+    stays None and the strip prints "—" rather than inventing a mode nobody chose.
     """
     return SessionProfile(
         role=session_row.get("role") or "",
@@ -2067,7 +2071,7 @@ def _session_profile(session_row: dict, cov: dict) -> SessionProfile:
         level=session_row.get("level") or "",
         difficulty=session_row.get("difficulty") or "",
         duration_min=int(session_row.get("duration_min") or 0),
-        mode=None,
+        mode=session_row.get("session_mode") or None,
         feedback=session_row.get("mode") or "interview",
         rounds_covered=cov.get("covered_labels", []),
         rounds_skipped=cov.get("skipped_labels", []),
@@ -2087,10 +2091,12 @@ def _score_context(session_row: dict, raw_pct: int, sub_stages: set) -> tuple[di
         raw_pct,
         difficulty=session_row.get("difficulty"),
         duration_min=session_row.get("duration_min"),
+        # `mode` column = feedback style; `session_mode` column = how they answered. Both
+        # are live factors with different weights — see _session_profile.
         feedback=session_row.get("mode"),
         rounds_attempted=cov["attempted"],
         rounds_offered=cov["offered"],
-        mode=None,
+        mode=session_row.get("session_mode"),
     )
     band_result = scoring.band_gates(
         stages.band_for(raw_pct),

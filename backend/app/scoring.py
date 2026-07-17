@@ -38,7 +38,12 @@ see enough to call you ready" and "we have decided you are not".
 # version and their own stored benchmark, so a tuning never rewrites history — see
 # "PERSIST, NEVER RECOMPUTE" in main.end_session. The version is the audit trail that lets
 # a 42 from July and a 42 from September be compared honestly, or knowingly not compared.
-WEIGHTS_VERSION = "2026.07-1"
+# 2026.07-2 — the Intake sprint shipped the mode selector, so MODE_FACTOR_ACTIVE flipped
+# to True and the reserved rows below started counting. Only TEXT actually moves a number
+# (×0.90); AUDIO and VIDEO are 1.00, so every session that existed before this bump scores
+# exactly as it did. The version still bumps: what a benchmark MEANS changed, and a
+# benchmark whose meaning changed silently is the thing this field exists to prevent.
+WEIGHTS_VERSION = "2026.07-2"
 
 WEIGHTS = {
     # What they chose to be tested at. An Easy panel is a lower bar; the same answers
@@ -65,12 +70,19 @@ WEIGHTS = {
         "interview": 1.00,
         "coach": 0.90,
     },
-    # RESERVED — DORMANT until the Intake sprint lands the mode selector (see
-    # docs/INTAKE_AND_MODES_PHASE_PROMPT.md, B4). The rows are here so the table stays
-    # the single home for every weight, but MODE_FACTOR_ACTIVE is False and mode_factor()
-    # returns 1.00 for everyone: nothing may be weighted by a mode nobody could choose yet.
-    # (Intake's vocabulary is TEXT/VOICE/HYBRID; MODE_ALIASES maps it onto these rows.
-    # Reconciling the two names is that sprint's call, not this one's.)
+    # HOW THEY ANSWERED. Live as of the Intake sprint — the selector exists, so a mode is
+    # now a thing a student CHOSE rather than a row nobody could reach.
+    #
+    # TEXT is 0.90 because a typed answer is an easier artefact than a spoken one: you can
+    # edit it, reorder it, and take the pause back. The content is scored identically
+    # (typed = spoken for content — see B2), and the readout NEVER fabricates a voice
+    # Delivery metric for a session that had no voice. The 0.90 is about the bar the
+    # answer cleared, not a penalty for typing.
+    #
+    # AUDIO and VIDEO are both 1.00: VIDEO adds a camera, not a harder question. Presence
+    # is report-only and never enters a benchmark, so there is no third number here.
+    #
+    # This dict is the ONLY home for these. Do not add a second mode weight anywhere (B4).
     "mode": {
         "TEXT": 0.90,
         "AUDIO": 1.00,
@@ -78,7 +90,14 @@ WEIGHTS = {
     },
 }
 
-MODE_FACTOR_ACTIVE = False
+# Flipped by the Intake sprint, which is the sprint that made a mode choosable. The rule
+# it was guarding still stands: nothing may be weighted by a mode nobody can choose.
+MODE_FACTOR_ACTIVE = True
+
+# The phase doc's older vocabulary. TEXT/VOICE/HYBRID was reconciled to TEXT/AUDIO/VIDEO
+# by the Intake sprint (SCORING_CONTEXT left that call to it, deliberately). These stay so
+# that a stored row, an older client or a half-applied deploy resolves instead of silently
+# scoring 1.00 for an unrecognised name. intake.MODE_ALIASES mirrors this for the UI half.
 MODE_ALIASES = {"VOICE": "AUDIO", "HYBRID": "VIDEO"}
 
 # The benchmark a learner SEES is capped at 100 — "127" is not a readiness statement, it
@@ -159,10 +178,14 @@ def feedback_factor(feedback: str) -> float:
 
 
 def mode_factor(mode: str = None) -> float:
-    """RESERVED. Always 1.00 until the Intake sprint ships the TEXT/VOICE/HYBRID selector.
+    """How they answered → the factor it earns. TEXT 0.90, AUDIO/VIDEO 1.00.
 
-    Flipping MODE_FACTOR_ACTIVE is that sprint's job, and it is a WEIGHTS_VERSION bump —
-    it changes what a benchmark means.
+    LIVE since the Intake sprint (WEIGHTS_VERSION 2026.07-2).
+
+    An UNKNOWN or missing mode returns 1.00, never 0.90. That asymmetry is deliberate: a
+    session on a database without migration 009 has no stored mode, and guessing TEXT there
+    would quietly mark a spoken session down for a column that simply is not there. When we
+    do not know, we do not charge for it.
     """
     if not MODE_FACTOR_ACTIVE:
         return 1.00
@@ -486,9 +509,17 @@ def math_lines(result: dict, band_result: dict = None) -> list[dict]:
         row("coverage",
             f"Coverage — {inputs.get('rounds_attempted', 0)} of {inputs.get('rounds_offered', 0)} rounds",
             f"×{factors['coverage']:.2f}", why)
-    if MODE_FACTOR_ACTIVE and "mode" in factors:
-        row("mode", f"Mode — {inputs.get('mode') or 'Unknown'}", f"×{factors['mode']:.2f}",
-            "Weighted for how you answered.")
+    # Only when we actually know how they answered. A session scored on a database without
+    # migration 009 has no mode, and "Mode — Unknown ×1.00" is a row that explains nothing
+    # while implying we measured something. No row is the honest rendering of no data.
+    if MODE_FACTOR_ACTIVE and "mode" in factors and inputs.get("mode"):
+        mode_label = str(inputs["mode"]).upper()
+        mode_label = MODE_ALIASES.get(mode_label, mode_label)
+        row("mode", f"Mode — {mode_label.title()}", f"×{factors['mode']:.2f}",
+            "Typed answers are scored on the same content bar; the weight reflects the "
+            "one you chose."
+            if mode_label == "TEXT" else
+            "Speaking is the full bar — no adjustment.")
 
     uncapped = result.get("benchmark_uncapped")
     benchmark = result.get("benchmark")

@@ -84,13 +84,49 @@ def test_an_unknown_or_junk_context_never_silently_deflates_a_score():
     assert sc.evidence_factor("twenty") == 1.00
 
 
-def test_mode_is_reserved_and_dormant_until_the_intake_sprint():
-    # The rows exist in the table; nothing may be weighted by them yet.
-    assert sc.MODE_FACTOR_ACTIVE is False
+def test_mode_is_live_now_that_the_intake_sprint_shipped_the_selector():
+    """The dormancy this replaces was guarding one rule: nothing may be weighted by a mode
+    nobody can choose. The Intake sprint made it choosable, so the factor counts — and the
+    bump to 2026.07-2 is what keeps a July benchmark comparable to a September one."""
+    assert sc.MODE_FACTOR_ACTIVE is True
+    assert sc.WEIGHTS_VERSION == "2026.07-2"
     assert set(sc.WEIGHTS["mode"]) == {"TEXT", "AUDIO", "VIDEO"}
-    for m in ("TEXT", "AUDIO", "VIDEO", "VOICE", "HYBRID", None, "junk"):
+
+    assert sc.mode_factor("TEXT") == 0.90
+    assert sc.mode_factor("AUDIO") == 1.00
+    assert sc.mode_factor("VIDEO") == 1.00
+
+    # The reconciled vocabulary still resolves — stored rows and older clients say these.
+    assert sc.mode_factor("VOICE") == 1.00      # -> AUDIO
+    assert sc.mode_factor("HYBRID") == 1.00     # -> VIDEO
+    assert sc.mode_factor("text") == 0.90       # case is not a weighting decision
+
+
+def test_an_unknown_mode_is_never_charged_the_text_discount():
+    """1.00, not 0.90. A database without migration 009 has no session_mode, and marking a
+    spoken session down for a missing column would be a penalty for OUR deploy state."""
+    for m in (None, "", "junk", "AUDIO-ISH"):
         assert sc.mode_factor(m) == 1.00
-    assert bench(80, "Realistic", 20, mode="TEXT")["benchmark"] == 80
+
+
+def test_only_text_actually_moves_a_benchmark():
+    """AUDIO and VIDEO are both 1.00, so activating the factor re-scored nobody: every
+    session that existed before the bump was spoken, and scores exactly as it did."""
+    assert bench(80, "Realistic", 20, mode="AUDIO")["benchmark"] == 80
+    assert bench(80, "Realistic", 20, mode="VIDEO")["benchmark"] == 80
+    assert bench(80, "Realistic", 20, mode=None)["benchmark"] == 80
+    # Typed: same content score, a lower bar cleared.
+    assert bench(80, "Realistic", 20, mode="TEXT")["benchmark"] == 72
+
+
+def test_the_mode_factor_never_touches_the_raw_score():
+    """skipped != failed's sibling promise: typed = spoken for CONTENT (B2). The mode
+    tempers the benchmark only — the raw answer quality is what it is."""
+    typed = bench(80, "Realistic", 20, mode="TEXT")
+    spoken = bench(80, "Realistic", 20, mode="AUDIO")
+    assert typed["raw"] == spoken["raw"] == 80
+    assert typed["factors"]["mode"] == 0.90
+    assert spoken["factors"]["mode"] == 1.00
 
 
 # ── Coverage ────────────────────────────────────────────────────────────────
@@ -234,13 +270,20 @@ def test_changing_a_constant_cannot_change_a_stored_benchmark(monkeypatch):
     assert stored["benchmark"] == 42
     assert stored["weights_version"] == sc.WEIGHTS_VERSION
 
+    # What the table said when this attempt was scored. Captured rather than hard-coded:
+    # the literal used to be "2026.07-1" and this test broke the day the Intake sprint
+    # bumped it — which is a false alarm, because the version MOVING is normal and the
+    # thing under test is that a stored attempt does not move WITH it.
+    version_at_scoring_time = sc.WEIGHTS_VERSION
+
     # Ops retunes Easy upward and bumps the version.
     monkeypatch.setitem(sc.WEIGHTS["difficulty"], "Easy", 0.90)
     monkeypatch.setattr(sc, "WEIGHTS_VERSION", "2026.09-2")
 
     # The stored attempt is a stored VALUE — nothing recomputes it.
     assert stored["benchmark"] == 42
-    assert stored["weights_version"] == "2026.07-1"
+    assert stored["weights_version"] == version_at_scoring_time
+    assert stored["weights_version"] != sc.WEIGHTS_VERSION
     # And its explanation still reads off its own stored factors, not the live table.
     assert any("×0.60" == r["value"] for r in sc.math_lines(stored)), \
         "an old attempt must explain itself with the weights it was actually scored on"
@@ -256,11 +299,31 @@ def test_show_the_math_lists_this_attempts_factors_in_plain_words():
     keys = [row["key"] for row in rows]
     assert keys[0] == "raw"
     assert "difficulty" in keys and "evidence" in keys and "feedback" in keys and "coverage" in keys
-    assert "mode" not in keys, "a dormant factor is not shown as if it did something"
+    assert "mode" not in keys, \
+        "with no mode on the attempt, 'Mode — Unknown ×1.00' explains nothing"
     assert "total" in keys
     assert any(k.startswith("gate:") for k in keys), "a cap that moved the band must be shown"
     for row in rows:
         assert row["label"] and row["note"], "every row explains itself"
+
+
+def test_the_math_shows_the_mode_row_once_a_mode_is_actually_known():
+    """The flip side. A TEXT session moved a number, so the readout owes the learner the
+    reason — an unexplained ×0.90 is exactly the "score with no context" this whole file
+    exists to stop."""
+    rows = sc.math_lines(bench(100, "Easy", 10, mode="TEXT"))
+    mode_rows = [r for r in rows if r["key"] == "mode"]
+    assert len(mode_rows) == 1
+    assert mode_rows[0]["value"] == "×0.90"
+    assert "Text" in mode_rows[0]["label"]
+    assert "same content bar" in mode_rows[0]["note"]
+
+
+def test_a_spoken_session_says_no_adjustment_rather_than_going_quiet():
+    rows = sc.math_lines(bench(100, "Easy", 10, mode="AUDIO"))
+    mode_rows = [r for r in rows if r["key"] == "mode"]
+    assert len(mode_rows) == 1
+    assert mode_rows[0]["value"] == "×1.00"
 
 
 def test_the_math_says_level_is_not_a_factor_so_nothing_is_double_counted():
