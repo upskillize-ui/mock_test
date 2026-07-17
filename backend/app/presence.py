@@ -107,6 +107,28 @@ def escalation_directive(level: int) -> str:
     )
 
 
+def attention_note_gentle() -> str:
+    """The ONE calm attention aside the interviewer may make in a whole session.
+
+    Deliberately gentle and encouraging — never the firmer "in a real panel this would cost
+    them" register, which is RETIRED from the live interview (it read as nagging/policing).
+    Presence is coached in the post-interview readout (see _COACHING / presence_readout),
+    not policed mid-answer. This line is rare and late by construction: main._presence_note
+    gates WARM-UP out entirely, fires it at most ONCE per session, and only after several
+    accumulated signals (settings.ATTENTION_MIN_EVENTS), so a single glance away never trips it.
+
+    escalation_directive() below is kept for the ladder's meaning and the avatar register /
+    tests; it is no longer the source of the spoken interruption.
+    """
+    return (
+        "ATTENTION NOTE (say this at most ONCE, warmly, in your own voice, as a brief aside — "
+        "do NOT attach it to a question): you have gently noticed their attention wander once "
+        "or twice. In one short, encouraging line, invite them back — that you are glad to have "
+        "their focus for the next part. Keep it warm and light: no talk of consequences, no "
+        "warning, no drama. Then simply carry on with the interview as planned."
+    )
+
+
 # ── Device-commitment ladder (Phase E) ───────────────────────────────────────
 # Only ever applies to a learner who JOINED with the camera on. A camera-off join is
 # an accessibility path, not a policy breach.

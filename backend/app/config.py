@@ -161,6 +161,18 @@ class Settings:
         if h.strip()
     ]
 
+    # ── Attention call-outs: rare, late, gentle, never in warm-up ────────────
+    # The interviewer raising "your attention drifted" was firing on the FIRST tab-switch and
+    # then again on every subsequent turn — nagging. These make it rare and calm:
+    #   * OFF during WARMUP entirely (never police a settling-in student).
+    #   * at most ONCE per session (an in-process guard in main._presence_note).
+    #   * only after ATTENTION_MIN_EVENTS accumulated attention signals (so a single glance
+    #     away never trips it), and only ever in the GENTLE register — the firmer "in a real
+    #     panel this costs you" copy is retired from the in-session path (it belongs, if
+    #     anywhere, in the post-interview readout, not as a live interruption).
+    ATTENTION_CALLOUTS_ENABLED: bool = _env_bool("ATTENTION_CALLOUTS_ENABLED", "true")
+    ATTENTION_MIN_EVENTS: int = int(os.getenv("ATTENTION_MIN_EVENTS", "4"))
+
     # ── Capacity/Cost phase: the safety valve (item 5) ───────────────────────
     # Hard ceiling on CONCURRENT live interviews on this instance. 0 = unlimited (the
     # feature is inert until ops sets a real number from item 4's measured knee). Beyond the

@@ -766,6 +766,7 @@ def _write_cost_ledger(db: Session, session_id: str) -> None:
         log.warning("cost_ledger not stored (apply migration 011?): %s", type(e).__name__)
     finally:
         ledger.forget(session_id)
+        _ATTENTION_NOTED.discard(session_id)
 
 
 # Set at boot by the schema check: the migration files this database still needs, or []
@@ -1343,7 +1344,7 @@ async def session_turn(
     # plan, difficulty and rigor are untouched.
     directive = stage_turn_directive(
         cfg, st, round_index_after, substantive=substantive,
-        presence_note=_presence_note(db, session_row),
+        presence_note=_presence_note(db, session_row, st),
         # PART 1: what they ACTUALLY just said. No summarisation call — the raw answer
         # (clamped) is the cheapest and most faithful thing to react to. A skip has no
         # answer to react to, so we pass nothing rather than the marker: "react to
@@ -1544,9 +1545,25 @@ def _escalation_level(db: Session, session_row: dict) -> int:
     return presence.escalation_level(total)
 
 
-def _presence_note(db: Session, session_row: dict) -> str:
-    """The attention/camera line the interviewer should raise on the NEXT turn, in
-    persona. Returns "" when there is nothing to say — silence is the default."""
+# In-process at-most-once guard for the attention call-out — the same shape as the TTS/STT
+# meters (a restart may allow a second note in one session, which is fine for a gentle nudge
+# and never a bill). Cleared at session close in _finalize_session.
+_ATTENTION_NOTED: set[str] = set()
+
+
+def _presence_note(db: Session, session_row: dict, stage: str = "") -> str:
+    """The attention/camera line the interviewer should raise on the NEXT turn, in persona.
+    Returns "" when there is nothing to say — silence is the default, and now the OVERWHELMING
+    default for attention.
+
+    Attention call-outs used to fire on the first tab-switch and then on every subsequent
+    turn — the "your attention drifted… in a real panel that costs you" nagging. They are now
+    RARE, LATE, GENTLE, and NEVER during warm-up (item 8): off in WARMUP entirely, at most ONCE
+    per session, only after settings.ATTENTION_MIN_EVENTS accumulated signals, and only in the
+    gentle register (the firmer "costs you" copy is retired from the live interview — presence
+    is coached in the readout, not policed mid-answer). The camera-off DEVICE ladder is a
+    separate, more consequential concern and is unchanged.
+    """
     try:
         counts = _focus_counts(db, session_row["id"])
     except Exception as e:
@@ -1555,17 +1572,29 @@ def _presence_note(db: Session, session_row: dict) -> str:
         return ""
     camera_at_join = bool(session_row.get("camera_at_join"))
 
-    # Camera policy first — it is the more consequential ladder.
+    # Camera policy first — it is the more consequential ladder (turn the camera back on),
+    # not the attention nag, and it is left exactly as it was.
     cam_action = presence.camera_ladder_action(counts.get("camera_off", 0), camera_at_join)
     cam_note = presence.camera_directive(cam_action)
     if cam_note:
         return cam_note
 
+    # ── The attention call-out gate ──────────────────────────────────────────
+    if not settings.ATTENTION_CALLOUTS_ENABLED:
+        return ""
+    if (stage or "").upper() == "WARMUP":
+        return ""   # never police a student who is still settling in
+    sid = session_row["id"]
+    if sid in _ATTENTION_NOTED:
+        return ""   # at most once per session
     attention_total = sum(
         n for t, n in counts.items() if t in presence.ATTENTION_SIGNALS
         and (camera_at_join or t not in presence.CAMERA_SIGNALS)
     )
-    return presence.escalation_directive(presence.escalation_level(attention_total))
+    if attention_total < settings.ATTENTION_MIN_EVENTS:
+        return ""   # a single glance away (or two) never trips it — this is rare by design
+    _ATTENTION_NOTED.add(sid)
+    return presence.attention_note_gentle()
 
 
 @app.post("/session/focus-event", response_model=FocusEventResponse)
