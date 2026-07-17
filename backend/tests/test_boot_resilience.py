@@ -32,6 +32,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import tts as t  # noqa: E402
 
+# Force the empty test cache dir onto the ALREADY-IMPORTED settings object. Setting the env var
+# above only works if nothing has imported app.config yet — which used to hold only because this
+# file sorted first alphabetically. A test that sorts earlier (e.g. test_api_key_hardening.py)
+# imports config first, binding the REAL tts_cache dir, and then warming would see pre-warmed
+# clips and these best-effort assertions would break. Pinning it here makes the dir
+# order-independent, which is what it always meant to be.
+t.settings.TTS_CACHE_DIR = os.environ["TTS_CACHE_DIR"]
+
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 

@@ -16,7 +16,11 @@ def _env_bool(name: str, default: str = "false") -> bool:
 
 
 class Settings:
-    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+    # .strip() at load: a trailing newline on the Space secret is an invalid header value and
+    # httpx rejects it, taking every model call — and therefore the whole product — down. Strip
+    # it once here so no caller can inherit the whitespace (claude_client also strips at the
+    # header, as a second line of defence).
+    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "").strip()
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
     ALLOWED_ORIGINS: list[str] = [
         o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()

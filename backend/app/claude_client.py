@@ -25,9 +25,15 @@ _MAX_RESUME_BYTES = 5_000_000
 
 
 def _headers() -> dict:
+    # HARDENING: .strip() the key at the exact point it becomes a header value. A key with a
+    # trailing newline (a copy-paste artefact in the Space secret) makes httpx raise
+    # "Illegal header value" and takes ALL model calls down — greeting, every turn, the
+    # debrief — i.e. the whole product, for a stray whitespace character. config also strips
+    # it once at load; this is the belt to that suspenders, so the header is clean no matter
+    # how the key got into settings.
     return {
         "Content-Type": "application/json",
-        "x-api-key": settings.ANTHROPIC_API_KEY,
+        "x-api-key": settings.ANTHROPIC_API_KEY.strip(),
         "anthropic-version": settings.ANTHROPIC_VERSION,
     }
 
