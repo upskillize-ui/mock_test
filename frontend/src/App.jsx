@@ -5166,7 +5166,16 @@ export default function App() {
     <>
       <style>{CSS}</style>
       {screen !== "interview" && screen !== "resume" && (
-        <div style={{ fontFamily: T.font, padding: "16px 32px 8", display: "flex", gap: 14, alignItems: "center", justifyContent: "flex-end" }}>
+        /* QA-09: this padding read "16px 32px 8" — a unitless length, which is invalid CSS
+           everywhere except zero, so the browser dropped the WHOLE shorthand. On its own
+           that would only have meant no padding. What made it a 280px cream band is that
+           React reuses this <div> from the `screen === "loading"` branch above (same
+           position, same element type), and that branch sets `padding: "120px 20px"`.
+           React assigns the new value, the browser rejects it, and the loading screen's
+           120px top AND bottom simply stay: 120 + 42px button + 120 = the band — on every
+           screen, since the app always boots through "loading". One missing unit,
+           inherited. */
+        <div style={{ fontFamily: T.font, padding: "16px 32px 8px", display: "flex", gap: 14, alignItems: "center", justifyContent: "flex-end" }}>
           {screen === "debrief" && <button className="iq-tab" onClick={restart}>+ New Mock</button>}
           {screen !== "history" && <button className="iq-tab" onClick={() => { setHistoryDetailId(null); setScreen("history"); }}>History</button>}
           {screen !== "settings" && <button className="iq-tab" onClick={() => setScreen("settings")}>Settings</button>}

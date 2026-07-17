@@ -1,0 +1,139 @@
+{
+  "base": "http://localhost:5174",
+  "measurements": [
+    {
+      "header_h": 65,
+      "header_pad": "16px 32px 8px",
+      "dark_top": 65,
+      "page_bg": "rgb(250, 249, 245)",
+      "scroll_h": 900,
+      "client_h": 900,
+      "shell": "standalone",
+      "width": 1100,
+      "shot": "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_qa09_prod\\QA09_standalone_1100.png"
+    },
+    {
+      "header_h": 65,
+      "header_pad": "16px 32px 8px",
+      "dark_top": 65,
+      "page_bg": "rgb(250, 249, 245)",
+      "scroll_h": 900,
+      "client_h": 900,
+      "shell": "standalone",
+      "width": 1280,
+      "shot": "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_qa09_prod\\QA09_standalone_1280.png"
+    },
+    {
+      "header_h": 65,
+      "header_pad": "16px 32px 8px",
+      "dark_top": 65,
+      "page_bg": "rgb(250, 249, 245)",
+      "scroll_h": 900,
+      "client_h": 900,
+      "shell": "standalone",
+      "width": 1920,
+      "shot": "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_qa09_prod\\QA09_standalone_1920.png"
+    },
+    {
+      "header_h": 65,
+      "header_pad": "16px 32px 8px",
+      "dark_top": 65,
+      "page_bg": "rgb(250, 249, 245)",
+      "scroll_h": 856,
+      "client_h": 856,
+      "shell": "embed",
+      "width": 1100,
+      "shot": "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_qa09_prod\\QA09_embed_1100.png"
+    },
+    {
+      "header_h": 65,
+      "header_pad": "16px 32px 8px",
+      "dark_top": 65,
+      "page_bg": "rgb(250, 249, 245)",
+      "scroll_h": 856,
+      "client_h": 856,
+      "shell": "embed",
+      "width": 1280,
+      "shot": "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_qa09_prod\\QA09_embed_1280.png"
+    },
+    {
+      "header_h": 65,
+      "header_pad": "16px 32px 8px",
+      "dark_top": 65,
+      "page_bg": "rgb(250, 249, 245)",
+      "scroll_h": 856,
+      "client_h": 856,
+      "shell": "embed",
+      "width": 1920,
+      "shot": "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_qa09_prod\\QA09_embed_1920.png"
+    }
+  ],
+  "checks": [
+    {
+      "cell": "standalone @1100: header is its own size, not the loading screen's",
+      "status": "PASS",
+      "evidence": "header height=65px padding=16px 32px 8px (band was 281px / 120px 20px)"
+    },
+    {
+      "cell": "standalone @1100: the pre-flight fits the viewport (no scroll)",
+      "status": "PASS",
+      "evidence": "content 900px vs viewport 900px -> overflow=0px | dark panel starts at y=65 | page bg=rgb(250, 249, 245)",
+      "shot": "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_qa09_prod\\QA09_standalone_1100.png"
+    },
+    {
+      "cell": "standalone @1280: header is its own size, not the loading screen's",
+      "status": "PASS",
+      "evidence": "header height=65px padding=16px 32px 8px (band was 281px / 120px 20px)"
+    },
+    {
+      "cell": "standalone @1280: the pre-flight fits the viewport (no scroll)",
+      "status": "PASS",
+      "evidence": "content 900px vs viewport 900px -> overflow=0px | dark panel starts at y=65 | page bg=rgb(250, 249, 245)",
+      "shot": "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_qa09_prod\\QA09_standalone_1280.png"
+    },
+    {
+      "cell": "standalone @1920: header is its own size, not the loading screen's",
+      "status": "PASS",
+      "evidence": "header height=65px padding=16px 32px 8px (band was 281px / 120px 20px)"
+    },
+    {
+      "cell": "standalone @1920: the pre-flight fits the viewport (no scroll)",
+      "status": "PASS",
+      "evidence": "content 900px vs viewport 900px -> overflow=0px | dark panel starts at y=65 | page bg=rgb(250, 249, 245)",
+      "shot": "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_qa09_prod\\QA09_standalone_1920.png"
+    },
+    {
+      "cell": "embed @1100: header is its own size, not the loading screen's",
+      "status": "PASS",
+      "evidence": "header height=65px padding=16px 32px 8px (band was 281px / 120px 20px)"
+    },
+    {
+      "cell": "embed @1100: the pre-flight fits the viewport (no scroll)",
+      "status": "PASS",
+      "evidence": "content 856px vs viewport 856px -> overflow=0px | dark panel starts at y=65 | page bg=rgb(250, 249, 245)",
+      "shot": "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_qa09_prod\\QA09_embed_1100.png"
+    },
+    {
+      "cell": "embed @1280: header is its own size, not the loading screen's",
+      "status": "PASS",
+      "evidence": "header height=65px padding=16px 32px 8px (band was 281px / 120px 20px)"
+    },
+    {
+      "cell": "embed @1280: the pre-flight fits the viewport (no scroll)",
+      "status": "PASS",
+      "evidence": "content 856px vs viewport 856px -> overflow=0px | dark panel starts at y=65 | page bg=rgb(250, 249, 245)",
+      "shot": "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_qa09_prod\\QA09_embed_1280.png"
+    },
+    {
+      "cell": "embed @1920: header is its own size, not the loading screen's",
+      "status": "PASS",
+      "evidence": "header height=65px padding=16px 32px 8px (band was 281px / 120px 20px)"
+    },
+    {
+      "cell": "embed @1920: the pre-flight fits the viewport (no scroll)",
+      "status": "PASS",
+      "evidence": "content 856px vs viewport 856px -> overflow=0px | dark panel starts at y=65 | page bg=rgb(250, 249, 245)",
+      "shot": "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_qa09_prod\\QA09_embed_1920.png"
+    }
+  ]
+}
