@@ -1915,6 +1915,70 @@ def _load_user_answers(db: Session, session_id: str) -> list[str]:
     return [r["content"] or "" for r in rows]
 
 
+# QA-01. This cap must clear the WORST case, not the typical one. The readout carries one
+# perAnswerScores entry per answer, so its length grows with the interview: a 13-answer
+# session measured 2631 output tokens, and MAX_ANSWERS_PER_SESSION allows 20. The old 2500
+# fit a short session and truncated a complete one mid-`perAnswerScores` — stop_reason
+# "max_tokens", invalid JSON, 502, and the student who answered everything was the most
+# certain to lose their readout.
+#
+# 8000 is ~2x the projected worst case and costs nothing to sit unused: max_tokens is a
+# ceiling, not a spend — billing is on tokens actually generated. It stays under the ~16k
+# line where a non-streaming call starts risking an HTTP timeout (claude-sonnet-4-6 itself
+# permits 128k, but only when streaming). Do not tighten this to "save money"; there are no
+# savings, only truncation.
+_DEBRIEF_MAX_TOKENS = 8000
+
+# One retry, because a generation that fails to parse is not a permanent condition. The
+# retry is NOT free — it bills a second Sonnet call — so it is bounded at one.
+_DEBRIEF_PARSE_ATTEMPTS = 2
+
+
+def _parse_debrief_json(raw: str) -> dict | None:
+    """The model's JSON, or None if it did not return usable JSON.
+
+    INT-07: never log or return raw model output — it quotes learner answers.
+    """
+    cleaned = raw.replace("```json", "").replace("```", "").strip()
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start == -1 or end == -1:
+        return None
+    try:
+        parsed = json.loads(cleaned[start: end + 1])
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+async def _generate_debrief(system_prompt: str, messages: list[dict]) -> dict:
+    """The billed readout generation, with one retry on unusable JSON.
+
+    On total failure this raises 502 and stores NOTHING — deliberately. The obvious
+    "fallback" here would be to store an unscored card so the session can finalise, but
+    /session/end replays a STORED debrief forever (the cost guard), so that card would
+    become permanent: a student who answered thirteen questions would be locked out of
+    the readout they earned, with no retry possible. A 502 the student can retry into a
+    real readout is strictly better than a stored lie they cannot.
+    """
+    for attempt in range(1, _DEBRIEF_PARSE_ATTEMPTS + 1):
+        raw = await call_claude(
+            system=system_prompt,
+            messages=messages,
+            model=settings.MODEL_DEBRIEF,
+            max_tokens=_DEBRIEF_MAX_TOKENS,
+        )
+        debrief = _parse_debrief_json(raw)
+        if debrief is not None:
+            if attempt > 1:
+                log.info("Debrief parsed on attempt %d", attempt)
+            return debrief
+        # claude_client already logged stop_reason, which says whether this was a
+        # truncation (cap too low) or the model simply not returning JSON.
+        log.error("Debrief JSON unusable on attempt %d/%d (len=%d)",
+                  attempt, _DEBRIEF_PARSE_ATTEMPTS, len(raw))
+    raise HTTPException(502, "Debrief generation failed")
+
+
 # The benchmark columns land with migration 007. Until it is applied every read below
 # degrades to the legacy column set — a drifted database still serves a readout, it just
 # serves one without a benchmark (and schema_check has already said so, loudly, at boot).
@@ -2304,26 +2368,7 @@ async def end_session(
     # mode they chose, so a hard-won score reads as the verdict on a hard interview.
     messages.append({"role": "user", "content": debrief_instruction(cfg)})
 
-    raw = await call_claude(
-        system=system_prompt,
-        messages=messages,
-        model=settings.MODEL_DEBRIEF,
-        max_tokens=2500,
-    )
-
-    cleaned = raw.replace("```json", "").replace("```", "").strip()
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1:
-        # INT-07: never log raw model output — it quotes learner answers.
-        log.error("Debrief model did not return JSON (len=%d)", len(raw))
-        raise HTTPException(502, "Debrief generation failed")
-
-    try:
-        debrief = json.loads(cleaned[start: end + 1])
-    except json.JSONDecodeError as e:
-        log.error("Debrief JSON parse error: %s (len=%d)", e, len(raw))
-        raise HTTPException(502, "Debrief generation failed")
+    debrief = await _generate_debrief(system_prompt, messages)
 
     # INT-11: the model's per-answer scores now echo answerId — the join key for
     # both calibration and band math.

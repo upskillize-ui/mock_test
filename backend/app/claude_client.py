@@ -135,6 +135,15 @@ async def call_claude(
         raise HTTPException(status_code=502, detail="Upstream model error")
 
     data = r.json()
+    # A truncated generation is a 200 with stop_reason="max_tokens" — the caller
+    # only sees a string, so without this line an output cap reads downstream as
+    # "the model returned garbage". It cost a sprint to find that once (QA-01).
+    if data.get("stop_reason") == "max_tokens":
+        log.warning(
+            "Claude output hit max_tokens: model=%s cap=%d output_tokens=%s — "
+            "the reply is TRUNCATED, not malformed",
+            model, max_tokens, (data.get("usage") or {}).get("output_tokens"),
+        )
     parts = [
         block["text"]
         for block in data.get("content", [])
