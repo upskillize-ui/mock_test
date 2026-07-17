@@ -1,5 +1,5 @@
 ---
-title: InterviewIQ
+title: Interview IQ
 colorFrom: indigo
 colorTo: yellow
 sdk: docker
