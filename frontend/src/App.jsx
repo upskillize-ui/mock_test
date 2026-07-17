@@ -796,7 +796,16 @@ const CSS = `
   .iq-tile-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
   /* Student camera. LOCAL ONLY — never recorded, never uploaded, no MediaRecorder on
      this track anywhere. Mirrored, because a self-view that is not mirrored is unnerving. */
-  .iq-tile-video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+  /* CAMERA CROP FIX: the tile takes its height from the room grid cell, so in a wide/short LMS
+     embed the self-view became a short strip and object-fit:COVER cropped the face down to a
+     band (the reported "only the top of the head shows"). object-fit:CONTAIN shows the WHOLE
+     camera frame instead — scaled to fit inside the tile and centred by the flex .iq-tile-body,
+     letterboxed on the tile's own dark background. The whole face is visible at every embed
+     width and height, never cropped. (contain, not cover: cover fills the tile but is exactly
+     what was cutting the face off — filling the strip is not worth losing the face.) The
+     background matches the tile so the letterbox reads as intentional, not empty. Mirrored,
+     as before. */
+  .iq-tile-video{width:100%;height:100%;object-fit:contain;background:#0a1220;transform:scaleX(-1)}
   .iq-tile-initial{width:88px;height:88px;border-radius:50%;background:#1a2744;border:1px solid rgba(255,255,255,.10);display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,.88);font-weight:800;font-size:32px;font-family:'Plus Jakarta Sans',sans-serif}
 
   /* THE STUDENT'S INPUT SURFACE — their own tile's bottom row, open only while their
