@@ -72,6 +72,15 @@ const CONSENT_COPY_MIC_CAMERA =
 const CONSENT_COPY_CAMERA =
   "During the interview, InterviewIQ notices attention cues (like looking away) on your " +
   "device to coach your interview presence. No video is recorded.";
+// [PENDING LEGAL REVIEW] — QA-06. TEXT had NO consent copy at all: the whole panel sat
+// inside the non-TEXT branch, so a typing student saw a device reassurance and nothing
+// about what happens to what they write. That is the larger half of QA-06 — the draft
+// marker was at least visible; this was simply missing. Mirrors the retention and deletion
+// wording of the setup-screen notice, minus the devices this mode does not have.
+const CONSENT_COPY_TEXT =
+  "Your typed answers are processed to generate your feedback and scorecard. Your " +
+  "transcript and report are retained for a limited period, and you can download or " +
+  "delete your data any time from Settings.";
 
 export default function Lobby({ name, role, onJoin, sessionMode = "AUDIO" }) {
   const isText = sessionMode === "TEXT";
@@ -265,10 +274,30 @@ export default function Lobby({ name, role, onJoin, sessionMode = "AUDIO" }) {
             display: "flex", alignItems: "center", gap: 12, textAlign: "left" }}>
             <IconKeyboard size={22} style={{ color: IQ.teal, flexShrink: 0 }} />
             <div style={{ fontSize: 13, color: "rgba(255,255,255,.78)", lineHeight: 1.5 }}>
+              {/* QA-03: this used to promise "Every question is timed the same way" — which
+                  was true, and was the problem: an identical clock in a mode you READ is not
+                  an identical experience. TEXT deadlines now count only true inactivity, so
+                  the promise the copy makes is the one the room keeps. */}
               No microphone needed, so we won't ask for one. Your interviewer's questions
-              appear as text, and you'll type your answers. Every question is timed the
-              same way, and you're scored on what you say — not how you said it.
+              appear as text, and you'll type your answers. Take the time you need to think
+              and type — your session length is the only clock. You're scored on what you
+              say, not how you said it.
             </div>
+          </div>
+
+          {/* QA-06: what happens to what they type. TEXT had no consent copy at all. */}
+          <div style={{ margin: "0 0 20px", padding: "14px 16px", borderRadius: 12,
+            background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.10)",
+            textAlign: "left" }}>
+            <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Before you join</div>
+            <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "rgba(255,255,255,.72)", margin: 0 }}>
+              {CONSENT_COPY_TEXT}
+            </p>
+            {import.meta.env?.DEV && (
+              <div style={{ fontSize: 10, color: "rgba(255,255,255,.35)", marginTop: 9, fontFamily: IQ.mono }}>
+                DRAFT NOTICE — PENDING LEGAL REVIEW
+              </div>
+            )}
           </div>
 
           <button onClick={() => onJoin({ mic: false, camera: false })}
@@ -420,9 +449,15 @@ export default function Lobby({ name, role, onJoin, sessionMode = "AUDIO" }) {
                   {CONSENT_COPY_CAMERA}
                 </p>
               )}
-              <div style={{ fontSize: 10, color: "rgba(255,255,255,.35)", marginTop: 10, fontFamily: IQ.mono }}>
-                DRAFT NOTICE — PENDING LEGAL REVIEW
-              </div>
+              {/* QA-06: dev-only. This is a note to ourselves that the copy above has not
+                  cleared legal — a student reading "PENDING LEGAL REVIEW" under a consent
+                  notice learns nothing except that we are not sure. The copy itself is
+                  unchanged and STILL PENDING: this hides the marker, not the obligation. */}
+              {import.meta.env?.DEV && (
+                <div style={{ fontSize: 10, color: "rgba(255,255,255,.35)", marginTop: 10, fontFamily: IQ.mono }}>
+                  DRAFT NOTICE — PENDING LEGAL REVIEW
+                </div>
+              )}
 
               {phase === "ask" ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 16 }}>

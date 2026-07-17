@@ -36,6 +36,10 @@ from app.dev_auth import build_dev_token  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 
 EV = Path(__file__).resolve().parent / "evidence"
+# The dev server is the default, but some cells can ONLY be judged against a production
+# build — anything gated on import.meta.env.DEV looks "broken" in dev precisely when it is
+# working. QA_BASE_URL points the same drive at `vite preview` (the real bundle).
+BASE_URL = os.environ.get("QA_BASE_URL", "http://localhost:5173")
 EV.mkdir(exist_ok=True)
 SHOTS = Path(os.environ.get(
     "QA_SHOT_DIR", Path(tempfile.gettempdir()) / "qa_sweep_shots"))
@@ -133,7 +137,7 @@ def run(mode, autoplay_blocked=False, idle_seconds=25):
         pg.on("response", on_resp)
 
         print(f"\n=== browser: {mode} (autoplay_blocked={autoplay_blocked}) ===")
-        pg.goto("http://localhost:5173", wait_until="networkidle")
+        pg.goto(BASE_URL, wait_until="networkidle")
         pg.wait_for_timeout(1500)
 
         # ── setup screen ───────────────────────────────────────────────────

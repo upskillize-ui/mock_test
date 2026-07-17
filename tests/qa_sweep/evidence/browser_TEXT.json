@@ -20,7 +20,7 @@
     {
       "cell": "TEXT: persona never says mute/mic while student is idle",
       "status": "PASS",
-      "evidence": "device lines during 30s idle: []"
+      "evidence": "device lines during 105s idle: []"
     },
     {
       "cell": "TEXT: no mic/camera buttons in the room",
@@ -80,22 +80,15 @@
       "status": 200
     }
   ],
-  "console": [
-    "debug: [vite] connecting...",
-    "debug: [vite] connected.",
-    "info: %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold",
-    "debug: [voice] stt_available = false | stage = WARMUP",
-    "debug: [voice] stt_available = false | stage = WARMUP",
-    "debug: [interviewer identity] warm, unhurried, genuinely curious about how candidates think, opens on intent not credentials, asks short questions and listens hard, mentor-like without being patronizing"
-  ],
+  "console": [],
   "screens": [
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_after\\TEXT_1_setup.png",
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_after\\TEXT_2_lobby.png",
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_after\\TEXT_3_room.png",
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_after\\TEXT_4_idle.png"
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_prod\\TEXT_1_setup.png",
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_prod\\TEXT_2_lobby.png",
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_prod\\TEXT_3_room.png",
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_prod\\TEXT_4_idle.png"
   ],
   "consent_accepted": true,
-  "lobby_text": "History\nSettings\nReady to join?\nSoftware Engineer (SDE) interview \u2014 you're answering by typing.\nNo microphone needed, so we won't ask for one. Your interviewer's questions appear as text, and you'll type your answers. Every question is timed the same way, and you're scored on what you say \u2014 not how you said it.\nJoin interview",
+  "lobby_text": "History\nSettings\nReady to join?\nSoftware Engineer (SDE) interview \u2014 you're answering by typing.\nNo microphone needed, so we won't ask for one. Your interviewer's questions appear as text, and you'll type your answers. Take the time you need to think and type \u2014 your session length is the only clock. You're scored on what you say, not how you said it.\nBefore you join\n\nYour typed answers are processed to generate your feedback and scorecard. Your transcript and report are retained for a limited period, and you can download or delete your data any time from Settings.\n\nJoin interview",
   "lobby_device_controls": [
     "History",
     "Settings",
@@ -106,9 +99,9 @@
   ],
   "reached_room": true,
   "getUserMedia_calls": [],
-  "idle_seconds_watched": 30,
+  "idle_seconds_watched": 105,
   "device_lines_while_idle": [],
-  "room_text": "InterviewIQ\nSoftware Engineer (SDE) \u2014 General\n19:18\nEnd\nWarm-up \u00b7 Question 1 of 2\nNia \u00b7 InterviewIQ\nChat\nType an answer any time\nINTERVIEWIQ\n\nQA, I'm Nia \u2014 good to have you here. So look, we've got twenty minutes and I want to use it to understand what you're actually trying to figure out about yourself as an engineer right now. What's the gap you want to close by the time we're done?\n\nSend\nYOUR TURN\nType your answer\nQA, I'm Nia \u2014 good to have you here. So look, we've got twenty minutes and I want to use it to understand what you're actually trying to figure out about yourself as an engineer right now. What's the gap you want to close by the time we're done?\nEnd",
+  "room_text": "InterviewIQ\nSoftware Engineer (SDE) \u2014 General\n18:01\nEnd\nWarm-up \u00b7 Question 1 of 2\nNia \u00b7 InterviewIQ\nChat\nType an answer any time\nINTERVIEWIQ\n\nQA, I'm Nia \u2014 good to have you here. Look, we've got twenty minutes and I want to spend it actually understanding where you are right now, not just ticking boxes. So before we dive into anything, what's one thing you're hoping to get clearer on by the time we're done talking?\n\nSend\nYOUR TURN\nType your answer\nQA, I'm Nia \u2014 good to have you here. Look, we've got twenty minutes and I want to spend it actually understanding where you are right now, not just ticking boxes. So before we dive into anything, what's one thing you're hoping to get clearer on by the time we're done talking?\nEnd",
   "room_buttons": [
     "End",
     "Send",
@@ -116,13 +109,13 @@
   ],
   "silent_unlock_plays": 2,
   "audio_play_calls": [],
-  "audio_constructed": 2,
+  "audio_constructed": 1,
   "layers": {
     "server_speech_calls": 0,
     "clip_pack_calls": 0,
     "audio_byte_fetches": 0,
     "audio_bytes_total": 0,
-    "audio_elements_constructed": 2,
+    "audio_elements_constructed": 1,
     "play_attempts": 0,
     "play_rejected": 0
   },

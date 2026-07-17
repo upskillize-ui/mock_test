@@ -11,6 +11,7 @@ import {
   QUESTION_WARN_SECONDS, CAMERA_GRACE_MS, SILENT_ABANDON_MS,
   WRAP_CAMERA_OFF, WRAP_NO_ANSWER, WRAP_SESSION_TIME_UP,
   shouldBackchannel, shouldBargeIn, canArmCapture, BARGE_IN_RMS, BARGE_IN_DUCK_MS,
+  textIdleAction, TEXT_IDLE_EXPIRY_MS, TEXT_IDLE_NUDGE_LINE,
 } from "./roomPolicy.js";
 import { isEmptyReadout, historyStatus, trendDirection } from "./readoutPolicy.js";
 // The room's presentation decisions: who has the floor, what the one strip says, what the
@@ -1320,7 +1321,14 @@ function SetupScreen({ onStart, userName }) {
                 I agree that InterviewIQ may process my interview responses to generate my
                 practice feedback and scorecard. My transcript and report are retained for a
                 limited period and I can download or delete my data any time from Settings.
-                <span style={{ color: T.subtle }}> (Draft notice — pending legal review.)</span>
+                {/* QA-06: "pending legal review" is an internal process marker, and it was
+                    being shown to students — asking them to consent under a notice that says
+                    on its face it is not approved. Dev-only now, matching the DRAFT · LEGAL
+                    PENDING pill this file already gates the same way. The COPY still needs
+                    legal sign-off; hiding the marker does not grant it. */}
+                {import.meta.env?.DEV && (
+                  <span style={{ color: T.subtle }}> (Draft notice — pending legal review.)</span>
+                )}
               </span>
             </label>
           </div>
@@ -2026,6 +2034,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const qDeadlineRef = useRef(0);                // absolute ms deadline
   const qKeyRef = useRef("");                    // the question that deadline belongs to
   const expiredForRef = useRef("");              // the question we have already expired
+  // QA-03: TEXT's clock is an idle clock. When did the composer last change, and have we
+  // already said "take your time" for this question? (Once per question, like every other
+  // nudge in the room.)
+  const textIdleSinceRef = useRef(0);
+  const textNudgedForRef = useRef("");
   const timeoutPendingRef = useRef(false);       // a capture the clock cut off -> "partial"
   const expireRef = useRef(null);
   // Device policy (Phase E): the two clocks the meetroom sprint left open.
@@ -3356,25 +3369,47 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // ── E7.7: the per-question clock ──
   // The deadline is stamped ONCE per question and is absolute, so a re-render, a replayed
   // question or a mute nudge can't quietly hand them extra time.
+  //
+  // QA-03: ...except in TEXT, where "absolute" was the bug. There the deadline measures
+  // continuous inactivity and every keystroke pushes it out (see roomPolicy). Reading and
+  // thinking are free; the session clock is the only real limit.
   useEffect(() => {
     if (!answerWindowOpen || qKeyRef.current === questionKey) return;
     qKeyRef.current = questionKey;
-    const budget = questionSeconds(sstate?.current_stage, questionKind, checkinSecondsRef.current);
+    const budget = textMode
+      ? TEXT_IDLE_EXPIRY_MS / 1000
+      : questionSeconds(sstate?.current_stage, questionKind, checkinSecondsRef.current);
     qDeadlineRef.current = Date.now() + budget * 1000;
+    textIdleSinceRef.current = Date.now();
     setQLeft(budget);
-  }, [answerWindowOpen, questionKey, sstate?.current_stage, questionKind]);
+  }, [answerWindowOpen, questionKey, sstate?.current_stage, questionKind, textMode]);
+
+  // QA-03: typing is the opposite of idling, so it resets the TEXT deadline. Keyed on the
+  // draft rather than on focus: a caret parked in an empty composer is not an answer in
+  // progress, and pretending it is would hand a walked-away student unlimited time.
+  useEffect(() => {
+    if (!textMode || !answerWindowOpen || qKeyRef.current !== questionKey) return;
+    textIdleSinceRef.current = Date.now();
+    qDeadlineRef.current = Date.now() + TEXT_IDLE_EXPIRY_MS;
+  }, [input, textMode, answerWindowOpen, questionKey]);
 
   useEffect(() => {
     if (!answerWindowOpen || qKeyRef.current !== questionKey) { setQLeft(null); return; }
     const tick = () => {
       const left = Math.ceil((qDeadlineRef.current - Date.now()) / 1000);
       setQLeft(Math.max(0, left));
+      // The gentle one, once per question, and only after a long true silence.
+      if (textMode && textNudgedForRef.current !== questionKey
+          && textIdleAction(Date.now() - textIdleSinceRef.current) === "nudge") {
+        textNudgedForRef.current = questionKey;
+        showToast(TEXT_IDLE_NUDGE_LINE);
+      }
       if (left <= 0) expireRef.current?.();
     };
     tick();
     const t = setInterval(tick, 500);
     return () => clearInterval(t);
-  }, [answerWindowOpen, questionKey]);
+  }, [answerWindowOpen, questionKey, textMode]);
 
   // Expiry. Exactly two outcomes, and neither of them is a dead end: submit what they
   // got out, or skip the question and let the interviewer move the interview on. The

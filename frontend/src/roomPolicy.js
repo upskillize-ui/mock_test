@@ -38,6 +38,37 @@ export function questionSeconds(stage, kind = "question", checkinSeconds = CHECK
   return QUESTION_SECONDS[String(stage || "").toUpperCase()] || DEFAULT_QUESTION_SECONDS;
 }
 
+// ── QA-03: in TEXT the per-question clock measures IDLE, not elapsed ─────────
+// The clocks above are voice clocks. In a spoken interview, elapsed time and thinking
+// time are the same thing — silence is the signal. In a typed one they are not: reading
+// the question, thinking, and typing the answer all cost wall-clock, and none of them is
+// disengagement. Running the voice clock in TEXT meant a student who read a case prompt
+// carefully for ninety seconds had the question taken away mid-thought, auto-submitted as
+// "(No answer — the time on this question ran out.)" — the deliberate thinker punished
+// hardest, which is exactly backwards for a product that scores thinking.
+//
+// So in TEXT the deadline counts CONTINUOUS INACTIVITY. Every keystroke pushes it out, so
+// nobody is ever cut off mid-draft and nobody loses a question for thinking. What remains
+// bounded is the thing that was always the real limit: the session clock.
+//
+// The nudge comes first and only once, and it is not a device fork — nothing here mentions
+// a microphone, because this mode does not have one.
+export const TEXT_IDLE_NUDGE_MS = 75_000;
+export const TEXT_IDLE_EXPIRY_MS = 180_000;
+export const TEXT_IDLE_NUDGE_LINE = "Take your time — type when you're ready.";
+
+/**
+ * textIdleAction — how long has the composer been untouched, and what does that earn?
+ *
+ * Pure so the ladder is testable without a browser: nudge at 75s of true idle, expire at
+ * 180s. Anything under the nudge is just a student thinking, which is the point.
+ */
+export function textIdleAction(idleMs = 0) {
+  if (idleMs >= TEXT_IDLE_EXPIRY_MS) return "expire";
+  if (idleMs >= TEXT_IDLE_NUDGE_MS) return "nudge";
+  return "none";
+}
+
 // What the SERVER stores for a skipped question. Kept here only so the transcript drawer
 // can show the same words the server wrote; the server's copy is the authoritative one
 // (see stages.TIMEOUT_SKIP_TEXT) and the client never sends this text.

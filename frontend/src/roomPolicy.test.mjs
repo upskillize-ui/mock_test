@@ -9,7 +9,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   questionSeconds, expiryAction, shouldArmAbandon,
-  shouldBackchannel, shouldBargeIn,
+  shouldBackchannel, shouldBargeIn, textIdleAction,
+  TEXT_IDLE_NUDGE_MS, TEXT_IDLE_EXPIRY_MS,
   QUESTION_SECONDS, DEFAULT_QUESTION_SECONDS, CHECKIN_SECONDS,
   CAMERA_GRACE_MS, SILENT_ABANDON_MS,
   BACKCHANNEL_MIN_ANSWER_MS, BACKCHANNEL_MIN_PAUSE_MS,
@@ -180,4 +181,38 @@ test("the barge-in bar sits well clear of ordinary silence", () => {
   // would interrupt herself on background noise.
   assert.ok(BARGE_IN_RMS > 0.018 * 2);
   assert.ok(BARGE_IN_SUSTAIN_MS >= 250);   // long enough to be words, not a knock
+});
+
+
+// ── QA-03: in TEXT the per-question clock counts idle, not elapsed ───────────
+// The sweep watched a TEXT student read a question for 90 seconds and have it taken
+// away, auto-submitted as "(No answer — the time on this question ran out.)". Reading
+// is not disengagement, and a clock that cannot tell them apart punishes the deliberate
+// thinker hardest — backwards for a product that scores thinking.
+
+test("thinking is free: a long read earns nothing at all", () => {
+  assert.equal(textIdleAction(0), "none");
+  assert.equal(textIdleAction(30_000), "none");
+  // 90s of reading is exactly what used to cost a WARMUP question.
+  assert.equal(textIdleAction(QUESTION_SECONDS.WARMUP * 1000), "nudge");
+  assert.notEqual(textIdleAction(QUESTION_SECONDS.WARMUP * 1000), "expire");
+});
+
+test("the nudge comes before the expiry, and both come late", () => {
+  assert.ok(TEXT_IDLE_NUDGE_MS < TEXT_IDLE_EXPIRY_MS, "nudge must precede expiry");
+  // Both must outlast the voice clock that used to apply here, or the fix changes
+  // nothing for the student it exists to protect.
+  assert.ok(TEXT_IDLE_EXPIRY_MS > QUESTION_SECONDS.WARMUP * 1000);
+  assert.equal(textIdleAction(TEXT_IDLE_NUDGE_MS), "nudge");
+  assert.equal(textIdleAction(TEXT_IDLE_EXPIRY_MS), "expire");
+  assert.equal(textIdleAction(TEXT_IDLE_EXPIRY_MS + 60_000), "expire");
+});
+
+test("expiry still never strands the student", () => {
+  // Unchanged contract: three minutes of true silence WITH a draft submits the draft;
+  // with nothing typed it is a skip and the interview moves on. Nobody is cut off
+  // mid-draft, because typing resets the idle clock long before it reaches here.
+  assert.deepEqual(expiryAction({ draft: "half an answer" }),
+    { timeout: "partial", text: "half an answer" });
+  assert.deepEqual(expiryAction({ draft: "" }), { timeout: "skip", text: "" });
 });
