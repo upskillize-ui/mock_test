@@ -45,6 +45,7 @@ from .schemas import (
     ReaskRequest, ReaskResponse,
     EditLastAnswerRequest, EditLastAnswerResponse,
     FocusEventRequest, FocusEventResponse, WrapRequest, WrapResponse,
+    PresenceMetricsRequest, PresenceMetricsResponse,
     RatingRequest, RatingResponse, SessionState,
     SessionMessagesResponse,
     EndRequest, DebriefResponse, SessionProfile, ScoreContext,
@@ -138,11 +139,21 @@ app.add_middleware(
 
 # Strict CSP for the whole app. The frontend and the /dev/login page both load only
 # same-origin scripts (script-src 'self'), so this is never weakened for them.
+#
+# 'wasm-unsafe-eval' + worker-src blob: are here for Phase D. MediaPipe (self-hosted,
+# no CDN — D1) compiles its vision WASM via WebAssembly.instantiate, which script-src
+# 'self' alone blocks, and runs its graph in a worker created from a blob URL. Both are
+# same-origin: the .wasm and .task assets are fetched from our own /mediapipe, covered by
+# connect-src 'self'. 'wasm-unsafe-eval' permits WASM compilation ONLY — it does not
+# re-open eval() for JavaScript. These are inert while the feature is dark (the client
+# never loads MediaPipe until PRESENCE_METRICS_ENABLED flips) but must be in place for it
+# to run at all, so they land with the rest of the built-not-enabled feature.
 _STRICT_CSP = (
     "default-src 'self'; img-src 'self' data:; "
     "font-src 'self' data: https://fonts.gstatic.com; "
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-    "script-src 'self'; connect-src 'self'; "
+    "script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; "
+    "worker-src 'self' blob:; "
     "frame-ancestors 'none'; base-uri 'self'"
 )
 # Swagger UI (/docs) and ReDoc (/redoc) load their bundle + stylesheet (and, for
@@ -1537,6 +1548,67 @@ def session_focus_event(
     )
 
 
+def _load_presence_metrics(db: Session, session_id: str):
+    """Read back the stored m1–m8 aggregate, or None. Defensive: no migration 010 ->
+    no column -> None -> the readout shows the no-data line and no score changes."""
+    try:
+        row = db.execute(
+            text("SELECT presence_metrics FROM vyom_sessions WHERE id=:s"),
+            {"s": session_id},
+        ).mappings().first()
+    except Exception as e:
+        log.warning("presence_metrics unreadable (apply migration 010?): %s", type(e).__name__)
+        return None
+    return _as_obj(row.get("presence_metrics"), None) if row else None
+
+
+@app.post("/session/presence", response_model=PresenceMetricsResponse)
+def session_presence_metrics(
+    body: PresenceMetricsRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(current_user),
+):
+    """Phase D: store the eight on-device expression/posture numbers, once, at session
+    close. SHIPS DARK — 404 until PRESENCE_METRICS_ENABLED flips, which itself waits on
+    legal sign-off of the camera/attention-cue consent block (D7).
+
+    PRIVACY: this endpoint accepts eight numbers and nothing else. No frame, no image, no
+    landmark can reach it — the schema is the enforcement point, and the server re-clamps
+    every value before it is stored. REPORT-ONLY: nothing written here moves a score or a
+    band. VIDEO mode + camera-on only; every other path stores nothing and is NOT a penalty.
+    """
+    if not settings.PRESENCE_METRICS_ENABLED:
+        # The feature does not exist for students yet. Not 403 (which would admit it is
+        # here and merely forbidden) — 404, the same as any route that is not mounted.
+        raise HTTPException(status_code=404, detail="Not found")
+
+    session_row = _load_session(db, body.session_id, user_id)
+    session_mode = session_row.get("session_mode")
+    camera_at_join = bool(session_row.get("camera_at_join"))
+
+    metrics = {k: getattr(body, k) for k in presence.PRESENCE_METRIC_KEYS
+               if getattr(body, k) is not None}
+    if not presence.presence_metrics_available(session_mode, camera_at_join, metrics):
+        # AUDIO/TEXT, camera-off join, or nothing measurable -> store nothing, no penalty.
+        return PresenceMetricsResponse(stored=False)
+
+    clean = presence.sanitize_presence_metrics(metrics)
+    if not clean:
+        return PresenceMetricsResponse(stored=False)
+
+    try:
+        db.execute(
+            text("UPDATE vyom_sessions SET presence_metrics=:m WHERE id=:s"),
+            {"m": json.dumps(clean), "s": body.session_id},
+        )
+        db.commit()
+    except Exception as e:
+        log.warning("presence_metrics not stored (apply migration 010?): %s", type(e).__name__)
+        return PresenceMetricsResponse(stored=False)
+
+    return PresenceMetricsResponse(stored=True)
+
+
 @app.post("/session/wrap", response_model=WrapResponse)
 def session_wrap(
     body: WrapRequest,
@@ -2395,6 +2467,17 @@ async def end_session(
     except Exception as e:
         log.warning("presence readout skipped (apply migration 006?): %s", type(e).__name__)
         presence_block = {}
+
+    # Phase D: m1–m8 render INSIDE the Presence Profile — a sub-block of the SAME card,
+    # never a second section. Attached ONLY when the feature is enabled: while it ships
+    # dark the readout is byte-for-byte what it was, and a student never sees so much as
+    # the no-data line. Report-only either way — this touches no band and no benchmark.
+    if settings.PRESENCE_METRICS_ENABLED and isinstance(presence_block, dict):
+        presence_block["metrics"] = presence.presence_metrics_readout(
+            _load_presence_metrics(db, body.session_id),
+            session_row.get("session_mode"),
+            bool(session_row.get("camera_at_join")),
+        )
     early_wrap = session_row.get("early_wrap_reason") or None
 
     # Idempotency + cost guard: if a debrief already exists, return it instead of

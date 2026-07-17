@@ -294,3 +294,179 @@ filename only:
 2. **`CONSENT_COPY_CAMERA` mentions attention cues.** It is accurate *today* — camera-on
    attention drift check-ins already exist and predate this sprint. But when Phase D lands
    m1–m8, this copy is the one that needs re-reading against D7's consent gate.
+
+---
+
+# PHASE D — PRESENCE METRICS m1–m8 (added in a follow-up sprint)
+
+> The header at the top of this file says "Phase D is excluded." That was the A/B sprint.
+> This section is Phase D, built now. **Definition of done met: built, tested, and DARK
+> behind its flag.** It is NOT enabled for students — that waits on legal sign-off of the
+> camera/attention-cue consent block (D7). Nothing here was pushed to `hf`.
+
+**Suites after Phase D:** **402 backend** (+16 `test_presence_metrics.py`) + **117 frontend**
+(+11 `presenceMetrics.test.mjs`). All green. The capture-gate mutation test is untouched and
+still green — I added no arming site, and the presence monitor never touches the mic.
+
+## The one-paragraph shape
+
+In VIDEO mode, when the feature is enabled, the browser runs MediaPipe over the student's
+**local** camera tile, folds each frame into eight numbers, and **discards the frame**. At
+session close the eight numbers — and only the eight numbers — are POSTed once. They render
+as **behaviour sentences inside the existing Presence Profile card** (a sub-block, never a
+new section) and are **report-only**: they touch no benchmark and no band. Camera off,
+AUDIO/TEXT, or a MediaPipe that fails to load all degrade to one no-data line and **no
+penalty**. With the flag off (today) none of this exists for a student: MediaPipe is never
+imported, `/session/presence` 404s, and the readout is byte-for-byte what it was.
+
+## Metric naming decision (D3) — final: m1–m8
+
+The prompt's D3 names are the contract. Migration 006 had reserved a per-answer column with
+tentative names (`eye_contact_pct`, `composure_index`, …); **`composure_index` was dropped
+deliberately** — "composure" is an emotion attribution, exactly the class of word D3 bans.
+Each id maps to a behaviour, never a feeling:
+
+| id | behaviour measured | render (high band) |
+|---|---|---|
+| m1 | gaze-on-screen ratio | "held your eyes on the screen for most of the interview" |
+| m2 | head-pose stability | "kept your head steady while you spoke" |
+| m3 | posture lean/slouch **events** (count) | "changed posture N times" |
+| m4 | expression variability | "your expression changed with what you were saying" |
+| m5 | smile/neutral balance | "smiled during much of the interview" |
+| m6 | blink & attention proxy | "blinked at a steady, natural rate" |
+| m7 | gesture presence | "used your hands as you spoke" |
+| m8 | framing/centering | "stayed centred and well-framed in the shot" |
+
+Every sentence at every band is emotion-linted (bans nervous / bored / confident / composed /
+seemed / feel / …).
+
+## Where the numbers live (schema decision)
+
+m1–m8 are ONE aggregate over the whole session, emitted once at close — so the store is a
+single JSON blob on the **session** row, `vyom_sessions.presence_metrics` (**migration 010**,
+additive, nullable). The **per-message** `vyom_messages.presence_metrics` column that 006
+reserved is left **in place and unused**: the shipped design has no per-answer presence
+payload, so a once-per-session aggregate belongs on the session row. 010 does not touch the
+006 column.
+
+## The privacy boundary, in three places
+
+1. **The wire is eight numbers.** `PresenceMetricsRequest` has no field that could carry an
+   image, a frame, or a landmark. There is no media path to the server, by construction.
+2. **The server re-clamps.** `presence.sanitize_presence_metrics` is the whole trust
+   boundary: unknown keys dropped, ratios clamped to [0,1], counts to [0,999], NaN/inf
+   dropped, empty → None. The request schema deliberately carries **no** ge/le bounds so a
+   marginal value is *clamped and used*, not *refused* — sanitisation is the authority.
+3. **The client discards frames.** `presenceMonitor.js` hands each frame to MediaPipe, reads
+   derived numbers, and lets it go — no canvas, no array, no MediaRecorder. `presenceMetrics.
+   js` (the pure fold) holds running sums only; a test asserts it retains no frame array.
+
+## Report-only, proven
+
+`presence_metrics_readout` returns counts and sentences with **no band/score/benchmark key**
+(a test greps for them). The block is attached to the `professional_presence` field only — it
+never reaches `overall_band`, `score`, or `ecopro` (the NudgeAI hand-off, which already
+excludes presence). So a camera-on VIDEO session and the same session camera-off compute an
+**identical** readiness band; the only field that differs is the report-only presence card
+(acceptance h, structurally guaranteed).
+
+## VIDEO-only, and every other path is a silent no-op (D6)
+
+`presence_metrics_available` is true only for VIDEO + camera-on + at-least-one-number.
+AUDIO, TEXT, a camera-off join, and a MediaPipe failure all resolve to the same no-data line
+("No presence data — camera was off. Presence is never scored…") and never a penalty. The
+monitor's every failure path (`@mediapipe/tasks-vision` absent, WASM won't compile, model
+load throws, no WebGL) resolves to a `nullMonitor()` whose `stop()` returns null → nothing
+posted → no-data line.
+
+## Self-hosted assets (D1)
+
+`presenceMonitor.js` loads the WASM runtime and the two `.task` models from **our own origin**
+(`/mediapipe/…`), never a CDN. `scripts/fetch_mediapipe_assets.mjs` populates
+`frontend/public/mediapipe/` (copies the WASM out of the installed package so the runtime
+matches the JS; downloads the two models). Verified end-to-end here: WASM copied,
+`face_landmarker.task` 3.8 MB + `pose_landmarker_lite.task` 5.8 MB downloaded. The binaries
+are **gitignored** (a deploy step, like the UAT screenshots and the migrations); the README
+that documents them is tracked. The dynamic `import()` keeps MediaPipe in its own bundle
+chunk (`vision_bundle`, 136 KB) that is **never loaded while dark**.
+
+## CSP
+
+`_STRICT_CSP` gains `'wasm-unsafe-eval'` (MediaPipe compiles its WASM via
+`WebAssembly.instantiate`, which `script-src 'self'` alone blocks) and `worker-src 'self'
+blob:` (its graph runs in a blob worker). Both are same-origin and inert while dark. WASM
+compilation only — `eval()` for JS stays closed. `test_security_headers` still green.
+
+## The flag, and how "dark" is enforced
+
+- **Backend** `PRESENCE_METRICS_ENABLED` (default **false**). While false,
+  `/session/presence` returns **404** (not 403 — the route reads as simply not mounted), and
+  the readout never attaches the metrics sub-block.
+- **Frontend** `VITE_PRESENCE_METRICS` (default off). While off, `isPresenceMonitorEnabled()`
+  is false, so App never even reaches the dynamic `import("@mediapipe/tasks-vision")` and not
+  a single frame is processed.
+- Both documented (off) in the `.env.example` files. Verified: `settings.
+  PRESENCE_METRICS_ENABLED == False`; no env sets either flag on.
+
+## Files touched
+
+| file | |
+|---|---|
+| `backend/app/presence.py` | **+m1–m8**: metric spec, `sanitize_presence_metrics`, `presence_metrics_available`, `presence_metrics_readout`, emotion-free behaviour sentences |
+| `backend/app/config.py` | `PRESENCE_METRICS_ENABLED` (default false) |
+| `backend/app/schemas.py` | `PresenceMetricsRequest` / `PresenceMetricsResponse` (types only, no range bounds — server clamps) |
+| `backend/app/main.py` | `POST /session/presence` (dark → 404; VIDEO+camera only; report-only), readout attaches the sub-block only when enabled, `_load_presence_metrics`, CSP `wasm-unsafe-eval`/`worker-src` |
+| `backend/app/schema_check.py` | 010 row in `EXPECTED`; `LATEST_MIGRATION` → 010 |
+| `db/migration_010_presence_metrics.sql` + rollback | **new** — additive session-level JSON column |
+| `frontend/src/presenceMetrics.js` | **new** — pure frame→m1–m8 fold, dependency-free |
+| `frontend/src/presenceMonitor.js` | **new** — MediaPipe glue; self-hosted assets; discard-and-fold; fails to a no-op |
+| `frontend/src/App.jsx` | monitor lifecycle in `StudentTile` (VIDEO+camera+flag), `flushPresence` at all three end paths, `submitPresenceMetrics`, `PresenceMetricsSubBlock` inside the Presence Profile card |
+| `frontend/package.json` | `@mediapipe/tasks-vision` |
+| `frontend/public/mediapipe/README.md` | **new** — the deploy step |
+| `scripts/fetch_mediapipe_assets.mjs` | **new** — populates the self-hosted assets |
+| `.gitignore`, `.env.example` (×2) | ignore the binaries; document the flags (off) |
+| tests | `test_presence_metrics.py` (**new, 16**), `presenceMetrics.test.mjs` (**new, 11**), `test_schema_check` (010 pin) |
+
+## Acceptance (D-relevant)
+
+| | | |
+|---|---|---|
+| (g) | camera off in VIDEO → full scores, presence shows no-data | ✅ `presence_metrics_available` false → no-data line; band unaffected |
+| (h) | metrics present → band identical to camera-off | ✅ presence block carries no band/score key; attaches only to `professional_presence` |
+| (i) | emotion-word lint | ✅ over every sentence × every band + the no-data line + labels |
+| (j) | all suites green, capture gate untouched | ✅ 402 + 117; no new arming site |
+| D1 | assets self-hosted | ✅ `/mediapipe`; fetch script verified downloading both models |
+| D2 | on-device, compute-and-discard | ✅ no media path server-side; monitor discards frames; fold retains no frame array |
+| D5 | renders inside Presence Profile | ✅ `PresenceMetricsSubBlock` is a sub-block of the same card |
+| D6 | camera-off / MediaPipe-fail = no penalty | ✅ every failure path → null → no-data line |
+| D7 | ships dark behind the flag | ✅ default off; 404 + no MediaPipe import while dark |
+
+## NEEDS YOUR CONFIRMATION / deploy notes
+
+1. **`hf` NOT pushed.** Awaiting your explicit confirmation, as instructed.
+2. **Migration 010** must be applied wherever the flag is later turned on (additive; safe to
+   apply now — it enables nothing on its own). I did **not** apply it to any database.
+3. **Self-hosted assets** must be populated (`scripts/fetch_mediapipe_assets.mjs`) before the
+   flag is flipped. The build is fine without them while dark.
+4. **The consent gate is the real switch (D7).** The flag stays false until the
+   camera/attention-cue consent block clears legal review. `CONSENT_COPY_CAMERA` (flagged in
+   §11.2 above) is the copy that must be re-read against m1–m8 before enabling.
+
+## Honestly not verified
+
+The **enabled** path's frame-derivation (MediaPipe reading a live face; the yaw/pitch and
+blendshape thresholds) was **not** driven in a real browser — it needs a camera, the
+downloaded models, and the consent gate open, none of which apply while the feature is dark.
+What IS verified: the pure fold (11 tests), the server contract (16 tests), the build with
+MediaPipe code-split, the self-hosting script downloading both models, and the dark path
+leaving the app unchanged. The threshold constants in `presenceMonitor.js` are first-pass and
+tuned once the feature is un-darkened against real users — flagged in-code as such.
+
+## UAT screenshot list (to capture once un-darkened; not committed — `.gitignore`)
+
+| file | shows |
+|---|---|
+| `d1_presence_card_video.png` | Presence Profile with the "On-camera presence" sub-block — eight tiles + behaviour sentences + "Report only — not part of your score" |
+| `d2_presence_no_data.png` | VIDEO session, camera off → the single no-data line, full scores intact |
+| `d3_band_identical.png` | same session camera-on vs off → identical readiness band (report-only proof) |
+| `d4_network_tab.png` | session close → one `/session/presence` POST carrying only m1–m8; no frame, no upload during the session |

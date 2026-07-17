@@ -68,6 +68,11 @@ EXPECTED: list[tuple[str, str, str | None]] = [
     # and the benchmark loses its mode factor.
     ("009_intake_and_modes", "vyom_sessions", "session_mode"),
     ("009_intake_and_modes", "vyom_messages", "input_channel"),
+    # 010 — Phase D presence metrics m1–m8, a single session-level aggregate. Written
+    # only when PRESENCE_METRICS_ENABLED is true (dark until legal sign-off), and read
+    # defensively — without the column the readout simply shows the "No presence data"
+    # line and no score changes. Report-only; it never enters a benchmark or a band.
+    ("010_presence_metrics", "vyom_sessions", "presence_metrics"),
 ]
 
 # The newest migration the code expects. Reported at boot so a deploy can be eyeballed in

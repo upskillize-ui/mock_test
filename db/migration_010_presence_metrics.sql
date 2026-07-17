@@ -1,0 +1,38 @@
+-- ==========================================================================
+-- InterviewIQ — Migration 010 (Phase D: presence metrics m1–m8)
+--
+-- PRIVACY (non-negotiable, enforced by this schema):
+--   Camera frames NEVER leave the browser. MediaPipe runs ON-DEVICE in VIDEO mode,
+--   folds the frames into eight numbers, and DISCARDS every frame. Only the eight
+--   numbers reach the server, once, at session close. Nothing here stores media,
+--   images, video, or facial landmarks — and there is deliberately no column that
+--   could. If a future change wants to store anything richer than these eight
+--   numbers, stop and re-read this paragraph.
+--
+-- WHY A SESSION-LEVEL COLUMN, when 006 already added vyom_messages.presence_metrics:
+--   006 reserved a PER-ANSWER column on a guess about the shape of Phase D. The shape
+--   that shipped is different: m1–m8 are ONE aggregate over the whole session, computed
+--   continuously on-device and emitted a single time at session close — there is no
+--   per-answer presence payload on the wire. So the store is a single JSON blob on the
+--   SESSION row, which is where a once-per-session aggregate belongs. The 006 per-message
+--   column is left in place and UNUSED (dropping it would be a non-additive rewrite for
+--   no gain); this migration does not touch it.
+--
+-- REPORT-ONLY: these numbers never enter the benchmark or the readiness band. They are
+--   read back only to render behaviour sentences inside the Presence Profile.
+--
+-- SHIPS DARK: the app writes this column only when PRESENCE_METRICS_ENABLED is true,
+--   which stays false until the camera/attention-cue consent block clears legal review.
+--   Applying this migration does NOT enable anything — it only makes the store ready.
+--
+-- ADDITIVE ONLY: one nullable JSON column, no backfill, no rewrites, no drops.
+-- Run once. Rollback: migration_010_presence_metrics_rollback.sql
+-- ==========================================================================
+
+-- {m1..m8}: ratios in [0,1] and small event counts, sanitised server-side to exactly
+-- those eight keys (app.presence.sanitize_presence_metrics) before they are ever stored.
+-- NULL means "no presence metrics for this session" — an AUDIO/TEXT session, a camera-off
+-- join, a MediaPipe that never loaded, or the feature simply being dark. NULL is the
+-- honest default and is never a penalty.
+ALTER TABLE vyom_sessions
+  ADD COLUMN presence_metrics JSON DEFAULT NULL AFTER camera_at_join;

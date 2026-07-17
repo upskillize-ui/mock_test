@@ -176,7 +176,7 @@ def test_every_expected_migration_has_a_file_on_disk():
 
 
 def test_the_newest_migration_is_the_one_the_code_needs():
-    assert sc.LATEST_MIGRATION == "009_intake_and_modes"
+    assert sc.LATEST_MIGRATION == "010_presence_metrics"
     assert sc.EXPECTED[-1][0] == sc.LATEST_MIGRATION
 
 

@@ -253,6 +253,44 @@ class FocusEventResponse(BaseModel):
     device_action: str = "none"         # none | nudge | warn | wrap
 
 
+class PresenceMetricsRequest(BaseModel):
+    """Phase D: the eight on-device expression/posture numbers, posted ONCE at session
+    close. VIDEO mode only, and only when the presence feature is enabled.
+
+    PRIVACY (the schema is the enforcement point): there is deliberately no field here
+    that could carry an image, a video frame, or a facial landmark. MediaPipe ran in the
+    browser, folded the frames into these eight numbers, and DISCARDED every frame — only
+    the numbers arrive here. The server re-clamps them (app.presence.sanitize_presence_
+    metrics) before anything is stored, so a hostile client cannot smuggle a ninth field
+    or an out-of-range value into the record.
+
+    Every metric is optional: a MediaPipe run that could not measure one (e.g. a pose it
+    never got a clean read on) simply omits it, and the readout shows the rest.
+    """
+    # Types only — NO range bounds here on purpose. Clamping is done ONCE, server-side, in
+    # app.presence.sanitize_presence_metrics (ratios -> [0,1], counts -> [0,cap]). Putting
+    # ge/le here as well would mean a slightly-out-of-range value from a buggy client is
+    # rejected outright (422) rather than clamped and used — and the point of the sanitiser
+    # is that the server is the authority, so a marginal number is corrected, not refused.
+    session_id: str = Field(..., max_length=36)
+    m1: Optional[float] = None   # gaze-on-screen ratio
+    m2: Optional[float] = None   # head-pose stability
+    m3: Optional[int] = None     # posture lean/slouch events (count)
+    m4: Optional[float] = None   # expression variability
+    m5: Optional[float] = None   # smile/neutral balance
+    m6: Optional[float] = None   # blink & attention proxy
+    m7: Optional[float] = None   # gesture presence
+    m8: Optional[float] = None   # framing/centering in shot
+
+
+class PresenceMetricsResponse(BaseModel):
+    """REPORT-ONLY, and the response says so out loud: recording m1–m8 never moves a
+    score or a band. `stored` is False when the feature is off, the session was not
+    VIDEO, the camera was off at join, or nothing measurable came through."""
+    stored: bool
+    report_only: bool = True
+
+
 class WrapRequest(BaseModel):
     session_id: str = Field(..., max_length=36)
     # camera_off        — the camera ladder reached "wrap" (Phase E device policy).

@@ -261,3 +261,207 @@ def presence_readout(by_type: dict, camera_at_join: bool) -> dict:
         # True when camera signals were not measured at all (camera-off join).
         "camera_signals_disabled": not camera_at_join,
     }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  PHASE D — expression / posture metrics (m1–m8)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# WHERE THE NUMBERS COME FROM. In VIDEO mode the browser runs MediaPipe over the
+# LOCAL camera frames, folds them into eight numbers, DISCARDS every frame, and
+# sends only those eight at session close. This module — like every other line in
+# this file — never sees an image, a video frame, or a facial landmark. It sees
+# eight numbers and turns them into eight behaviour sentences. There is, by
+# construction, no code path here that could accept media.
+#
+# REPORT-ONLY (hold this line in review). m1–m8 NEVER enter the Benchmark Score or
+# the readiness band. They render inside the existing Presence Profile section and
+# nowhere else. `presence_metrics_readout` returns counts and sentences — never a
+# band, never a /10, never a factor. A camera-on session and the same session with
+# the camera off must land on an identical band; a test pins exactly that.
+#
+# VIDEO ONLY, AND EVERY OTHER PATH IS A SILENT NO-OP. Metrics are computed only in
+# VIDEO mode. AUDIO, TEXT, a camera-off join, or a MediaPipe that failed to load
+# all degrade to the SAME thing: no metrics, no penalty, the session scored exactly
+# as if this feature did not exist. `presence_metrics_readout` returns the no-data
+# block for all of them — it is never an error, never a gap in the readout.
+#
+# BEHAVIOUR, NEVER EMOTION. Every metric maps to a sentence about something a panel
+# could physically observe — "looked at the screen during most of the interview" —
+# and never to a claim about how the person felt. "seemed nervous / bored /
+# confident" is banned, and a test lints every sentence this module can emit.
+
+# The closed set of metric keys, in reporting order. A payload key outside this set
+# is dropped on the floor (see `sanitize_presence_metrics`) — the wire cannot smuggle
+# a ninth field, a landmark array, or an emotion label into the store.
+PRESENCE_METRIC_KEYS = ("m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8")
+
+# "ratio"  -> a fraction of the session, clamped to [0.0, 1.0].
+# "count"  -> a non-negative event tally, clamped to [0, PRESENCE_COUNT_CAP].
+PRESENCE_COUNT_CAP = 999
+
+# Per-metric spec. `label` is the tile caption; `kind` drives sanitisation and
+# display; the sentence builders live below and are keyed by the same id. NOTHING
+# here is an emotion word, and nothing downstream may add one.
+PRESENCE_METRICS = (
+    {"id": "m1", "key": "gaze_on_screen",     "kind": "ratio", "label": "Eye contact with screen"},
+    {"id": "m2", "key": "head_pose_stability","kind": "ratio", "label": "Head steadiness"},
+    {"id": "m3", "key": "posture_events",     "kind": "count", "label": "Posture shifts"},
+    {"id": "m4", "key": "expression_variability","kind": "ratio","label": "Expression range"},
+    {"id": "m5", "key": "smile_neutral_balance","kind": "ratio","label": "Time smiling"},
+    {"id": "m6", "key": "blink_attention",    "kind": "ratio", "label": "Steady blink rate"},
+    {"id": "m7", "key": "gesture_presence",   "kind": "ratio", "label": "Hand gestures"},
+    {"id": "m8", "key": "framing_centering",  "kind": "ratio", "label": "Framing in shot"},
+)
+_METRIC_BY_ID = {m["id"]: m for m in PRESENCE_METRICS}
+
+# ── Behaviour sentences ──────────────────────────────────────────────────────
+# Three bands per ratio metric (high / mixed / low) and two per count metric. Each
+# is a plain observation, the kind a panel would make out loud. Read them adversarially
+# for emotion words — the lint below does, but the author has to first.
+def _band3(v):
+    """high / mixed / low for a [0,1] ratio."""
+    if v >= 0.66:
+        return "high"
+    if v >= 0.33:
+        return "mixed"
+    return "low"
+
+
+_RATIO_SENTENCES = {
+    "m1": {
+        "high": "You held your eyes on the screen for most of the interview — that reads as attention in a panel.",
+        "mixed": "You looked at the screen for about half of the interview, and away for the rest.",
+        "low": "You looked away from the screen for much of the interview. Setting your camera at eye level makes it easier to hold the interviewer's gaze.",
+    },
+    "m2": {
+        "high": "You kept your head steady while you spoke.",
+        "mixed": "Your head moved around a fair amount as you answered.",
+        "low": "Your head moved around a lot during your answers. Sitting a little further back gives you room to stay settled in frame.",
+    },
+    "m4": {
+        "high": "Your face was animated as you spoke — your expression changed with what you were saying.",
+        "mixed": "Your expression changed some as you answered.",
+        "low": "Your expression stayed mostly flat while you spoke. Letting your face move with your words helps a panel follow you.",
+    },
+    "m5": {
+        "high": "You smiled during much of the interview.",
+        "mixed": "You smiled at points and held a neutral expression the rest of the time.",
+        "low": "You kept a neutral expression for most of the interview.",
+    },
+    "m6": {
+        "high": "You blinked at a steady, natural rate throughout.",
+        "mixed": "Your blink rate varied through the session.",
+        "low": "Your blink rate was uneven across the session.",
+    },
+    "m7": {
+        "high": "You used your hands as you spoke.",
+        "mixed": "You used the occasional hand gesture while answering.",
+        "low": "You kept your hands still for most of the interview. A little natural hand movement reads as engagement.",
+    },
+    "m8": {
+        "high": "You stayed centred and well-framed in the shot.",
+        "mixed": "You drifted around the frame at times during the interview.",
+        "low": "You were often off-centre or partly out of frame. Framing yourself once before you start keeps you in shot.",
+    },
+}
+
+
+def _sentence_for(metric_id: str, value) -> str:
+    """The behaviour sentence for one metric at one value. Never an emotion claim."""
+    spec = _METRIC_BY_ID.get(metric_id)
+    if spec is None:
+        return ""
+    if spec["kind"] == "count":
+        n = int(value)
+        # m3 posture shifts — descriptive, not a verdict. Some shifting is normal.
+        if n <= 3:
+            return "You settled into one position and mostly stayed there."
+        return f"You changed posture {n} times during the interview — a lot of shifting can pull a panel's eye away from your answer."
+    return _RATIO_SENTENCES.get(metric_id, {}).get(_band3(float(value)), "")
+
+
+def sanitize_presence_metrics(raw) -> dict | None:
+    """Reduce whatever the client posted to EXACTLY the eight known numbers.
+
+    The whole trust boundary for m1–m8 lives here. Ratios are coerced to floats and
+    clamped to [0,1]; counts to non-negative ints under a cap. Any key outside
+    PRESENCE_METRIC_KEYS is dropped, any non-numeric value drops that one metric, and
+    a payload with none of the eight returns None (nothing to store, nothing to show).
+    A landmark array, an emotion string, or a stray field cannot survive this call.
+    """
+    if not isinstance(raw, dict):
+        return None
+    out: dict = {}
+    for spec in PRESENCE_METRICS:
+        if spec["id"] not in raw:
+            continue
+        v = raw[spec["id"]]
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if f != f or f in (float("inf"), float("-inf")):  # NaN / inf
+            continue
+        if spec["kind"] == "count":
+            out[spec["id"]] = max(0, min(PRESENCE_COUNT_CAP, int(f)))
+        else:
+            out[spec["id"]] = max(0.0, min(1.0, round(f, 4)))
+    return out or None
+
+
+def _display_value(spec: dict, value) -> str:
+    """The tile's short readout string — a percentage or a count, never a score."""
+    if spec["kind"] == "count":
+        return str(int(value))
+    return f"{round(float(value) * 100)}%"
+
+
+def presence_metrics_available(session_mode, camera_at_join: bool, metrics) -> bool:
+    """True only when there are real m1–m8 to show: VIDEO mode, camera on at join,
+    and a sanitised payload with at least one metric. Every other path is a no-op —
+    and NOT a penalty (D6)."""
+    if str(session_mode or "").strip().upper() != "VIDEO":
+        return False
+    if not camera_at_join:
+        return False
+    return bool(sanitize_presence_metrics(metrics))
+
+
+# The one line shown when there is deliberately nothing to show. It is not an
+# apology and not a gap — a camera-off join (or a mode without a camera, or a
+# MediaPipe that never loaded) is a supported path, and the copy says so.
+PRESENCE_METRICS_NO_DATA = "No presence data — camera was off. Presence is never scored, so nothing here counted for or against you."
+
+
+def presence_metrics_readout(metrics, session_mode, camera_at_join: bool) -> dict:
+    """The m1–m8 sub-block of the Presence Profile. REPORT-ONLY — no band, no score.
+
+    Returns {"measured": False, "note": <no-data line>} for every path that has no
+    metrics to show (AUDIO/TEXT, camera-off, MediaPipe failure). Returns the eight
+    behaviour rows only for a VIDEO session that actually produced numbers. The caller
+    renders this INSIDE the existing Presence Profile section — never as a new section.
+    """
+    if not presence_metrics_available(session_mode, camera_at_join, metrics):
+        return {"measured": False, "note": PRESENCE_METRICS_NO_DATA}
+
+    clean = sanitize_presence_metrics(metrics) or {}
+    rows = []
+    for spec in PRESENCE_METRICS:
+        if spec["id"] not in clean:
+            continue
+        v = clean[spec["id"]]
+        rows.append({
+            "id": spec["id"],
+            "label": spec["label"],
+            "kind": spec["kind"],
+            "display": _display_value(spec, v),
+            "behaviour": _sentence_for(spec["id"], v),
+        })
+    return {
+        "measured": True,
+        # Named so a reviewer skimming the readout payload cannot miss it: this block
+        # is descriptive only and touches no score.
+        "report_only": True,
+        "metrics": rows,
+    }

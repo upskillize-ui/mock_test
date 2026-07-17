@@ -47,3 +47,10 @@ frontend/src/interviewers/veda_formal_female.png
 # defaults QA_SHOT_DIR into the tree cannot smuggle a .png into history.
 tests/qa_sweep/evidence/*.png
 tests/qa_sweep/shots/
+
+# Phase D: self-hosted MediaPipe assets. Large binaries (WASM runtime + two .task
+# models, ~7MB) that presenceMonitor.js loads same-origin from /mediapipe. They are a
+# DEPLOY STEP (scripts/fetch_mediapipe_assets.mjs), not a commit — same rule as the UAT
+# screenshots. The README that documents them IS tracked.
+frontend/public/mediapipe/wasm/
+frontend/public/mediapipe/*.task

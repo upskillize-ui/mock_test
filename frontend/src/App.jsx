@@ -14,6 +14,10 @@ import {
   textIdleAction, TEXT_IDLE_EXPIRY_MS, TEXT_IDLE_NUDGE_LINE,
 } from "./roomPolicy.js";
 import { isEmptyReadout, historyStatus, trendDirection } from "./readoutPolicy.js";
+// Phase D: on-device presence metrics (m1–m8). SHIPS DARK — isPresenceMonitorEnabled()
+// is false unless VITE_PRESENCE_METRICS=on, and until then MediaPipe is never imported
+// and not a frame is processed. Report-only; never touches a score or a band.
+import { startPresenceMonitor, isPresenceMonitorEnabled } from "./presenceMonitor.js";
 // The room's presentation decisions: who has the floor, what the one strip says, what the
 // student's tile shows while they answer. Pure and tested — see roomLayout.test.mjs.
 import {
@@ -135,6 +139,11 @@ const fetchSessionState = (sid) => api(`/session/${encodeURIComponent(sid)}/stat
 const fetchSessionMessages = (sid) => api(`/session/${encodeURIComponent(sid)}/messages`);
 const endSession = (sid) => api("/session/end", { method: "POST", body: JSON.stringify({ session_id: sid }) });
 const abandonSession = (sid) => api("/session/abandon", { method: "POST", body: JSON.stringify({ session_id: sid }) }).catch(() => {});
+// Phase D: post the eight on-device presence numbers, once, at session close. Only these
+// numbers ever leave the client — no frame, no landmark. Best-effort and swallowed: a 404
+// (feature dark) or any error must never disturb the readout. Report-only server-side.
+const submitPresenceMetrics = (sid, metrics) =>
+  api("/session/presence", { method: "POST", body: JSON.stringify({ session_id: sid, ...metrics }) }).catch(() => {});
 const fetchAlumniPreview = (co, ro) => api("/alumni/preview?company=" + encodeURIComponent(co) + "&role=" + encodeURIComponent(ro));
 const fetchHistory = (limit = 50, offset = 0) => api(`/user/history?limit=${limit}&offset=${offset}`);
 const fetchHistoryDetail = (sid) => api(`/user/history/${encodeURIComponent(sid)}`);
@@ -1510,10 +1519,12 @@ function InterviewerTile({ state, active, voice, difficulty, seed, tone, escalat
  * The surface is a SIBLING of the body, not an overlay on it, so it cannot collide with the
  * name tag however long the transcript runs. See the CSS note on .iq-tile.
  */
-function StudentTile({ on, micOn, initial, name, active, surface, levels, recLabel }) {
+function StudentTile({ on, micOn, initial, name, active, surface, levels, recLabel,
+                       presenceOn, monitorRef }) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const textRef = useRef(null);
+  const monitorHandleRef = useRef(null);
 
   // Their running transcript scrolls itself, so the newest words are the visible ones —
   // a caption you have to scroll to read is a caption you do not read.
@@ -1545,6 +1556,31 @@ function StudentTile({ on, micOn, initial, name, active, surface, levels, recLab
     })();
     return () => { cancelled = true; stop(); };
   }, [on]);
+
+  // Phase D: run the on-device presence monitor over THIS tile's local video, while the
+  // camera is on in VIDEO mode and the feature is enabled. It computes m1–m8 and discards
+  // every frame; nothing leaves here. The PARENT reads the result once at session close
+  // (via monitorRef) and posts the eight numbers — this effect only starts it and, on
+  // unmount, releases the models WITHOUT posting (a discard, never a leak).
+  useEffect(() => {
+    if (!on || !presenceOn || !isPresenceMonitorEnabled()) return;
+    let live = true;
+    (async () => {
+      const m = await startPresenceMonitor(videoRef.current);
+      if (!live) { try { await m.stop(); } catch { /* noop */ } return; }
+      monitorHandleRef.current = m;
+      if (monitorRef) monitorRef.current = m;
+    })();
+    return () => {
+      live = false;
+      // Release the models. If the parent already flushed (took the handle for its
+      // metrics), stop() is an idempotent no-op; if it did not, this discards the run —
+      // the frames are long gone either way, and a discard never posts.
+      const m = monitorHandleRef.current;
+      monitorHandleRef.current = null;
+      if (m) { try { m.stop(); } catch { /* noop */ } }
+    };
+  }, [on, presenceOn]);
 
   const live = surface.phase === SURFACE_LIVE;
   return (
@@ -2058,6 +2094,27 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const reverseMode = nextAction === "reverse_question";
   const uc = messages.filter(m => m.role === "user").length;
 
+  // Phase D: the active presence monitor (StudentTile populates this while the camera is on
+  // in VIDEO mode and the feature is enabled). flushPresence() reads the eight numbers ONCE
+  // at session close and posts them — the ONLY thing that ever leaves the client. It is:
+  //   * dark by default — the monitor never starts, this ref stays null, and flush posts nothing;
+  //   * idempotent — guarded so the three end paths (time-up, backend "readout", no-more-questions)
+  //     cannot double-post;
+  //   * report-only and best-effort — a failure or a 404 (feature off) never disturbs the readout.
+  const presenceMonitorRef = useRef(null);
+  const presenceFlushedRef = useRef(false);
+  const flushPresence = async () => {
+    if (presenceFlushedRef.current) return;
+    presenceFlushedRef.current = true;
+    const m = presenceMonitorRef.current;
+    presenceMonitorRef.current = null;
+    if (!m) return;
+    try {
+      const metrics = await m.stop();          // the eight numbers, or null if nothing measured
+      if (metrics && Object.keys(metrics).length) await submitPresenceMetrics(sessionId, metrics);
+    } catch { /* presence never harms the session */ }
+  };
+
   useEffect(() => { if (secondsLeft <= 0 || ended) return; const t = setInterval(() => setSecondsLeft(s => s - 1), 1000); return () => clearInterval(t); }, [secondsLeft, ended]);
   // E7.7 — the SESSION clock expiring is an EARLY WRAP, not a dead screen. We wrap
   // server-side (so a refresh cannot dodge it) and go straight to the readout, which
@@ -2071,7 +2128,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     setEnded(true);                            // onstop must know the session is over
     clearGrace();                              // no "Listening in 0.4s…" on a dead clock
     if (recordingRef.current) stopRecording();
-    (async () => { await doEarlyWrap(WRAP_SESSION_TIME_UP); onEnd(); })();
+    (async () => { await doEarlyWrap(WRAP_SESSION_TIME_UP); await flushPresence(); onEnd(); })();
   }, [secondsLeft, ended, loading]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, loading, awaitingRating]);
 
@@ -2093,7 +2150,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     if (nextAction !== "readout" && nextAction !== "done") return;
     if (audioPlaying || speechPending) return;   // let her finish the sentence
     setEnded(true);
-    onEnd();
+    // Flush the presence numbers before the readout mounts, so /session/end reads them.
+    (async () => { await flushPresence(); onEnd(); })();
   }, [nextAction, ended, onEnd, audioPlaying, speechPending]);
 
   // ── FAST START: fetch the greeting from inside the room ──
@@ -3659,8 +3717,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
 
   const handleEndClick = async () => {
     setEnded(true);
-    if (uc > 0) { onEnd(); }
-    else { await abandonSession(sessionId); onRestart(); }
+    if (uc > 0) { await flushPresence(); onEnd(); }
+    else { await flushPresence(); await abandonSession(sessionId); onRestart(); }
   };
 
   const inputDisabled = loading || ended || awaitingRating;
@@ -3829,7 +3887,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
                 <StudentTile on={camOn} micOn={micOn}
                   initial={(config.name || "You").trim().charAt(0).toUpperCase() || "Y"}
                   name={config.name || "You"} active={speaker === SPEAKER_STUDENT}
-                  surface={surface} levels={levels} recLabel={mmss(recSeconds)} />
+                  surface={surface} levels={levels} recLabel={mmss(recSeconds)}
+                  presenceOn={videoMode && camOn} monitorRef={presenceMonitorRef} />
               )}
 
               {/* The collapsible third column. Below ~1000px the CSS floats it over the
@@ -4272,7 +4331,45 @@ function PresenceBlock({ presence, profile }) {
           You joined with your camera off, so camera cues were never measured — and are never counted against you.
         </div>
       )}
+      {/* Phase D: the m1–m8 expression/posture read-back lives INSIDE this same card — a
+          sub-block, never a second section. Present only when the feature is enabled; while
+          it ships dark `p.metrics` is undefined and this renders nothing. Report-only. */}
+      <PresenceMetricsSubBlock metrics={p.metrics} />
     </RdCard>
+  );
+}
+
+// The eight on-device numbers, rendered as behaviour — never a score, never a band, never
+// an emotion. Descriptive tiles plus one observation each. Report-only, and it says so.
+function PresenceMetricsSubBlock({ metrics }) {
+  if (!metrics) return null;   // feature dark -> nothing here, card is unchanged
+  const rows = metrics.metrics || [];
+  return (
+    <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid " + T.border }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: T.navy, fontFamily: IQ.sans, letterSpacing: ".01em" }}>On-camera presence</span>
+        <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".06em", color: IQ.teal }}>Report only — not part of your score</span>
+      </div>
+      {!metrics.measured ? (
+        <div style={{ fontSize: 12, color: T.subtle, fontStyle: "italic", lineHeight: 1.6 }}>{metrics.note}</div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: 12 }}>
+            {rows.map((m) => (
+              <div key={m.id} style={{ background: T.bg, borderRadius: 8, padding: "8px 10px" }}>
+                <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".04em", color: T.subtle }}>{m.label}</div>
+                <div style={{ fontSize: 18, fontWeight: 500, color: T.navy, fontFamily: IQ.mono, marginTop: 2 }}>{m.display}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {rows.filter((m) => m.behaviour).map((m) => (
+              <div key={m.id} style={{ fontSize: 12.5, lineHeight: 1.6, color: T.text, fontFamily: IQ.sans }}>{m.behaviour}</div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

@@ -136,6 +136,15 @@ class Settings:
     # spoken answers. OFF by default; independent of STT so it can be piloted alone.
     DELIVERY_METRICS_ENABLED: bool = _env_bool("DELIVERY_METRICS_ENABLED")
 
+    # ── Phase D: presence metrics m1–m8 (on-device expression/posture) ────────
+    # SHIPS DARK. This flag stays FALSE until the camera/attention-cue consent block
+    # has cleared LEGAL review — that is the only thing that turns m1–m8 on for
+    # students (see PRESENCE gate, D7). With it false the feature is built, tested and
+    # inert: the client never loads MediaPipe, /session/presence 404s, and no metric
+    # is ever computed, stored, or shown. Presence metrics are report-only and run in
+    # VIDEO mode only; flipping this flag changes no score and no band, ever.
+    PRESENCE_METRICS_ENABLED: bool = _env_bool("PRESENCE_METRICS_ENABLED")
+
     # Realism v2: PATCH /session/turn/last — lets a learner correct a mis-transcribed
     # answer from the transcript drawer. ON by default (the drawer edit depends on it);
     # set false to remove the endpoint entirely (404). No schema impact — it rewrites
