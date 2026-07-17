@@ -324,14 +324,48 @@ def test_the_opening_is_three_beats_ending_on_intent():
 
 
 def test_the_ice_breaker_may_never_be_invented():
-    """We have no city field, no weather source and no interests field — get_student_context
-    returns none of them. An invented "how's the weather in Bangalore?" is a stranger
-    pretending to know you, and it lands exactly that way."""
+    """An invented "how's the weather in Bangalore?" is a stranger pretending to know you,
+    and it lands exactly that way.
+
+    This used to hold because we HAD no city field — the intake sprint gave us one (it was
+    on `users` all along; the gather was reading a table that no longer existed). So the
+    ban is no longer a happy accident of missing data, and this asserts the rule itself:
+    with nothing real on file, the opening still may not make something up.
+    """
     k = flat(p.build_kickoff(_cfg(), seed=1))
     assert "NEVER INVENT A FACT ABOUT THEM TO BE FRIENDLY WITH" in k
     assert "You do not know their city" in k
     assert "SKIP THIS BEAT ENTIRELY" in k
     assert "An invented one costs the whole illusion" in k
+
+
+def test_the_ice_breaker_may_use_a_real_city_but_still_never_invent_one():
+    """The distinction was never "cities are unsafe" — it was "a fact you made up is
+    unsafe". When the LMS actually holds the city, the beat may use it; the ban on
+    invention is word-for-word identical in both branches."""
+    cfg = _cfg()
+    cfg["intro"] = (cfg.get("intro") or "") + \
+        "\n\nWHERE THEY ARE: Bangalore. This is a FACT from their profile, not a guess."
+    k = flat(p.build_kickoff(cfg, seed=1))
+
+    assert "NEVER INVENT A FACT ABOUT THEM TO BE FRIENDLY WITH" in k
+    assert "you may use ONE of them for this beat" in k
+    assert "SKIP THIS BEAT ENTIRELY" in k
+    # A real city must NOT re-license everything adjacent to it.
+    assert "Do not extrapolate from a city to" in k
+    # And the absolute form must be gone — leaving both in would be a prompt that
+    # contradicts itself about the one fact it holds.
+    assert "You do not know their city" not in k
+
+
+def test_the_personal_facts_rule_keys_off_real_data_not_optimism():
+    """Presence of the fact is what flips it. An empty background gets the absolute rule —
+    which, on real data, is most students (city is on file for 3 of 14)."""
+    # flat() collapses the prompt's line wrapping — these phrases straddle newlines.
+    assert "You do not know their city" in flat(p.personal_facts_rule(""))
+    assert "You do not know their city" in flat(p.personal_facts_rule("EDUCATION: BEU"))
+    assert "you may use ONE of them" in flat(p.personal_facts_rule("WHERE THEY ARE: Pune."))
+    assert "you may use ONE of them" in flat(p.personal_facts_rule("WHAT THEY ENJOY: Chess."))
 
 
 def test_the_ice_breaker_may_never_touch_anything_sensitive():

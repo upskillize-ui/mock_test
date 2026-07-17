@@ -14,6 +14,59 @@ _INJECTION_PHRASE_RX = re.compile(
     re.IGNORECASE,
 )
 
+# ── The ice-breaker's two safe facts ─────────────────────────────────────────
+# These labels are a CONTRACT between the intake boundary (which writes them into the
+# background block) and build_kickoff (which reads them back to decide whether BEAT 2 may
+# happen at all). They live here, not in intake.py, purely because intake imports prompts
+# and the reverse would be a cycle.
+#
+# The kickoff runs on a LATER request than the intake, rebuilt from the stored session
+# row, and neither city nor interests is a column — so the stored blob is the only place
+# this fact survives. Detecting the label is how the opening knows the difference between
+# "they live in Bangalore" and "we are guessing they live in Bangalore".
+FACT_CITY_PREFIX = "WHERE THEY ARE:"
+FACT_INTERESTS_PREFIX = "WHAT THEY ENJOY:"
+
+# The absolute form. Used when we hold neither fact — which, on real data, is most
+# students (city 3-in-14, interests 1-in-14). This is the sentence that has been running
+# for every session to date, and for most sessions it stays the right one.
+_NO_PERSONAL_FACTS_RULE = """\
+    NEVER INVENT A FACT ABOUT THEM TO BE FRIENDLY WITH. You do not know their city, you
+    do not know their weather, and you do not know their hobbies unless they are written
+    above. Asking "how's the weather in Bangalore?" of someone whose city you are guessing
+    is not warmth — it is a stranger pretending to know them, and it lands exactly that way."""
+
+# The permissive form. Used ONLY when the intake boundary actually supplied the fact, which
+# it does only when the LMS actually holds it. The distinction the original rule was drawing
+# was never really "cities are unsafe" — it was "a fact you invented is unsafe". When the
+# fact is real, the ice-breaker it enables is the warmest line in the session.
+_PERSONAL_FACTS_RULE = """\
+    NEVER INVENT A FACT ABOUT THEM TO BE FRIENDLY WITH — but the personal facts written in
+    CANDIDATE BACKGROUND above are REAL, from their own profile, and you may use ONE of
+    them for this beat. That is the entire difference: "how's the weather in Bangalore?" is
+    a stranger pretending to know someone when their city is a guess, and an ordinary human
+    hello when their city is written above. Use it lightly, once, as a question — never
+    recite it back at them, and never stack it with a second personal fact.
+    Anything NOT written above, you still do not know. Do not extrapolate from a city to
+    its weather, its traffic, its teams, or its food; do not extrapolate from an interest
+    to a skill. The fact is the fact, and nothing else came with it."""
+
+
+def personal_facts_rule(intro: str) -> str:
+    """Which version of the "never invent" rule BEAT 2 gets.
+
+    The rule does not relax — the ban on invention is identical in both. What changes is
+    whether there is anything real to be friendly WITH. For most students there is not, and
+    they get the absolute form.
+
+    Detection is by label rather than by a flag because the kickoff is a separate request
+    from the intake: it rebuilds cfg from the stored session row, and neither city nor
+    interests is a column. The blob is the only place the fact survives the round trip.
+    """
+    blob = intro or ""
+    has_fact = FACT_CITY_PREFIX in blob or FACT_INTERESTS_PREFIX in blob
+    return _PERSONAL_FACTS_RULE if has_fact else _NO_PERSONAL_FACTS_RULE
+
 
 def sanitize_untrusted(text: str, max_chars: int = 3000) -> str:
     if not text:
@@ -659,6 +712,8 @@ def build_kickoff(cfg: dict, seed=None, recent_openings: list[str] | None = None
     rng = random.Random(seed)
     senior = is_senior_character(cfg)
     recent_block = avoid_block(recent_openings, "openings")
+    # Whether BEAT 2 has anything real to be friendly with. For most students it does not.
+    personal_facts_rule_text = personal_facts_rule(cfg.get("intro") or "")
     # Interview Room: the CLIENT's roster (pickInterviewer) is the source of truth for
     # the face the student sees, so the persona must ADOPT that name — otherwise the
     # portrait says "Priya" and the voice introduces itself as someone else. If no name
@@ -729,10 +784,7 @@ conversationally — no markdown, no lists, no headers.
   BEAT 2 — ONE SAFE ICE-BREAKER. One line, genuinely curious, easy to answer.
     Draw it ONLY from something concrete in CANDIDATE BACKGROUND above — what they are
     studying, a course they finished, the work they do now, a skill they listed.
-    NEVER INVENT A FACT ABOUT THEM TO BE FRIENDLY WITH. You do not know their city, you
-    do not know their weather, and you do not know their hobbies unless they are written
-    above. Asking "how's the weather in Bangalore?" of someone whose city you are guessing
-    is not warmth — it is a stranger pretending to know them, and it lands exactly that way.
+{personal_facts_rule_text}
     If the background gives you NOTHING concrete and safe, SKIP THIS BEAT ENTIRELY and go
     straight to beat 3. A skipped ice-breaker costs nothing. An invented one costs the
     whole illusion.

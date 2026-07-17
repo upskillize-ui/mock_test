@@ -291,12 +291,17 @@ class _StartDB:
 
 def test_start_session_does_not_require_voice_consent():
     from app import main as m
-    saved = (m.get_student_context, m.fetch_alumni_intel, m.call_claude)
+    from app import intake as ik
+    saved = (ik.get_student_context, m.fetch_alumni_intel, m.call_claude)
 
     async def _fake_claude(**kwargs):
         return "Hi there! Let's begin your interview."
 
-    m.get_student_context = lambda uid, db: {}
+    # Patch the gather where it RUNS. It lives in app/intake.py now — patching
+    # main.get_student_context binds nothing, and this test would still pass, because
+    # intake.gather swallows the error and returns {}. Green for the wrong reason is
+    # worse than red.
+    ik.get_student_context = lambda uid, db: {}
     m.fetch_alumni_intel = lambda db, company, role: ""
     m.call_claude = _fake_claude
     app.dependency_overrides[get_db] = lambda: _StartDB()
@@ -312,7 +317,7 @@ def test_start_session_does_not_require_voice_consent():
         # VOICE_ENABLED on, STT off — the old gate would have 403'd here.
         _with_flags(False, True, go)
     finally:
-        m.get_student_context, m.fetch_alumni_intel, m.call_claude = saved
+        ik.get_student_context, m.fetch_alumni_intel, m.call_claude = saved
         _cleanup()
 
 

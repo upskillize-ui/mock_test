@@ -18,7 +18,11 @@ from jose import jwt, JWTError
 
 from .config import settings
 from .db import (
-    get_db, get_student_context, fetch_alumni_intel, like_escape,
+    # NOTE: get_student_context is deliberately NOT imported here any more. The gather
+    # moved behind the intake boundary (app/intake.py) and this module must not grow a
+    # second way to reach it — a patched-or-called copy here would silently diverge from
+    # the one that actually runs.
+    get_db, fetch_alumni_intel, like_escape,
     recent_lines, remember_line,
     MEMORY_KIND_OPENING, MEMORY_KIND_CLOSING, MEMORY_KIND_CHECKIN,
     MEMORY_KIND_REASK, MEMORY_KIND_ENCOURAGEMENT,
@@ -33,6 +37,7 @@ from . import dev_auth
 from . import presence
 from . import scoring
 from . import schema_check
+from . import intake
 from .schemas import (
     StartSessionRequest, StartSessionResponse,
     GreetingRequest, GreetingResponse, SpeechRequest, SpeechResponse, ClipPackResponse,
@@ -723,6 +728,22 @@ def health(db: Session = Depends(get_db)):
     )
 
 
+def _tts_available(cfg) -> bool:
+    """Can this session actually be spoken, checked BEFORE anything is spent (A4/A5).
+
+    Config-level on purpose. "Is the Sarvam account dry?" is only truly answerable by
+    calling Sarvam — and a paid call to find out whether we may make paid calls is exactly
+    the ordering this phase exists to remove. So we check what is knowable for free: the
+    feature flag and the key. A vendor that fails mid-session is a different problem and
+    already handled — tts.synthesize returns None on ANY failure and the room degrades.
+
+    A TEXT session never asks, so a dead vendor cannot block one.
+    """
+    if not cfg.wants_tts:
+        return True
+    return bool(settings.TTS_ENABLED and settings.SARVAM_API_KEY)
+
+
 @app.post("/session/start", response_model=StartSessionResponse)
 async def start_session(
     body: StartSessionRequest,
@@ -737,14 +758,11 @@ async def start_session(
     # exactly where audio is captured — the first-mic-use modal (frontend) and the
     # /session/stt consent gate (server-side 403). See VOICE_PHASE2_REPORT.md §6.
 
-    ctx = {}
-    try:
-        ctx = get_student_context(user_id, db)
-    except Exception as e:
-        log.warning("get_student_context failed for uid=%s: %s", user_id, e)
-
-    if ctx.get("name"):
-        body.name = ctx["name"][:120]
+    # ── THE INTAKE BOUNDARY (app/intake.py) ──────────────────────────────────
+    # Gather → merge (form wins) → sanitize once → validate BEFORE spend. This endpoint
+    # used to do all four inline, in that order only by luck, and validation actually came
+    # last — after the LLM had already been paid. Everything below trusts `cfg`.
+    ctx = intake.gather(user_id, db)
 
     resume_text = ""
     if ctx.get("resume_url"):
@@ -753,67 +771,21 @@ async def start_session(
         except Exception as e:
             log.warning("extract_resume_text failed: %s", e)
 
-    silent_lines = []
+    cfg = intake.merge(body, ctx, resume_text=resume_text)
 
-    if ctx.get("enrollments"):
-        course_lines = []
-        for e in ctx["enrollments"]:
-            status = "Certified" if e["certified"] else f"{e['progress']}% complete"
-            course_lines.append(f"  - {e['course']} ({status})")
-        silent_lines.append("ENROLLED COURSES:\n" + "\n".join(course_lines))
-
-    if ctx.get("education"):
-        silent_lines.append(f"EDUCATION: {ctx['education']}")
-
-    status = ctx.get("current_status")
-    role_title = ctx.get("current_role")
-    employer = ctx.get("employer")
-
-    if status == "working_professional" and (role_title or employer):
-        who = f"{role_title} at {employer}" if role_title and employer else (role_title or employer)
-        silent_lines.append(
-            f"CURRENT STATUS: Working professional — currently {who}. "
-            f"They are targeting this new role. Probe their motivation for the change "
-            f"and what they're seeking in this opportunity. Ask naturally — do not make it sound interrogative."
-        )
-    elif status == "working_professional":
-        silent_lines.append(
-            "CURRENT STATUS: Working professional with experience. "
-            "Probe their reason for exploring this role. Treat them as experienced — "
-            "raise the bar accordingly."
-        )
-    elif status == "student_or_fresher":
-        silent_lines.append(
-            "CURRENT STATUS: Student or fresher — no full-time work experience. "
-            "Focus on academic projects, internships, learning experiences. "
-            "Do NOT ask 'why are you leaving your current job' or 'current employer'."
+    # A4: nothing paid-for has happened yet, and nothing will until this returns.
+    try:
+        intake.validate(cfg, tts_available=_tts_available(cfg))
+    except intake.IntakeError as e:
+        # 422 with a machine-readable seatbelt flag: the lobby offers TEXT rather than
+        # showing the student a dead end (A5).
+        raise HTTPException(
+            status_code=422,
+            detail={"errors": e.errors, "offer_text_mode": e.offer_text_mode},
         )
 
-    if ctx.get("skills"):
-        silent_lines.append(f"STATED SKILLS (test at least 2 of these): {ctx['skills']}")
-
-    if ctx.get("ai_profile"):
-        silent_lines.append(
-            "AI-GENERATED PROFILE (highest quality data — use for deep personalization):\n"
-            + str(ctx["ai_profile"])[:2000]
-        )
-
-    if resume_text:
-        silent_lines.append("--- RESUME ---\n" + resume_text[:2500])
-
-    if ctx.get("psycho"):
-        p = ctx["psycho"]
-        top = ", ".join(p["top"]) if p["top"] else p.get("type", "")
-        silent_lines.append(
-            f"PERSONALITY (psychometric test result): {p.get('type','')} — "
-            f"dominant traits: {top}. "
-            f"Analytical types → data-heavy questions with numbers. "
-            f"Execution types → scenario-based action questions. "
-            f"Collaboration/HR types → people-dynamic and stakeholder questions."
-        )
-
-    if silent_lines:
-        body.intro = (body.intro or "") + "\n\n" + "\n\n".join(silent_lines)
+    body.name = cfg.name or body.name
+    body.intro = intake.intro_blob(cfg)
 
     session_id = str(uuid.uuid4())
     db.execute(
@@ -845,6 +817,20 @@ async def start_session(
         },
     )
     db.commit()
+
+    # How they chose to answer. Defensive, like every post-base column: on a database that
+    # has not seen 009 the session still runs — it just runs without recording its mode,
+    # and scoring falls back to ×1.00 rather than guessing TEXT. schema_check has already
+    # said so at boot.
+    try:
+        db.execute(
+            text("UPDATE vyom_sessions SET session_mode=:m WHERE id=:id"),
+            {"m": cfg.mode, "id": session_id},
+        )
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        log.warning("session_mode not stored (apply migration 009?): %s", type(e).__name__)
 
     # PART 1: persist the roster-picked interviewer name so every later turn speaks as
     # that same person. Defensive — a missing column must never break a session start.

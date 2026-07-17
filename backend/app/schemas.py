@@ -50,12 +50,26 @@ class StartSessionRequest(BaseModel):
     # It changes the interviewer's REGISTER and raises the curveball count. It does NOT
     # relax a single guardrail — see prompts.build_persona.
     difficulty: Literal["Easy", "Realistic", "Stretch", "Critical"] = "Realistic"
+    # FEEDBACK — when they hear about it: at the end (interview) or after every answer
+    # (coach). The lobby heading says FEEDBACK; the wire name and the DB column stay
+    # `mode` for compatibility. This is NOT `session_mode` below. Two different things
+    # have been called "mode" in this codebase for months, and conflating them is the
+    # easiest available way to break scoring — see scoring.feedback_factor.
     mode: Literal["interview", "coach"] = "interview"
+    # MODE — how they answer. TEXT (typed, no mic, no TTS spend), AUDIO (spoken, the
+    # default and the current behaviour), VIDEO (camera on, speak or type per question).
+    # Optional so an older client that never sends it still starts a normal AUDIO session.
+    session_mode: Literal["TEXT", "AUDIO", "VIDEO"] = "AUDIO"
     round: Literal["screening", "technical", "leadership", "hr", "full"] = "full"
     round_label: str = Field("", max_length=80)
     round_detail: str = Field("", max_length=1000)
     focus: list[Annotated[str, Field(max_length=80)]] = Field(default_factory=list, max_length=10)
     intro: str = Field("", max_length=8000)
+    # The JD, as its own field. It used to be glued onto `intro` behind a
+    # `--- JOB DESCRIPTION ---` delimiter and split apart again server-side, which meant a
+    # student who pasted that literal string into their JD re-partitioned their own
+    # session. A field cannot be forged by its own contents.
+    jd: str = Field("", max_length=2000)
     # Voice Phase 1: TTS voice preference. "female" (default) | "male".
     voice: Literal["female", "male"] = "female"
     # Interview Room: the client's roster (pickInterviewer) chose the FACE the student

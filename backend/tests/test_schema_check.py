@@ -85,6 +85,7 @@ def test_a_missing_table_does_not_also_report_every_column_on_it():
     assert [m for m in missing if m[1] == "vyom_messages"] == [
         ("004_delivery_metrics", "vyom_messages", "delivery_metrics"),
         ("006_interview_room", "vyom_messages", "presence_metrics"),
+        ("009_intake_and_modes", "vyom_messages", "input_channel"),
     ]
 
 
@@ -175,7 +176,7 @@ def test_every_expected_migration_has_a_file_on_disk():
 
 
 def test_the_newest_migration_is_the_one_the_code_needs():
-    assert sc.LATEST_MIGRATION == "008_student_memory"
+    assert sc.LATEST_MIGRATION == "009_intake_and_modes"
     assert sc.EXPECTED[-1][0] == sc.LATEST_MIGRATION
 
 

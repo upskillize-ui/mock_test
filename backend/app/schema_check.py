@@ -62,6 +62,12 @@ EXPECTED: list[tuple[str, str, str | None]] = [
     ("007_scoring_context", "vyom_debriefs", "scored"),
     ("008_student_memory", "vyom_student_memory", None),
     ("008_student_memory", "vyom_sessions", "experience_feedback"),
+    # 009 — how the student answered. `session_mode` is NOT `mode` (that one is the
+    # feedback style, interview|coach). Without these two columns the mode selector still
+    # renders and the session still runs; it is simply never recorded how it was answered,
+    # and the benchmark loses its mode factor.
+    ("009_intake_and_modes", "vyom_sessions", "session_mode"),
+    ("009_intake_and_modes", "vyom_messages", "input_channel"),
 ]
 
 # The newest migration the code expects. Reported at boot so a deploy can be eyeballed in
