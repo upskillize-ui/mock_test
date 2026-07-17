@@ -1,0 +1,90 @@
+{
+  "cold_start_setup_to_lobby_s": 0.14,
+  "preflight_role_shown": [
+    "Data Analyst interview \u2014 you're answering by typing."
+  ],
+  "preflight_role_matches_choice": true,
+  "preflight_first_lines": [
+    "History",
+    "Settings",
+    "Ready to join?",
+    "Data Analyst interview \u2014 you're answering by typing.",
+    "No microphone needed, so we won't ask for one. Your interviewer's questions appear as text, and you'll type your answers. Every question is timed the same way, and you're scored on what you say \u2014 not how you said it.",
+    "Join interview"
+  ],
+  "join_to_first_question_s": 4.65,
+  "while_typing": [
+    {
+      "at_s": 0.1,
+      "chars": 0,
+      "mute_line_present": false,
+      "q_chip_present": true
+    },
+    {
+      "at_s": 4.5,
+      "chars": 12,
+      "mute_line_present": false,
+      "q_chip_present": true
+    },
+    {
+      "at_s": 13.1,
+      "chars": 24,
+      "mute_line_present": false,
+      "q_chip_present": true
+    },
+    {
+      "at_s": 28.1,
+      "chars": 36,
+      "mute_line_present": false,
+      "q_chip_present": true
+    },
+    {
+      "at_s": 32.5,
+      "chars": 48,
+      "mute_line_present": false,
+      "q_chip_present": true
+    },
+    {
+      "at_s": 37.0,
+      "chars": 60,
+      "mute_line_present": false,
+      "q_chip_present": true
+    },
+    {
+      "at_s": 41.3,
+      "chars": 72,
+      "mute_line_present": false,
+      "q_chip_present": true
+    },
+    {
+      "at_s": 45.7,
+      "chars": 84,
+      "mute_line_present": false,
+      "q_chip_present": true
+    },
+    {
+      "at_s": 50.0,
+      "chars": 96,
+      "mute_line_present": false,
+      "q_chip_present": true
+    },
+    {
+      "at_s": 54.4,
+      "chars": 108,
+      "mute_line_present": false,
+      "q_chip_present": true
+    },
+    {
+      "at_s": 58.8,
+      "chars": 120,
+      "mute_line_present": false,
+      "q_chip_present": true
+    }
+  ],
+  "typing_duration_s": 60.21,
+  "mute_nudge_while_typing": false,
+  "q_chip_visible_while_typing": true,
+  "reasks_during_typing": 0,
+  "rebuke_while_typing": [],
+  "after_send_text": "InterviewIQ\nData Analyst \u2014 General\n18:57\nEnd\nWarm-up \u00b7 Question 1 of 2\nTHIS QUESTION 0:20\nNia \u00b7 InterviewIQ\nChat\nType an answer any time\nINTERVIEWIQ\n\nHi QA, good to have you here. So, data analytics \u2014 what draws you to this kind of work? And more practically, what would be most useful for you to walk away with by the time we're done today?\n\nSend\nYOUR TURN\nType your answer\nHi QA, good to have you here. So, data analytics \u2014 what draws you to this kind of work? And more practically, what would be most useful for you to walk away with by the time we're done today?\nEnd"
+}

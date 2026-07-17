@@ -1,0 +1,320 @@
+{
+  "per_mode": {
+    "TEXT": {
+      "session_id": "43405049-78e8-4a5e-be67-581a8ff3c37d",
+      "end_attempts": [
+        200
+      ],
+      "billed_failures_before_readout": 0,
+      "readout_blocks_present": {
+        "overall_band": true,
+        "round_bands": true,
+        "strengths": true,
+        "gaps": true,
+        "perAnswerScores": false,
+        "delivery": true,
+        "professional_presence": true,
+        "profile": true,
+        "benchmark": false,
+        "weights_version": false
+      },
+      "profile": {
+        "role": "Data Analyst",
+        "company": "Zomato",
+        "level": "Fresher",
+        "difficulty": "Realistic",
+        "duration_min": 20,
+        "mode": "TEXT",
+        "feedback": "interview",
+        "rounds_covered": [
+          "Warm-up",
+          "Domain",
+          "Behavioural"
+        ],
+        "rounds_skipped": [
+          "Case"
+        ]
+      },
+      "delivery": {
+        "spoken_answers": 0,
+        "enough_data": false,
+        "message": "Not enough voice data \u2014 try answering aloud next session.",
+        "tts": {
+          "vendor_calls": 0,
+          "vendor_seconds": 0.0,
+          "cache_hits": 0,
+          "cached_seconds": 0.0,
+          "unmeasured_clips": 0,
+          "total_seconds": 0.0,
+          "cache_saved_pct": 0
+        }
+      },
+      "benchmark": null,
+      "weights_version": null,
+      "db_session": {
+        "session_mode": "TEXT",
+        "mode": "interview",
+        "camera_at_join": 0,
+        "status": "completed"
+      },
+      "db_debrief": {
+        "benchmark": 12,
+        "benchmark_uncapped": "12.2",
+        "weights_version": "2026.07-2",
+        "gated_band": "Not Ready",
+        "scored": 1,
+        "substantive_answers": 13
+      },
+      "contract": {
+        "mode recorded": true,
+        "benchmark non-null": true,
+        "weights_version non-null": true,
+        "status completed": true
+      },
+      "history_row": {
+        "session_id": "43405049-78e8-4a5e-be67-581a8ff3c37d",
+        "role": "Data Analyst",
+        "company": "Zomato",
+        "level": "Fresher",
+        "difficulty": "Realistic",
+        "mode": "interview",
+        "round": "full",
+        "round_label": "",
+        "focus": [],
+        "planned_duration_min": 20,
+        "actual_duration_seconds": 469,
+        "user_message_count": 13,
+        "assistant_message_count": 14,
+        "started_at": "2026-07-17T07:49:03",
+        "ended_at": "2026-07-17T07:56:52",
+        "status": "completed",
+        "completion_type": "completed",
+        "overall": 18,
+        "one_line": "You have real instincts about data quality and ownership, but the session stalled because you cycled through the same three answers without engaging with the actual questions being asked.",
+        "benchmark": 12,
+        "band": "Not Ready",
+        "scored": true
+      }
+    },
+    "AUDIO": {
+      "session_id": "e6ba3d89-2822-436f-8902-6f7a85a1278a",
+      "end_attempts": [
+        502,
+        502,
+        502,
+        502,
+        502,
+        502
+      ],
+      "billed_failures_before_readout": 6,
+      "db_session": {
+        "session_mode": "AUDIO",
+        "mode": "interview",
+        "camera_at_join": 0,
+        "status": "active"
+      },
+      "db_debrief": null,
+      "contract": {
+        "mode recorded": true,
+        "benchmark non-null": false,
+        "weights_version non-null": false,
+        "status completed": false
+      },
+      "history_row": {
+        "session_id": "e6ba3d89-2822-436f-8902-6f7a85a1278a",
+        "role": "Data Analyst",
+        "company": "Zomato",
+        "level": "Fresher",
+        "difficulty": "Realistic",
+        "mode": "interview",
+        "round": "full",
+        "round_label": "",
+        "focus": [],
+        "planned_duration_min": 20,
+        "actual_duration_seconds": null,
+        "user_message_count": 13,
+        "assistant_message_count": 14,
+        "started_at": "2026-07-17T08:00:50",
+        "ended_at": null,
+        "status": "active",
+        "completion_type": null,
+        "overall": null,
+        "one_line": null,
+        "benchmark": null,
+        "band": null,
+        "scored": false
+      }
+    },
+    "VIDEO": {
+      "session_id": "18929e0a-031a-444e-9c04-9311281e1308",
+      "end_attempts": [
+        502,
+        502,
+        502,
+        502,
+        502,
+        502
+      ],
+      "billed_failures_before_readout": 6,
+      "db_session": {
+        "session_mode": "VIDEO",
+        "mode": "interview",
+        "camera_at_join": 1,
+        "status": "active"
+      },
+      "db_debrief": null,
+      "contract": {
+        "mode recorded": true,
+        "benchmark non-null": false,
+        "weights_version non-null": false,
+        "status completed": false
+      },
+      "history_row": {
+        "session_id": "18929e0a-031a-444e-9c04-9311281e1308",
+        "role": "Data Analyst",
+        "company": "Zomato",
+        "level": "Fresher",
+        "difficulty": "Realistic",
+        "mode": "interview",
+        "round": "full",
+        "round_label": "",
+        "focus": [],
+        "planned_duration_min": 20,
+        "actual_duration_seconds": null,
+        "user_message_count": 13,
+        "assistant_message_count": 14,
+        "started_at": "2026-07-17T08:08:14",
+        "ended_at": null,
+        "status": "active",
+        "completion_type": null,
+        "overall": null,
+        "one_line": null,
+        "benchmark": null,
+        "band": null,
+        "scored": false
+      }
+    }
+  },
+  "history_raw": {
+    "sessions": [
+      {
+        "session_id": "18929e0a-031a-444e-9c04-9311281e1308",
+        "role": "Data Analyst",
+        "company": "Zomato",
+        "level": "Fresher",
+        "difficulty": "Realistic",
+        "mode": "interview",
+        "round": "full",
+        "round_label": "",
+        "focus": [],
+        "planned_duration_min": 20,
+        "actual_duration_seconds": null,
+        "user_message_count": 13,
+        "assistant_message_count": 14,
+        "started_at": "2026-07-17T08:08:14",
+        "ended_at": null,
+        "status": "active",
+        "completion_type": null,
+        "overall": null,
+        "one_line": null,
+        "benchmark": null,
+        "band": null,
+        "scored": false
+      },
+      {
+        "session_id": "e6ba3d89-2822-436f-8902-6f7a85a1278a",
+        "role": "Data Analyst",
+        "company": "Zomato",
+        "level": "Fresher",
+        "difficulty": "Realistic",
+        "mode": "interview",
+        "round": "full",
+        "round_label": "",
+        "focus": [],
+        "planned_duration_min": 20,
+        "actual_duration_seconds": null,
+        "user_message_count": 13,
+        "assistant_message_count": 14,
+        "started_at": "2026-07-17T08:00:50",
+        "ended_at": null,
+        "status": "active",
+        "completion_type": null,
+        "overall": null,
+        "one_line": null,
+        "benchmark": null,
+        "band": null,
+        "scored": false
+      },
+      {
+        "session_id": "43405049-78e8-4a5e-be67-581a8ff3c37d",
+        "role": "Data Analyst",
+        "company": "Zomato",
+        "level": "Fresher",
+        "difficulty": "Realistic",
+        "mode": "interview",
+        "round": "full",
+        "round_label": "",
+        "focus": [],
+        "planned_duration_min": 20,
+        "actual_duration_seconds": 469,
+        "user_message_count": 13,
+        "assistant_message_count": 14,
+        "started_at": "2026-07-17T07:49:03",
+        "ended_at": "2026-07-17T07:56:52",
+        "status": "completed",
+        "completion_type": "completed",
+        "overall": 18,
+        "one_line": "You have real instincts about data quality and ownership, but the session stalled because you cycled through the same three answers without engaging with the actual questions being asked.",
+        "benchmark": 12,
+        "band": "Not Ready",
+        "scored": true
+      },
+      {
+        "session_id": "eefc61fe-2c42-4f6e-800e-85c25d4b3abb",
+        "role": "Data Analyst",
+        "company": "Zomato",
+        "level": "Fresher",
+        "difficulty": "Realistic",
+        "mode": "interview",
+        "round": "full",
+        "round_label": "",
+        "focus": [],
+        "planned_duration_min": 20,
+        "actual_duration_seconds": 61,
+        "user_message_count": 3,
+        "assistant_message_count": 4,
+        "started_at": "2026-07-17T07:36:25",
+        "ended_at": "2026-07-17T07:37:26",
+        "status": "completed",
+        "completion_type": "completed",
+        "overall": 38,
+        "one_line": "Strong analytical instincts showed up in flashes, but the session ended before depth could be tested \u2014 what landed was sharp, what's missing is the full follow-through.",
+        "benchmark": 17,
+        "band": "Not Ready",
+        "scored": true
+      }
+    ],
+    "total": 4,
+    "trend": [
+      {
+        "session_id": "43405049-78e8-4a5e-be67-581a8ff3c37d",
+        "benchmark": 12,
+        "band": "Not Ready",
+        "started_at": "2026-07-17T07:49:03",
+        "difficulty": "Realistic",
+        "duration_min": 20,
+        "latest": true
+      },
+      {
+        "session_id": "eefc61fe-2c42-4f6e-800e-85c25d4b3abb",
+        "benchmark": 17,
+        "band": "Not Ready",
+        "started_at": "2026-07-17T07:36:25",
+        "difficulty": "Realistic",
+        "duration_min": 20,
+        "latest": false
+      }
+    ],
+    "latest_average": 14.5
+  }
+}

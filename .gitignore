@@ -40,3 +40,10 @@ docs/screenshots/
 frontend/src/interviewers/neo_warm_male.png
 frontend/src/interviewers/rex_stern_male.png
 frontend/src/interviewers/veda_formal_female.png
+
+# QA sweep screenshots: the harness writes them to a scratchpad dir outside the
+# repo (QA_SHOT_DIR), and the register cites them BY FILENAME ONLY — same rule as
+# docs/screenshots above. This belt-and-braces line exists so a future run that
+# defaults QA_SHOT_DIR into the tree cannot smuggle a .png into history.
+tests/qa_sweep/evidence/*.png
+tests/qa_sweep/shots/

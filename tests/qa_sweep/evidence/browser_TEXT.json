@@ -1,0 +1,158 @@
+{
+  "mode": "TEXT",
+  "autoplay_blocked": false,
+  "checks": [
+    {
+      "cell": "TEXT pre-flight: no device UI/copy that asks for a device",
+      "status": "PASS",
+      "evidence": "device-request copy: none | buttons: ['History', 'Settings', 'Join interview'] | reassurance copy present: True"
+    },
+    {
+      "cell": "TEXT pre-flight: DRAFT NOTICE not shown to students",
+      "status": "PASS",
+      "evidence": "'DRAFT NOTICE \u2014 PENDING LEGAL REVIEW' absent on pre-flight"
+    },
+    {
+      "cell": "TEXT: zero getUserMedia calls",
+      "status": "PASS",
+      "evidence": "0 getUserMedia call(s): []"
+    },
+    {
+      "cell": "TEXT: persona never says mute/mic while student is idle",
+      "status": "FAIL",
+      "evidence": "device lines during 105s idle: [{\"at_s\": 0.5, \"line\": \"You're on mute \\u2014 go ahead and unmute, or if you'd rather type it out we can roll with that.\"}, {\"at_s\": 93.8, \"line\": \"You're on mute \\u2014 go ahead and unmute, or if you'd rather type it out we can keep moving.\"}]"
+    },
+    {
+      "cell": "TEXT: no mic/camera buttons in the room",
+      "status": "PASS",
+      "evidence": "visible buttons: ['Voice settings', 'End', 'Correct this', 'Send', 'Toggle captions', 'End']"
+    },
+    {
+      "cell": "TEXT: typing composer present",
+      "status": "PASS",
+      "evidence": "composer count: 1"
+    },
+    {
+      "cell": "TEXT: no 'Tap to enable audio' affordance",
+      "status": "PASS",
+      "evidence": "audio-unblock chip: absent"
+    },
+    {
+      "cell": "TEXT: zero /session/speech calls",
+      "status": "PASS",
+      "evidence": "0 call(s): []"
+    },
+    {
+      "cell": "TEXT: zero clip-pack fetches",
+      "status": "PASS",
+      "evidence": "0 call(s): []"
+    },
+    {
+      "cell": "TEXT: zero audio bytes fetched",
+      "status": "PASS",
+      "evidence": "0 fetch(es), 0 bytes"
+    },
+    {
+      "cell": "TEXT: client never plays speech audio",
+      "status": "PASS",
+      "evidence": "speech play() calls: none (plus 2 silent-WAV autoplay-unlock play(s), which carry no speech)"
+    },
+    {
+      "cell": "TEXT: no voice-only controls in the room",
+      "status": "FAIL",
+      "evidence": "visible buttons: ['Voice settings', 'End', 'Correct this', 'Send', 'Toggle captions', 'End']"
+    }
+  ],
+  "network": [
+    {
+      "url": "/session/start",
+      "method": "POST",
+      "status": 200
+    },
+    {
+      "url": "/consent",
+      "method": "POST",
+      "status": 200
+    },
+    {
+      "url": "/session/greeting",
+      "method": "POST",
+      "status": 200
+    },
+    {
+      "url": "/session/reask",
+      "method": "POST",
+      "status": 200
+    },
+    {
+      "url": "/session/turn",
+      "method": "POST",
+      "status": 200
+    },
+    {
+      "url": "/session/reask",
+      "method": "POST",
+      "status": 200
+    }
+  ],
+  "console": [
+    "debug: [vite] connecting...",
+    "info: %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold",
+    "debug: [vite] connected.",
+    "debug: [voice] stt_available = true | stage = WARMUP",
+    "debug: [voice] stt_available = true | stage = WARMUP",
+    "debug: [interviewer identity] wry, deliberate, plain-spoken mentor, sits in the substance, asks short and waits, disarming warmth with sharp underneath",
+    "debug: [voice] stt_available = true | stage = WARMUP"
+  ],
+  "screens": [
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots\\TEXT_1_setup.png",
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots\\TEXT_2_lobby.png",
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots\\TEXT_3_room.png",
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots\\TEXT_4_idle.png"
+  ],
+  "consent_accepted": true,
+  "lobby_text": "History\nSettings\nReady to join?\nSoftware Engineer (SDE) interview \u2014 you're answering by typing.\nNo microphone needed, so we won't ask for one. Your interviewer's questions appear as text, and you'll type your answers. Every question is timed the same way, and you're scored on what you say \u2014 not how you said it.\nJoin interview",
+  "lobby_device_controls": [
+    "History",
+    "Settings",
+    "Join interview"
+  ],
+  "join_clicks": [
+    "Join interview"
+  ],
+  "reached_room": true,
+  "getUserMedia_calls": [],
+  "idle_seconds_watched": 105,
+  "device_lines_while_idle": [
+    {
+      "at_s": 0.5,
+      "line": "You're on mute \u2014 go ahead and unmute, or if you'd rather type it out we can roll with that."
+    },
+    {
+      "at_s": 93.8,
+      "line": "You're on mute \u2014 go ahead and unmute, or if you'd rather type it out we can keep moving."
+    }
+  ],
+  "room_text": "InterviewIQ\nSoftware Engineer (SDE) \u2014 General\n18:01\nEnd\nWarm-up \u00b7 Question 1 of 2\nTHIS QUESTION 1:07\nNia \u00b7 InterviewIQ\nChat\nType an answer any time\nINTERVIEWIQ\n\nQA, I'm Nia. Good to have you here. So we've got twenty minutes and I want to use it to understand how you actually think when you're building something \u2014 not just what you know, but how you'd approach a problem differently next time. What's the one thing you want to walk out of here feeling more confident about?\n\nINTERVIEWIQ\n\nYou're on mute \u2014 go ahead and unmute, or if you'd rather type it out we can roll with that.\n\nQA\n(No answer \u2014 the time on this question ran out.)\nTime ran out\nCorrect this\nINTERVIEWIQ\n\nWe're out of time on that one \u2014 let's move on.\n\nTell me about yourself. Start wherever makes sense \u2014 school, projects, internships, whatever shaped how you code.\n\nINTERVIEWIQ\n\nYou're on mute \u2014 go ahead and unmute, or if you'd rather type it out we can keep moving.\n\nSend\nYOUR TURN\nType your answer\nYou're on mute \u2014 go ahead and unmute, or if you'd rather type it out we can keep moving.\nEnd",
+  "room_buttons": [
+    "Voice settings",
+    "End",
+    "Correct this",
+    "Send",
+    "Toggle captions",
+    "End"
+  ],
+  "silent_unlock_plays": 2,
+  "audio_play_calls": [],
+  "audio_constructed": 2,
+  "layers": {
+    "server_speech_calls": 0,
+    "clip_pack_calls": 0,
+    "audio_byte_fetches": 0,
+    "audio_bytes_total": 0,
+    "audio_elements_constructed": 2,
+    "play_attempts": 0,
+    "play_rejected": 0
+  },
+  "js_errors": []
+}

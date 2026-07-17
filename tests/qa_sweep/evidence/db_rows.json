@@ -1,0 +1,12 @@
+{
+  "VIDEO": {
+    "session": {
+      "session_mode": "VIDEO",
+      "mode": "interview",
+      "camera_at_join": 1,
+      "status": "active"
+    },
+    "debrief": null,
+    "messages_with_delivery_metrics": 0
+  }
+}

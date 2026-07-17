@@ -1,0 +1,35 @@
+{
+  "session_id": "e6ba3d89-2822-436f-8902-6f7a85a1278a",
+  "probes": [
+    {
+      "max_tokens": 2500,
+      "stop_reason": "max_tokens",
+      "output_tokens": 2500,
+      "input_tokens": 4385,
+      "raw_chars": 9322,
+      "json_parses": false,
+      "parse_error": "Expecting ',' delimiter: line 179 column 6 (char 9238)",
+      "tail": "e\": true\\n    },\\n    {\\n      \"answerId\": 563,\\n      \"stage\": \"BEHAVIOURAL\",\\n      \"score\": "
+    },
+    {
+      "max_tokens": 2500,
+      "stop_reason": "max_tokens",
+      "output_tokens": 2500,
+      "input_tokens": 4385,
+      "raw_chars": 9248,
+      "json_parses": false,
+      "parse_error": "Expecting ',' delimiter: line 181 column 6 (char 9179)",
+      "tail": "    \"substantive\": true\\n    },\\n    {\\n      \"answerId\": 569,\\n      \"stage\": \"CASE\",\\n      \""
+    },
+    {
+      "max_tokens": 4000,
+      "stop_reason": "end_turn",
+      "output_tokens": 2631,
+      "input_tokens": 4385,
+      "raw_chars": 9472,
+      "json_parses": true,
+      "parse_error": null,
+      "tail": " the business logic. That's the best thing you can do in a reverse round.\"\\n    }\\n  ]\\n}\\n```"
+    }
+  ]
+}

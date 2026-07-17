@@ -1,0 +1,943 @@
+{
+  "mode": "VIDEO",
+  "checks": [
+    {
+      "cell": "start: stt_available reflects mode (TEXT must not advertise STT)",
+      "status": "PASS",
+      "evidence": "session_mode=VIDEO -> stt_available=True (server computes this from STT_ENABLED and VOICE_ENABLED only)"
+    },
+    {
+      "cell": "VIDEO: greeting returns real audio bytes",
+      "status": "PASS",
+      "evidence": "4 segments, first audio_url=/session/audio/cb2a289c000f2369da4ff2313f0a63253d421746af57b6d6dd355c01851a7b21"
+    },
+    {
+      "cell": "VIDEO: /session/speech returns audio",
+      "status": "PASS",
+      "evidence": "segments=['/session/audio/cb2a289c000f2369da4ff2313f0a63253d421746af57b6d6dd355c01851a7b21', '/session/audio/938174e6945349374d2a2707eff4e51cb2a3790837d31cd0b382c9ed0addc89a', '/session/audio/5b91b89c1adf7db08e4fe36fa198edc90951e6a22f411fe8cd17ffbf8b07078b', '/session/audio/29bc8e9dd94dda504168bf7ecbada4fe759aba2dec23643c8f1351f20e585e84']"
+    },
+    {
+      "cell": "VIDEO: audio URL serves real bytes (vendor layer)",
+      "status": "PASS",
+      "evidence": "GET /session/audio/cb2a289c000f2369da4ff2313f0a63253d421746af57b6d6dd355c01851a7b21 -> 200, 23823 bytes, content-type=audio/mpeg, magic=fffb90c4"
+    },
+    {
+      "cell": "end: readout returned",
+      "status": "FAIL",
+      "evidence": "POST /session/end -> 502"
+    }
+  ],
+  "timeline": [
+    {
+      "t": 0.91,
+      "event": "start",
+      "session_id": "18929e0a-031a-444e-9c04-9311281e1308"
+    },
+    {
+      "t": 6.35,
+      "event": "greeting",
+      "segments": 4,
+      "audio_urls": [
+        "/session/audio/cb2a289c000f2369da4ff2313f0a63253d421746af57b6d6dd355c01851a7b21",
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "t": 17.08,
+      "event": "stt_probe",
+      "label": "before_consent",
+      "status": 200
+    },
+    {
+      "t": 19.31,
+      "event": "stt_probe",
+      "label": "after_consent",
+      "status": 200
+    },
+    {
+      "t": 26.91,
+      "event": "turn",
+      "i": 0,
+      "stage": "WARMUP",
+      "audio_urls": [
+        "/session/audio/0104272fdc7f94fab0544580bdf5b27008055be501660a911f3f93301e3efeea",
+        null
+      ],
+      "reply": "That energy dashboard sounds like real work \u2014 twelve buildings is a decent scope. Let me ask you this: when you were bui"
+    },
+    {
+      "t": 26.96,
+      "event": "rating",
+      "answer_id": 578,
+      "status": 409
+    },
+    {
+      "t": 37.59,
+      "event": "turn",
+      "i": 1,
+      "stage": "DOMAIN",
+      "audio_urls": [
+        "/session/audio/d23b44b0ae01fc4da6ab085a7e333ee1ccfd94f733582739946aa9642a38a981",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "reply": "Good instinct there \u2014 flagging instead of dropping means you kept the signal and gave someone downstream visibility into"
+    },
+    {
+      "t": 37.68,
+      "event": "rating",
+      "answer_id": 580,
+      "status": 409
+    },
+    {
+      "t": 52.06,
+      "event": "turn",
+      "i": 2,
+      "stage": "DOMAIN",
+      "audio_urls": [
+        "/session/audio/3843146d8988133b8640c88474c0e5b53cd32b456479290c8010866cc0760dd9",
+        null,
+        null,
+        null,
+        null
+      ],
+      "reply": "That's a sharp instinct \u2014 you're right that the denominator is where the trap door opens.\n\nBut let me push a bit deeper "
+    },
+    {
+      "t": 52.19,
+      "event": "rating",
+      "answer_id": 582,
+      "status": 200
+    },
+    {
+      "t": 65.69,
+      "event": "turn",
+      "i": 3,
+      "stage": "DOMAIN",
+      "audio_urls": [
+        "/session/audio/f8419ddeb00e20a08bb9579a4859d9a0bd65b37d0b5fbc12e9660f7c89f8afe1",
+        null,
+        null,
+        null,
+        null
+      ],
+      "reply": "That's the right reflex \u2014 catching your own mistakes before they reach someone else. You built a system to prevent it ha"
+    },
+    {
+      "t": 65.77,
+      "event": "rating",
+      "answer_id": 584,
+      "status": 200
+    },
+    {
+      "t": 72.87,
+      "event": "turn",
+      "i": 4,
+      "stage": "DOMAIN",
+      "audio_urls": [
+        "/session/audio/504f79044bdde35a58fb8271bc38968743b1b22f33e16b9ad59245bf3a288181",
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "reply": "You're asking a fair question back \u2014 I like that. But let me stay with this one for a moment, because it's the real craf"
+    },
+    {
+      "t": 72.95,
+      "event": "rating",
+      "answer_id": 586,
+      "status": 200
+    },
+    {
+      "t": 80.45,
+      "event": "turn",
+      "i": 5,
+      "stage": "DOMAIN",
+      "audio_urls": [
+        "/session/audio/4a7c0ce5cc158e86965836ab671f82753f15658cab718bdd77de1b69cc350d4e",
+        null,
+        null,
+        null,
+        null
+      ],
+      "reply": "That's exactly right \u2014 you made the decision on evidence, not ego. That matters.\n\nLet's shift gears now. Tell me about a"
+    },
+    {
+      "t": 80.65,
+      "event": "rating",
+      "answer_id": 588,
+      "status": 200
+    },
+    {
+      "t": 88.32,
+      "event": "turn",
+      "i": 6,
+      "stage": "BEHAVIOURAL",
+      "audio_urls": [
+        "/session/audio/f62809de5bb752ebc3d41914ccdc7af9687de937e4fe2fa5f52a78fcca453411",
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "reply": "You're thinking in cohorts \u2014 that's solid. You're also spotting the pattern that early churn is usually friction, not pr"
+    },
+    {
+      "t": 88.53,
+      "event": "rating",
+      "answer_id": 590,
+      "status": 200
+    },
+    {
+      "t": 98.68,
+      "event": "turn",
+      "i": 7,
+      "stage": "BEHAVIOURAL",
+      "audio_urls": [
+        "/session/audio/04ecfbaa56126d8897655dba9768cf3e8814435486e06b26f46c07abca108687",
+        null,
+        null,
+        null,
+        null
+      ],
+      "reply": "That's the right move \u2014 you're not guessing, you're asking the query plan to tell you what's actually slow before you ch"
+    },
+    {
+      "t": 98.99,
+      "event": "rating",
+      "answer_id": 592,
+      "status": 200
+    },
+    {
+      "t": 108.12,
+      "event": "turn",
+      "i": 8,
+      "stage": "BEHAVIOURAL",
+      "audio_urls": [
+        "/session/audio/6a7139092800645266bad3c3dee852166eca5f006ca12f8c943d9f2fa0b578b4",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "reply": "That's useful self-awareness \u2014 you know what moves you. The fact that you *rebuilt* the whole dashboard instead of just "
+    },
+    {
+      "t": 108.22,
+      "event": "rating",
+      "answer_id": 594,
+      "status": 200
+    },
+    {
+      "t": 118.07,
+      "event": "turn",
+      "i": 9,
+      "stage": "CASE",
+      "audio_urls": [
+        "/session/audio/813751c6eb3cdb9dcc32eb3b7fed3660f96e585cf504a6641dca0570cb631fef",
+        null,
+        null,
+        null
+      ],
+      "reply": "That's exactly the kind of detail that tells me you've actually thought about how we work \u2014 not just Googled \"Zomato dat"
+    },
+    {
+      "t": 118.26,
+      "event": "rating",
+      "answer_id": 596,
+      "status": 200
+    },
+    {
+      "t": 126.73,
+      "event": "turn",
+      "i": 10,
+      "stage": "REVERSE",
+      "audio_urls": [
+        "/session/audio/36992c600a2095adb92a74ce5c6bc0b87d7a4e39ef6da8c6dd38fa3fb81d712c",
+        null,
+        null,
+        null
+      ],
+      "reply": "I appreciate that \u2014 you're naming something real and you've already built a system to manage it. Time-boxing the first p"
+    },
+    {
+      "t": 126.77,
+      "event": "rating",
+      "answer_id": 598,
+      "status": 409
+    },
+    {
+      "t": 134.72,
+      "event": "turn",
+      "i": 11,
+      "stage": "FEEDBACK",
+      "audio_urls": [
+        "/session/audio/d6aec16108d44528441c70851f49d99d7445a3292f789023dd8fa519e5329b4e",
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "reply": "That's the exact right metric \u2014 you're measuring adoption, not aesthetics. If people are still emailing you every Monday"
+    },
+    {
+      "t": 134.82,
+      "event": "rating",
+      "answer_id": 600,
+      "status": 409
+    },
+    {
+      "t": 146.62,
+      "event": "turn",
+      "i": 12,
+      "stage": "READOUT",
+      "audio_urls": [
+        "/session/audio/44e27c1e6b0eaeeed8ed375d590ed6dfdf898e2fc1479021cbb1b2697272304b",
+        null,
+        null,
+        null
+      ],
+      "reply": "You caught the operational gap \u2014 flagging without a process to act on it really is just noise, and tying it to a revenue"
+    },
+    {
+      "t": 211.82,
+      "event": "end",
+      "status": 502
+    }
+  ],
+  "raw": {
+    "start": {
+      "session_id": "18929e0a-031a-444e-9c04-9311281e1308",
+      "greeting": "",
+      "state": {
+        "current_stage": "WARMUP",
+        "round_index": 0,
+        "stage_total": 2,
+        "awaiting_rating": false,
+        "last_answer_id": null,
+        "answer_count": 0,
+        "answer_cap": 20,
+        "next_action": "answer",
+        "stage_label": "Warm-up \u00b7 Question 1 of 2",
+        "status": null,
+        "started_at": null,
+        "stale": false,
+        "stt_available": true,
+        "early_wrap_reason": null
+      },
+      "audio_segments": [],
+      "tone": "warm",
+      "stt_available": true,
+      "interviewer_identity": null
+    },
+    "greeting": {
+      "greeting": "Hey, good to see you. So I'm Kavya \u2014 I'm on the analytics side here at Zomato. Before we dig in, I want to understand what you're actually hoping to get out of our time together today. Is there a specific part of the role or the work itself you want to make sure we cover?",
+      "audio_segments": [
+        {
+          "text": "Hey, good to see you.",
+          "audio_url": "/session/audio/cb2a289c000f2369da4ff2313f0a63253d421746af57b6d6dd355c01851a7b21",
+          "pause_before_ms": 0,
+          "pending": false
+        },
+        {
+          "text": "So I'm Kavya \u2014 I'm on the analytics side here at Zomato.",
+          "audio_url": null,
+          "pause_before_ms": 380,
+          "pending": true
+        },
+        {
+          "text": "Before we dig in, I want to understand what you're actually hoping to get out of our time together today.",
+          "audio_url": null,
+          "pause_before_ms": 380,
+          "pending": true
+        },
+        {
+          "text": "Is there a specific part of the role or the work itself you want to make sure we cover?",
+          "audio_url": null,
+          "pause_before_ms": 700,
+          "pending": true
+        }
+      ],
+      "tone": "warm",
+      "interviewer_identity": "Earnest mentor, deliberate pauses, plain-spoken, leads with context then asks, curious about candidate's own learning curve, sits in the craft itself"
+    },
+    "speech": {
+      "segments": [
+        {
+          "index": 0,
+          "audio_url": "/session/audio/cb2a289c000f2369da4ff2313f0a63253d421746af57b6d6dd355c01851a7b21"
+        },
+        {
+          "index": 1,
+          "audio_url": "/session/audio/938174e6945349374d2a2707eff4e51cb2a3790837d31cd0b382c9ed0addc89a"
+        },
+        {
+          "index": 2,
+          "audio_url": "/session/audio/5b91b89c1adf7db08e4fe36fa198edc90951e6a22f411fe8cd17ffbf8b07078b"
+        },
+        {
+          "index": 3,
+          "audio_url": "/session/audio/29bc8e9dd94dda504168bf7ecbada4fe759aba2dec23643c8f1351f20e585e84"
+        }
+      ]
+    },
+    "audio_probe": {
+      "url": "/session/audio/cb2a289c000f2369da4ff2313f0a63253d421746af57b6d6dd355c01851a7b21",
+      "status": 200,
+      "bytes": 23823,
+      "content_type": "audio/mpeg",
+      "magic": "fffb90c4"
+    },
+    "clips": {
+      "status": 200,
+      "count": 10,
+      "sample": [
+        {
+          "text": "Hmm.",
+          "audio_url": "/session/audio/ed10efb02535efd2086b0d2d9dc7b5cd520238de0c24603897904e057149936c"
+        },
+        {
+          "text": "Okay.",
+          "audio_url": "/session/audio/b8fda9d1a2e657eaf6501be060c91c817c7d801cc443b02469212f105fbad05c"
+        }
+      ]
+    },
+    "stt_before_consent": {
+      "status": 200,
+      "body": "{\"transcript\":null,\"delivery_metrics\":null}"
+    },
+    "consent": {
+      "status": 200,
+      "body": "{\"accepted\":true,\"consent_type\":\"voice_recording\",\"copy_version\":\"v0-draft\"}"
+    },
+    "stt_after_consent": {
+      "status": 200,
+      "body": "{\"transcript\":null,\"delivery_metrics\":null}"
+    },
+    "state_initial": {
+      "current_stage": "WARMUP",
+      "round_index": 0,
+      "stage_total": 2,
+      "awaiting_rating": false,
+      "last_answer_id": null,
+      "answer_count": 0,
+      "answer_cap": 20,
+      "next_action": "answer",
+      "stage_label": "Warm-up \u00b7 Question 1 of 2",
+      "status": "active",
+      "started_at": "2026-07-17T08:08:14",
+      "stale": false,
+      "stt_available": true,
+      "early_wrap_reason": null
+    },
+    "turns": [
+      {
+        "i": 0,
+        "reply": "That energy dashboard sounds like real work \u2014 twelve buildings is a decent scope. Let me ask you this: when you were building that, what was the messiest part of getting the data ready, and how did you end up solving it?",
+        "audio_urls": [
+          "/session/audio/0104272fdc7f94fab0544580bdf5b27008055be501660a911f3f93301e3efeea",
+          null
+        ],
+        "tone": "warm",
+        "state": {
+          "current_stage": "WARMUP",
+          "round_index": 1,
+          "stage_total": 2,
+          "awaiting_rating": false,
+          "last_answer_id": null,
+          "answer_count": 1,
+          "answer_cap": 20,
+          "next_action": "answer",
+          "stage_label": "Warm-up \u00b7 Question 2 of 2",
+          "status": null,
+          "started_at": null,
+          "stale": false,
+          "stt_available": true,
+          "early_wrap_reason": null
+        }
+      },
+      {
+        "i": 1,
+        "reply": "Good instinct there \u2014 flagging instead of dropping means you kept the signal and gave someone downstream visibility into what was broken. That's exactly the kind of thinking we need.\n\nLet's switch gears. In a real scenario at Zomato, we get delivery data streaming in from thousands of restaurants and riders across the country. Some orders have missing delivery times, some have rider GPS pings that don't line up with the actual route, some timestamps are out of order because of network lag. You're building a pipeline to feed this into a model that predicts delivery time.\n\nWalk me through: how would you decide what to do with the messy data \u2014 and what would you actually measure to know if your cleaning approach was working?",
+        "audio_urls": [
+          "/session/audio/d23b44b0ae01fc4da6ab085a7e333ee1ccfd94f733582739946aa9642a38a981",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "tone": "neutral",
+        "state": {
+          "current_stage": "DOMAIN",
+          "round_index": 0,
+          "stage_total": 4,
+          "awaiting_rating": false,
+          "last_answer_id": null,
+          "answer_count": 2,
+          "answer_cap": 20,
+          "next_action": "answer",
+          "stage_label": "Domain \u00b7 Question 1 of 4",
+          "status": null,
+          "started_at": null,
+          "stale": false,
+          "stt_available": true,
+          "early_wrap_reason": null
+        }
+      },
+      {
+        "i": 2,
+        "reply": "That's a sharp instinct \u2014 you're right that the denominator is where the trap door opens.\n\nBut let me push a bit deeper on the delivery time piece. Say you've decided the pipeline feeds a model that needs to predict arrival time for the customer app. Now you've got three choices: drop orders with missing delivery times, estimate them using nearby orders, or mark them as a separate category and handle them differently in the model.\n\nWhat would actually break if you picked the wrong one \u2014 and how would you know which one to pick?",
+        "audio_urls": [
+          "/session/audio/3843146d8988133b8640c88474c0e5b53cd32b456479290c8010866cc0760dd9",
+          null,
+          null,
+          null,
+          null
+        ],
+        "tone": "neutral",
+        "state": {
+          "current_stage": "DOMAIN",
+          "round_index": 1,
+          "stage_total": 4,
+          "awaiting_rating": true,
+          "last_answer_id": 582,
+          "answer_count": 3,
+          "answer_cap": 20,
+          "next_action": "rating",
+          "stage_label": "Domain \u00b7 Question 1 of 4",
+          "status": null,
+          "started_at": null,
+          "stale": false,
+          "stt_available": true,
+          "early_wrap_reason": null
+        }
+      },
+      {
+        "i": 3,
+        "reply": "That's the right reflex \u2014 catching your own mistakes before they reach someone else. You built a system to prevent it happening again.\n\nHere's the thing though: in that delivery time scenario, you're not just trying to avoid double-counts. You're deciding what data actually goes into a model that hundreds of thousands of people will see an ETA from.\n\nSo let me ask differently: if you dropped all the messy delivery records, what would that do to your model's predictions for certain kinds of orders \u2014 say, orders from new restaurants, or late-night deliveries, or during monsoon when GPS is spotty?",
+        "audio_urls": [
+          "/session/audio/f8419ddeb00e20a08bb9579a4859d9a0bd65b37d0b5fbc12e9660f7c89f8afe1",
+          null,
+          null,
+          null,
+          null
+        ],
+        "tone": "neutral",
+        "state": {
+          "current_stage": "DOMAIN",
+          "round_index": 2,
+          "stage_total": 4,
+          "awaiting_rating": true,
+          "last_answer_id": 584,
+          "answer_count": 4,
+          "answer_cap": 20,
+          "next_action": "rating",
+          "stage_label": "Domain \u00b7 Question 2 of 4",
+          "status": null,
+          "started_at": null,
+          "stale": false,
+          "stt_available": true,
+          "early_wrap_reason": null
+        }
+      },
+      {
+        "i": 4,
+        "reply": "You're asking a fair question back \u2014 I like that. But let me stay with this one for a moment, because it's the real craft.\n\nThink about it this way: if you silently drop messy records, your model trains on a cleaned-up version of reality. So when it goes live and sees *actual* messy data \u2014 which it will \u2014 it's predicting on something it's never seen before.\n\nWhat does that mean for certain kinds of orders? And how would you catch it?",
+        "audio_urls": [
+          "/session/audio/504f79044bdde35a58fb8271bc38968743b1b22f33e16b9ad59245bf3a288181",
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "tone": "neutral",
+        "state": {
+          "current_stage": "DOMAIN",
+          "round_index": 3,
+          "stage_total": 4,
+          "awaiting_rating": true,
+          "last_answer_id": 586,
+          "answer_count": 5,
+          "answer_cap": 20,
+          "next_action": "rating",
+          "stage_label": "Domain \u00b7 Question 3 of 4",
+          "status": null,
+          "started_at": null,
+          "stale": false,
+          "stt_available": true,
+          "early_wrap_reason": null
+        }
+      },
+      {
+        "i": 5,
+        "reply": "That's exactly right \u2014 you made the decision on evidence, not ego. That matters.\n\nLet's shift gears now. Tell me about a time when you built something \u2014 a dashboard, a pipeline, a script, whatever it was \u2014 and it broke in production or didn't work the way you expected. Walk me through what happened, what you did about it, and what you learned from it.",
+        "audio_urls": [
+          "/session/audio/4a7c0ce5cc158e86965836ab671f82753f15658cab718bdd77de1b69cc350d4e",
+          null,
+          null,
+          null,
+          null
+        ],
+        "tone": "neutral",
+        "state": {
+          "current_stage": "DOMAIN",
+          "round_index": 4,
+          "stage_total": 4,
+          "awaiting_rating": true,
+          "last_answer_id": 588,
+          "answer_count": 6,
+          "answer_cap": 20,
+          "next_action": "rating",
+          "stage_label": "Domain \u00b7 Question 4 of 4",
+          "status": null,
+          "started_at": null,
+          "stale": false,
+          "stt_available": true,
+          "early_wrap_reason": null
+        }
+      },
+      {
+        "i": 6,
+        "reply": "You're thinking in cohorts \u2014 that's solid. You're also spotting the pattern that early churn is usually friction, not product fit.\n\nBut I want to go back to something real. You mentioned the energy dashboard you built last semester. Walk me through a specific moment where something didn't work the way you expected \u2014 maybe the data didn't load right, or a calculation was off, or someone using it found a bug. What actually happened, and how did you handle it?",
+        "audio_urls": [
+          "/session/audio/f62809de5bb752ebc3d41914ccdc7af9687de937e4fe2fa5f52a78fcca453411",
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "tone": "neutral",
+        "state": {
+          "current_stage": "BEHAVIOURAL",
+          "round_index": 1,
+          "stage_total": 3,
+          "awaiting_rating": true,
+          "last_answer_id": 590,
+          "answer_count": 7,
+          "answer_cap": 20,
+          "next_action": "rating",
+          "stage_label": "Behavioural \u00b7 Question 1 of 3",
+          "status": null,
+          "started_at": null,
+          "stale": false,
+          "stt_available": true,
+          "early_wrap_reason": null
+        }
+      },
+      {
+        "i": 7,
+        "reply": "That's the right move \u2014 you're not guessing, you're asking the query plan to tell you what's actually slow before you change anything.\n\nHere's a real situation for you: you're on call one night and a dashboard your team owns starts running thirty minutes slower than usual. No code changed, no schema changed \u2014 the data is just the same. You've got maybe two minutes before stakeholders start pinging. What's your first move, and why that one?",
+        "audio_urls": [
+          "/session/audio/04ecfbaa56126d8897655dba9768cf3e8814435486e06b26f46c07abca108687",
+          null,
+          null,
+          null,
+          null
+        ],
+        "tone": "neutral",
+        "state": {
+          "current_stage": "BEHAVIOURAL",
+          "round_index": 2,
+          "stage_total": 3,
+          "awaiting_rating": true,
+          "last_answer_id": 592,
+          "answer_count": 8,
+          "answer_cap": 20,
+          "next_action": "rating",
+          "stage_label": "Behavioural \u00b7 Question 2 of 3",
+          "status": null,
+          "started_at": null,
+          "stale": false,
+          "stt_available": true,
+          "early_wrap_reason": null
+        }
+      },
+      {
+        "i": 8,
+        "reply": "That's useful self-awareness \u2014 you know what moves you. The fact that you *rebuilt* the whole dashboard instead of just tweaking it says you took the hit seriously.\n\nLet's switch gears to something scenario-based. Picture this: you're three weeks into the job, and you've built a SQL query that pulls customer retention numbers for the leadership team's weekly sync. The numbers show a two percent drop week-on-week. Leadership is about to present them to investors. Then one of your teammates casually asks, \"Did you check if that cohort definition matches what product is using?\" You haven't. You pull the code \u2014 and it doesn't.\n\nYou've got maybe twenty minutes before the meeting. Walk me through what you do, step by step.",
+        "audio_urls": [
+          "/session/audio/6a7139092800645266bad3c3dee852166eca5f006ca12f8c943d9f2fa0b578b4",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "tone": "neutral",
+        "state": {
+          "current_stage": "BEHAVIOURAL",
+          "round_index": 3,
+          "stage_total": 3,
+          "awaiting_rating": true,
+          "last_answer_id": 594,
+          "answer_count": 9,
+          "answer_cap": 20,
+          "next_action": "rating",
+          "stage_label": "Behavioural \u00b7 Question 3 of 3",
+          "status": null,
+          "started_at": null,
+          "stale": false,
+          "stt_available": true,
+          "early_wrap_reason": null
+        }
+      },
+      {
+        "i": 9,
+        "reply": "That's exactly the kind of detail that tells me you've actually thought about how we work \u2014 not just Googled \"Zomato data\" the night before. Variance optimization is a real constraint we live in.\n\nYou've got questions for me now, yeah? What do you want to know about the role, the team, or how we actually work here?",
+        "audio_urls": [
+          "/session/audio/813751c6eb3cdb9dcc32eb3b7fed3660f96e585cf504a6641dca0570cb631fef",
+          null,
+          null,
+          null
+        ],
+        "tone": "neutral",
+        "state": {
+          "current_stage": "CASE",
+          "round_index": 1,
+          "stage_total": 1,
+          "awaiting_rating": true,
+          "last_answer_id": 596,
+          "answer_count": 10,
+          "answer_cap": 20,
+          "next_action": "rating",
+          "stage_label": "Case \u00b7 Question 1 of 1",
+          "status": null,
+          "started_at": null,
+          "stale": false,
+          "stt_available": true,
+          "early_wrap_reason": null
+        }
+      },
+      {
+        "i": 10,
+        "reply": "I appreciate that \u2014 you're naming something real and you've already built a system to manage it. Time-boxing the first pass is smart; it forces you to ship something that's *useful* before you ship something that's *perfect*. That's exactly the tension we live in here.\n\nSo: what do you want to ask me?",
+        "audio_urls": [
+          "/session/audio/36992c600a2095adb92a74ce5c6bc0b87d7a4e39ef6da8c6dd38fa3fb81d712c",
+          null,
+          null,
+          null
+        ],
+        "tone": "neutral",
+        "state": {
+          "current_stage": "REVERSE",
+          "round_index": 1,
+          "stage_total": 2,
+          "awaiting_rating": false,
+          "last_answer_id": null,
+          "answer_count": 11,
+          "answer_cap": 20,
+          "next_action": "reverse_question",
+          "stage_label": "Your Questions \u00b7 Question 2 of 2",
+          "status": null,
+          "started_at": null,
+          "stale": false,
+          "stt_available": true,
+          "early_wrap_reason": null
+        }
+      },
+      {
+        "i": 11,
+        "reply": "That's the exact right metric \u2014 you're measuring adoption, not aesthetics. If people are still emailing you every Monday asking for the same number, the dashboard didn't actually change their workflow. That's a clean way to think about it.\n\nAlright, so I've asked you a lot. Let me flip it: what would you change about how this interview went for you? What was useful, what wasn't, what would you do differently if you were running it?",
+        "audio_urls": [
+          "/session/audio/d6aec16108d44528441c70851f49d99d7445a3292f789023dd8fa519e5329b4e",
+          null,
+          null,
+          null,
+          null,
+          null
+        ],
+        "tone": "neutral",
+        "state": {
+          "current_stage": "FEEDBACK",
+          "round_index": 0,
+          "stage_total": 1,
+          "awaiting_rating": false,
+          "last_answer_id": null,
+          "answer_count": 12,
+          "answer_cap": 20,
+          "next_action": "answer",
+          "stage_label": "Your Feedback",
+          "status": null,
+          "started_at": null,
+          "stale": false,
+          "stt_available": true,
+          "early_wrap_reason": null
+        }
+      },
+      {
+        "i": 12,
+        "reply": "You caught the operational gap \u2014 flagging without a process to act on it really is just noise, and tying it to a revenue threshold means you're surfacing something the business actually cares about. That's the kind of thinking that separates a pipeline from a *useful* pipeline.\n\nBut I asked you something just now \u2014 how did this session feel for you? What landed, what didn't, what would you take away from it?",
+        "audio_urls": [
+          "/session/audio/44e27c1e6b0eaeeed8ed375d590ed6dfdf898e2fc1479021cbb1b2697272304b",
+          null,
+          null,
+          null
+        ],
+        "tone": "neutral",
+        "state": {
+          "current_stage": "READOUT",
+          "round_index": 0,
+          "stage_total": 0,
+          "awaiting_rating": false,
+          "last_answer_id": null,
+          "answer_count": 13,
+          "answer_cap": 20,
+          "next_action": "readout",
+          "stage_label": "Readout",
+          "status": null,
+          "started_at": null,
+          "stale": false,
+          "stt_available": true,
+          "early_wrap_reason": null
+        }
+      }
+    ],
+    "messages": {
+      "session_id": "18929e0a-031a-444e-9c04-9311281e1308",
+      "messages": [
+        {
+          "role": "assistant",
+          "content": "Hey, good to see you. So I'm Kavya \u2014 I'm on the analytics side here at Zomato. Before we dig in, I want to understand what you're actually hoping to get out of our time together today. Is there a specific part of the role or the work itself you want to make sure we cover?"
+        },
+        {
+          "role": "user",
+          "content": "Sure. I'm a final-year computer science student and I've spent the last year working on data pipelines, mostly in Python and SQL. Last semester I built a dashboard that tracked campus energy use across twelve buildings."
+        },
+        {
+          "role": "assistant",
+          "content": "That energy dashboard sounds like real work \u2014 twelve buildings is a decent scope. Let me ask you this: when you were building that, what was the messiest part of getting the data ready, and how did you end up solving it?"
+        },
+        {
+          "role": "user",
+          "content": "The hardest part was the data quality. Meter readings arrived with gaps and duplicate timestamps, so I wrote a reconciliation step that flagged anomalies instead of silently dropping them. That cut bad rows by about eighty percent."
+        },
+        {
+          "role": "assistant",
+          "content": "Good instinct there \u2014 flagging instead of dropping means you kept the signal and gave someone downstream visibility into what was broken. That's exactly the kind of thinking we need.\n\nLet's switch gears. In a real scenario at Zomato, we get delivery data streaming in from thousands of restaurants and riders across the country. Some orders have missing delivery times, some have rider GPS pings that don't line up with the actual route, some timestamps are out of order because of network lag. You're building a pipeline to feed this into a model that predicts delivery time.\n\nWalk me through: how would you decide what to do with the messy data \u2014 and what would you actually measure to know if your cleaning approach was working?"
+        },
+        {
+          "role": "user",
+          "content": "I'd start by asking what decision the number is meant to support. If nobody can answer that, the metric is decoration. Then I'd check the denominator, because that's where most misleading percentages hide."
+        },
+        {
+          "role": "assistant",
+          "content": "That's a sharp instinct \u2014 you're right that the denominator is where the trap door opens.\n\nBut let me push a bit deeper on the delivery time piece. Say you've decided the pipeline feeds a model that needs to predict arrival time for the customer app. Now you've got three choices: drop orders with missing delivery times, estimate them using nearby orders, or mark them as a separate category and handle them differently in the model.\n\nWhat would actually break if you picked the wrong one \u2014 and how would you know which one to pick?"
+        },
+        {
+          "role": "user",
+          "content": "I once shipped a query that double-counted refunds. Finance caught it, not me. I wrote a regression test for it the same day and started reviewing my own joins against a known-total check before shipping."
+        },
+        {
+          "role": "assistant",
+          "content": "That's the right reflex \u2014 catching your own mistakes before they reach someone else. You built a system to prevent it happening again.\n\nHere's the thing though: in that delivery time scenario, you're not just trying to avoid double-counts. You're deciding what data actually goes into a model that hundreds of thousands of people will see an ETA from.\n\nSo let me ask differently: if you dropped all the messy delivery records, what would that do to your model's predictions for certain kinds of orders \u2014 say, orders from new restaurants, or late-night deliveries, or during monsoon when GPS is spotty?"
+        },
+        {
+          "role": "user",
+          "content": "What does the first ninety days look like for someone in this seat, and how would you know at the end of it whether the hire was a good one?"
+        },
+        {
+          "role": "assistant",
+          "content": "You're asking a fair question back \u2014 I like that. But let me stay with this one for a moment, because it's the real craft.\n\nThink about it this way: if you silently drop messy records, your model trains on a cleaned-up version of reality. So when it goes live and sees *actual* messy data \u2014 which it will \u2014 it's predicting on something it's never seen before.\n\nWhat does that mean for certain kinds of orders? And how would you catch it?"
+        },
+        {
+          "role": "user",
+          "content": "In my last internship I disagreed with my manager about caching a report. I pulled the query logs, showed that the underlying table only changed twice a day, and we settled it on the numbers rather than on seniority."
+        },
+        {
+          "role": "assistant",
+          "content": "That's exactly right \u2014 you made the decision on evidence, not ego. That matters.\n\nLet's shift gears now. Tell me about a time when you built something \u2014 a dashboard, a pipeline, a script, whatever it was \u2014 and it broke in production or didn't work the way you expected. Walk me through what happened, what you did about it, and what you learned from it."
+        },
+        {
+          "role": "user",
+          "content": "I'd segment by cohort first. A blended retention curve hides the fact that the January cohort might be churning while March looks healthy. Then I'd look at the second-week drop, because that's usually onboarding rather than product."
+        },
+        {
+          "role": "assistant",
+          "content": "You're thinking in cohorts \u2014 that's solid. You're also spotting the pattern that early churn is usually friction, not product fit.\n\nBut I want to go back to something real. You mentioned the energy dashboard you built last semester. Walk me through a specific moment where something didn't work the way you expected \u2014 maybe the data didn't load right, or a calculation was off, or someone using it found a bug. What actually happened, and how did you handle it?"
+        },
+        {
+          "role": "user",
+          "content": "Honestly, I don't know that one. My instinct would be to look at how the index is being used before adding another, but I'd want to check the query plan rather than guess in the room."
+        },
+        {
+          "role": "assistant",
+          "content": "That's the right move \u2014 you're not guessing, you're asking the query plan to tell you what's actually slow before you change anything.\n\nHere's a real situation for you: you're on call one night and a dashboard your team owns starts running thirty minutes slower than usual. No code changed, no schema changed \u2014 the data is just the same. You've got maybe two minutes before stakeholders start pinging. What's your first move, and why that one?"
+        },
+        {
+          "role": "user",
+          "content": "I'd rather be told directly. In my project reviews the feedback that actually changed how I work was the blunt kind \u2014 being told my charts were pretty and unreadable made me rebuild the whole dashboard."
+        },
+        {
+          "role": "assistant",
+          "content": "That's useful self-awareness \u2014 you know what moves you. The fact that you *rebuilt* the whole dashboard instead of just tweaking it says you took the hit seriously.\n\nLet's switch gears to something scenario-based. Picture this: you're three weeks into the job, and you've built a SQL query that pulls customer retention numbers for the leadership team's weekly sync. The numbers show a two percent drop week-on-week. Leadership is about to present them to investors. Then one of your teammates casually asks, \"Did you check if that cohort definition matches what product is using?\" You haven't. You pull the code \u2014 and it doesn't.\n\nYou've got maybe twenty minutes before the meeting. Walk me through what you do, step by step."
+        },
+        {
+          "role": "user",
+          "content": "I read the engineering blog and the piece on your delivery-time model. The part that stuck with me was that you optimise for variance, not just the mean, because a late order hurts more than an early one helps."
+        },
+        {
+          "role": "assistant",
+          "content": "That's exactly the kind of detail that tells me you've actually thought about how we work \u2014 not just Googled \"Zomato data\" the night before. Variance optimization is a real constraint we live in.\n\nYou've got questions for me now, yeah? What do you want to know about the role, the team, or how we actually work here?"
+        },
+        {
+          "role": "user",
+          "content": "My weakness is that I go deep before I go wide \u2014 I'll perfect one query while the wider question is still open. I've started time-boxing the first pass to get to an answer, then refining it."
+        },
+        {
+          "role": "assistant",
+          "content": "I appreciate that \u2014 you're naming something real and you've already built a system to manage it. Time-boxing the first pass is smart; it forces you to ship something that's *useful* before you ship something that's *perfect*. That's exactly the tension we live in here.\n\nSo: what do you want to ask me?"
+        },
+        {
+          "role": "user",
+          "content": "I'd measure success by whether the team stopped asking for the report manually. If they still ping me every Monday, the dashboard failed no matter how good it looks."
+        },
+        {
+          "role": "assistant",
+          "content": "That's the exact right metric \u2014 you're measuring adoption, not aesthetics. If people are still emailing you every Monday asking for the same number, the dashboard didn't actually change their workflow. That's a clean way to think about it.\n\nAlright, so I've asked you a lot. Let me flip it: what would you change about how this interview went for you? What was useful, what wasn't, what would you do differently if you were running it?"
+        },
+        {
+          "role": "user",
+          "content": "That's a fair challenge. I think the risk with my approach is that flagging anomalies creates a queue nobody works. So I'd pair it with a threshold that auto-escalates anything above two percent of revenue."
+        },
+        {
+          "role": "assistant",
+          "content": "You caught the operational gap \u2014 flagging without a process to act on it really is just noise, and tying it to a revenue threshold means you're surfacing something the business actually cares about. That's the kind of thinking that separates a pipeline from a *useful* pipeline.\n\nBut I asked you something just now \u2014 how did this session feel for you? What landed, what didn't, what would you take away from it?"
+        }
+      ]
+    },
+    "reask_mute": {
+      "reply": "You're on mute \u2014 go ahead and unmute, or if you'd rather type out your answer, that works just as well and we'll keep moving.",
+      "audio_url": "/session/audio/2f76fa9a939d3e91cc22ca59256cc3fd9fba15ad8fcc3bef7296aabb25dcea3e"
+    },
+    "end": {
+      "status": 502,
+      "body": "{\"detail\":\"Debrief generation failed\"}"
+    }
+  },
+  "session_id": "18929e0a-031a-444e-9c04-9311281e1308"
+}
