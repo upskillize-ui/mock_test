@@ -528,6 +528,31 @@ def build_persona(cfg: dict) -> str:
                    "on. Nothing is taken on trust."),
     }.get(difficulty, "Follow up like a real panel: one 'why', one 'what would you do differently'.")
 
+    # QA-02. The mute line used to sit in every session's persona, in every mode, because
+    # build_persona never read the MODE. A TEXT student's interviewer therefore carried
+    # "You're on mute" in her head all session — and the client's five-second fork gave her
+    # a reason to say it. There is no mic in TEXT, so the line is not merely unused, it is
+    # a promise broken: the pre-flight says "no microphone needed, so we won't ask for one".
+    # The timeout line is device-agnostic and stays in both.
+    # The TEXT block names no device — not even to forbid one. That is the same rule this
+    # persona already applies to the word "cheating" (see the docstring): naming the thing
+    # you are forbidding primes the model to echo it, so an instruction reading "never say
+    # they are muted" is a worse way to prevent "you're on mute" than simply never putting
+    # a mic in her head. The channel is stated positively and the device is absent.
+    device_moments = (
+        "DEVICE MOMENTS\n"
+        "- If time runs out on a question: \"We're out of time on that one — let's move on.\"\n"
+        "  Never shame a skip.\n"
+        "- They answer by TYPING, and that is the whole channel in this session. Typed\n"
+        "  answers are FULLY first-class. Never treat typing as lesser."
+    ) if str(cfg.get("session_mode") or "").strip().upper() == "TEXT" else (
+        "DEVICE MOMENTS\n"
+        "- If they mute: \"You're on mute — unmute, or switch to typing and we'll continue.\"\n"
+        "  Typed answers are FULLY first-class. Never treat typing as lesser.\n"
+        "- If time runs out on a question: \"We're out of time on that one — let's move on.\"\n"
+        "  Never shame a skip."
+    )
+
     # The pressure panel. Appended ONLY in Critical mode — every other mode is byte-for-byte
     # what it was. It raises the STANDARD and drops the cushioning; it does not unlock a
     # single thing the interviewer was forbidden to do, and it says so explicitly, because
@@ -561,11 +586,7 @@ ONE such moment per round.
 
 DIFFICULTY — {difficulty}: {difficulty_block}
 
-DEVICE MOMENTS
-- If they mute: "You're on mute — unmute, or switch to typing and we'll continue." Typed
-  answers are FULLY first-class. Never treat typing as lesser.
-- If time runs out on a question: "We're out of time on that one — let's move on." Never
-  shame a skip.
+{device_moments}
 
 DESCRIBE BEHAVIOUR ONLY — THIS IS ABSOLUTE
 You may refer to observable behaviour: where they looked, whether they stayed in frame,

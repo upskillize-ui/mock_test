@@ -1997,7 +1997,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // Refs mirror state for the <audio> 'ended' handler and the rAF loop, which would
   // otherwise close over stale values.
   const micOnRef = useRef(true);   // MIC = mute toggle; unmuted is the capture gate
-  const voiceModeRef = useRef(false);
+  const roomModeRef = useRef(false);
   const canAnswerRef = useRef(false);
   const consentRef = useRef(false);
   const recordingRef = useRef(false);
@@ -2417,9 +2417,28 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const canAnswer = !ended && !connecting && !awaitingRating
     && (nextAction === "answer" || nextAction === "reverse_question");
 
+  // Text mode puts the panel in the student tile's slot. The room stays two tiles; the
+  // panel is already mode-agnostic, so this is the whole change.
+  //
+  // This is the sprint that "landing later" meant. It used to read `config.mode === "text"`
+  // — a placeholder that could never fire, because `config.mode` is the FEEDBACK style
+  // (interview | coach) and never once held "text". The MODE lives in `session_mode`, and
+  // its values are upper-case.
+  const textMode = (config.session_mode || "").toUpperCase() === "TEXT";
+
   // Voice Stage: a presentation mode over the same state machine. Only ever active
   // when voice is available; switch it off and the session renders exactly as today.
-  const voiceMode = sttAvailable && voiceStage;
+  //
+  // QA-02: these were always TWO ideas wearing one name, and the collision is what told a
+  // TEXT student they were on mute. `stt_available` now answers "can this session use STT",
+  // which is false for TEXT — but the ROOM is not a voice feature, and keying its render on
+  // STT would drop a TEXT student back into the old chat log. So:
+  //   roomMode  — the room UI and its state machine are live (all three modes)
+  //   voiceLive — voice is actually usable this session (never TEXT)
+  // Anything that opens a mic, listens, barges, or offers a device fork gates on voiceLive.
+  // Anything that draws the room, or drives the turn flow inside it, gates on roomMode.
+  const roomMode = (sttAvailable || textMode) && voiceStage;
+  const voiceLive = sttAvailable && voiceStage;
   const orbState = recording ? "listening"
     // FAST START: while the greeting is being written she is THINKING, not idle — which is
     // both what is actually happening and what the candidate should see her doing.
@@ -2442,15 +2461,6 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const [chatOpen, setChatOpen] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
   const composerRef = useRef(null);
-  // Text mode puts the panel in the student tile's slot. The room stays two tiles; the
-  // panel is already mode-agnostic, so this is the whole change.
-  //
-  // This is the sprint that "landing later" meant. It used to read `config.mode === "text"`
-  // — a placeholder that could never fire, because `config.mode` is the FEEDBACK style
-  // (interview | coach) and never once held "text". The MODE lives in `session_mode`, and
-  // its values are upper-case.
-  const textMode = (config.session_mode || "").toUpperCase() === "TEXT";
-
   // E2 CC: the caption is the sentence ACTUALLY being spoken. Because the reply is
   // synthesised one clip per sentence, the sequencer knows exactly which line is in the
   // air — so captions land in true lockstep instead of being interpolated off a
@@ -2476,7 +2486,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // Mirror state into refs — the <audio> 'ended' handler and the rAF meter loop are
   // registered once and would otherwise close over stale values.
   useEffect(() => { micOnRef.current = micOn; }, [micOn]);
-  useEffect(() => { voiceModeRef.current = voiceMode; }, [voiceMode]);
+  useEffect(() => { roomModeRef.current = roomMode; }, [roomMode]);
   useEffect(() => { canAnswerRef.current = canAnswer; }, [canAnswer]);
   useEffect(() => { consentRef.current = voiceConsented; }, [voiceConsented]);
   useEffect(() => { recordingRef.current = recording; }, [recording]);
@@ -2495,8 +2505,8 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // The transcript drawer auto-opens at the readout. (It no longer force-opens at the
   // rating, because the rating is now ASKED ALOUD and answered by voice.)
   useEffect(() => {
-    if (voiceMode && nextAction === "readout") setDrawerOpen(true);
-  }, [voiceMode, nextAction]);
+    if (roomMode && nextAction === "readout") setDrawerOpen(true);
+  }, [roomMode, nextAction]);
 
   // ── REALISM: BARGE-IN ──
   // You can interrupt a person, and that is most of what makes them one. While the
@@ -2607,7 +2617,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // theirs. Not while a rating is due (what they would be interrupting is the rating ask,
   // and cutting that short helps nobody). Not while MUTED — a muted mic is never opened,
   // and that is the whole contract of the mute button, barge-in included.
-  const bargeArmed = audioPlaying && voiceMode && micOn && voiceConsented
+  const bargeArmed = audioPlaying && voiceLive && micOn && voiceConsented
     && canAnswer && !recording && !transcribing && !ended;
   useEffect(() => {
     if (!bargeArmed) { stopBargeMonitor({ keepStream: true }); return; }
@@ -2632,7 +2642,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // the typed composer so a voice failure is never a dead end.
   const voiceFallback = () => {
     showToast("Voice input unavailable — please type your answer");
-    if (voiceModeRef.current) setTypeOpen(true);
+    if (roomModeRef.current) setTypeOpen(true);
   };
 
   // Realism v2: "Heard: …" flashes for 3s under the character. The answer itself is
@@ -2688,7 +2698,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // invisible per-question timer is the ultimate backstop against a loop. A generic failure
   // still swaps in the composer after two in a row so voice can never become a dead end.
   const doReask = async (kind = "reask", { strike = true } = {}) => {
-    if (!voiceModeRef.current) { voiceFallback(); return; }
+    if (!roomModeRef.current) { voiceFallback(); return; }
     if (strike) {
       sttFailRef.current += 1;
       if (sttFailRef.current >= 2) { sttFailRef.current = 0; voiceFallback(); return; }
@@ -2894,11 +2904,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // only decides WHEN to ask it, so the capture invariant is untouched — connecting /
   // speaking / speechQueued still hold the mic shut here exactly as everywhere else.
   useEffect(() => {
-    if (!voiceMode || awaitingRating) return;   // rating capture is startRatingCapture's job
+    if (!voiceLive || awaitingRating) return;   // rating capture is startRatingCapture's job
     if (graceMs > 0) return;                     // a grace beat is already counting down
     if (!canArmCapture(captureState())) return;  // the invariant + "is it their turn?" gate
     startGrace();
-  }, [voiceMode, micOn, canAnswer, audioPlaying, connecting, recording, transcribing,
+  }, [voiceLive, micOn, canAnswer, audioPlaying, connecting, recording, transcribing,
       loading, awaitingRating, ratingPills, typingNow, ended, voiceConsented, graceMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Realism v2: the spoken confidence rating ──
@@ -2930,7 +2940,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   //   2. the rating ask has been spoken -> open the mic to capture the spoken rating;
   //   3. otherwise -> hand the floor back for the next answer (auto-listen).
   const onAudioEnded = async () => {
-    if (!voiceModeRef.current) return;
+    if (!roomModeRef.current) return;
     if (awaitingRatingRef.current) {
       if (!ratingAskedRef.current && ratingAudioRef.current) {
         // Speak the rating ask, then open the mic for it. Sequenced explicitly (E2) —
@@ -2965,11 +2975,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // tapping the mic, and accepting the consent modal — so the recorder was capturing the
   // interviewer's own voice and submitting it as the candidate's answer.
   const captureState = (extra = {}) => ({
-    inRoom: voiceModeRef.current,
+    inRoom: roomModeRef.current,
     micOn: micOnRef.current,
     consented: consentRef.current,
     answerDue: canAnswerRef.current,
-    ratingDue: awaitingRatingRef.current && voiceModeRef.current && !ratingPillsRef.current,
+    ratingDue: awaitingRatingRef.current && roomModeRef.current && !ratingPillsRef.current,
     connecting: connectingRef.current,
     speaking: audioPlayingRef.current,
     speechQueued: speechQueuedRef.current,
@@ -3136,7 +3146,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
           // an incomplete answer in persona — it is never silently dropped.
           flashHeard(transcript);
           send(transcript.slice(0, 4000), { timeout: "partial" });
-        } else if (voiceModeRef.current) {
+        } else if (roomModeRef.current) {
           // INSTANT FLOW: no review card, no Send. Flash what we heard and submit now;
           // the answer is correctable afterwards from the transcript drawer.
           flashHeard(transcript);
@@ -3185,7 +3195,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
 
   // Mic button: toggle stop while recording; otherwise gate on consent then record.
   // The mic is usable for an answer, OR to speak the confidence rating.
-  const micUsable = canAnswer || (awaitingRating && voiceMode && !ratingPills);
+  const micUsable = canAnswer || (awaitingRating && roomMode && !ratingPills);
 
   const onMicClick = () => {
     if (graceMs > 0) { clearGrace(); return; }   // instant cancel of the auto-listen beat
@@ -3200,7 +3210,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       onBargeIn();
       return;
     }
-    if (awaitingRating && voiceMode) { startRatingCapture(); return; }   // spoken rating
+    if (awaitingRating && roomMode) { startRatingCapture(); return; }   // spoken rating
     armCapture();
   };
 
@@ -3237,7 +3247,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     // ...unless the interviewer is still speaking, in which case the gate holds the mic shut
     // and auto-listen opens it the moment she finishes. Unmuting mid-question used to start
     // recording instantly, straight over the top of her.
-    if (awaitingRating && voiceMode && !ratingPills) startRatingCapture();
+    if (awaitingRating && roomMode && !ratingPills) startRatingCapture();
     else armCapture();
   };
 
@@ -3265,7 +3275,13 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     clearMuteFork();
     // Not while they are typing: somebody mid-sentence in the composer has already picked
     // their fork, and offering it aloud would be talking over an answer in progress.
-    if (!voiceMode || micOn || typingNow) return;
+    //
+    // QA-02: `voiceLive`, not `roomMode`. Read the guard in TEXT: micOn is permanently
+    // false there (the lobby joins with mic:false), so `|| micOn` PASSES rather than
+    // blocks — a mic-off check cannot gate a mode that has no mic. The fork then fired at
+    // five seconds, on every question, at a student whose pre-flight had just promised
+    // "no microphone needed". A mode without a mic cannot be muted.
+    if (!voiceLive || micOn || typingNow) return;
     if (!canAnswer || loading || audioPlaying || recording || transcribing) return;
     if (muteForkedForRef.current === questionKey) return;   // already offered for this question
     muteForkRef.current = setTimeout(async () => {
@@ -3276,7 +3292,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       } catch { /* a nudge must never break the interview */ }
     }, MUTE_FORK_DELAY_MS);
     return clearMuteFork;
-  }, [voiceMode, micOn, typingNow, canAnswer, loading, audioPlaying, recording, transcribing, questionKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [voiceLive, micOn, typingNow, canAnswer, loading, audioPlaying, recording, transcribing, questionKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Interview Room (Phase C/E) ──
   // Attention signals are derived ON-DEVICE and reported as STRINGS. The camera never
@@ -3369,11 +3385,16 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // Muted mic AND an empty composer, with an answer due. An unmuted candidate sitting
   // quiet is thinking (that is the per-question clock's business, and it ends in a skip);
   // a muted candidate who is typing is answering. Only the total dead end wraps, once.
+  //
+  // `voiceLive`, not `roomMode` (QA-02): "two dead channels" presumes a second channel.
+  // TEXT has one, and its mic is off by definition — so the rule read every reading
+  // student as an abandonment and armed a wrap against them at ninety seconds. In TEXT
+  // the per-question clock is the only timer with standing.
   useEffect(() => {
     clearAbandon();
     if (abandonedRef.current) return;
     if (!shouldArmAbandon({
-      inRoom: voiceMode, answerDue: answerWindowOpen, micOn, typedChars: input.trim().length,
+      inRoom: voiceLive, answerDue: answerWindowOpen, micOn, typedChars: input.trim().length,
     })) return;
     abandonRef.current = setTimeout(() => {
       abandonedRef.current = true;
@@ -3382,7 +3403,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       doEarlyWrap(WRAP_NO_ANSWER);
     }, SILENT_ABANDON_MS);
     return clearAbandon;
-  }, [voiceMode, answerWindowOpen, micOn, input, questionKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [voiceLive, answerWindowOpen, micOn, input, questionKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Device policy: the 60s camera grace ──
   // Turn the camera back on inside the grace and NOTHING escalates — it is a real second
@@ -3512,7 +3533,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       // it manually so the hands-free loop still works. This MUST test the segments: they
       // are the only thing a reply is spoken from now, and keying it off the old
       // whole-reply audio_url would hand the floor back while IQ was still asking.
-      if (voiceModeRef.current && !res.audio_segments?.length) setTimeout(() => audioEndedRef.current?.(), 300);
+      if (roomModeRef.current && !res.audio_segments?.length) setTimeout(() => audioEndedRef.current?.(), 300);
       // TTS off (no audio) -> there is no playback hop to wait for; close the log line now.
       if (!res.audio_segments?.length) emitTurnLog();
     } catch (e) {
@@ -3524,7 +3545,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       setLoading(false);
       // Refocus the composer whenever one is actually on screen (classic, or the
       // typed fallback inside voice mode). On the pure stage there is nothing to focus.
-      if (!voiceModeRef.current || typedInVoiceRef.current) setTimeout(() => inputRef.current?.focus(), 50);
+      if (!roomModeRef.current || typedInVoiceRef.current) setTimeout(() => inputRef.current?.focus(), 50);
     }
   };
 
@@ -3541,7 +3562,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       ratingAskedRef.current = false;
       ratingAudioRef.current = null;
       setRatingPills(false);
-      if (voiceModeRef.current) setTimeout(() => audioEndedRef.current?.(), 400);
+      if (roomModeRef.current) setTimeout(() => audioEndedRef.current?.(), 400);
     } catch (e) {
       setError(e.message);
       try { setSstate(await fetchSessionState(sessionId)); } catch { /* noop */ }
@@ -3598,9 +3619,15 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // is actually useful: in the final 30 seconds, or when no speech has been detected at all
   // for this question (dead air, where a visible clock is reassuring rather than pressuring).
   // In classic typed mode there is no speech signal, so the clock stays visible as before.
+  //
+  // QA-10: the dead-air clause is a VOICE failsafe, so it gates on voiceLive. In TEXT
+  // `recording` is always false and `heardSpeechThisQ` is only ever set by the mic meter,
+  // so the clause was permanently true and the "invisible failsafe" was a countdown that
+  // never left the screen — ticking at a student mid-sentence, which is the exact pressure
+  // the design set out to remove. In TEXT the chip now appears at the 30s warning only.
   const qWarnNow = qLeft != null && qLeft <= QUESTION_WARN_SECONDS;
   const showQChip = qLeft != null && (
-    !voiceMode || qWarnNow || (!recording && !heardSpeechThisQ)
+    !roomMode || qWarnNow || (voiceLive && !recording && !heardSpeechThisQ)
   );
   // ── THE ROOM, DERIVED ONCE ───────────────────────────────────────────────
   // The lit tile, the strip and her face are three renderings of ONE state, so they are
@@ -3659,7 +3686,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
                 without focusing the composer, because focus is what tells the capture gate
                 they chose to type, and looking up an earlier question must not cost them
                 the microphone. In text mode the panel is always on screen already. */}
-            {voiceMode && !textMode && (
+            {roomMode && !textMode && (
               <button className="iq-audio-btn" onClick={() => setChatOpen(true)}
                 title="Open transcript" aria-label="Open transcript">
                 <IconTranscript />
@@ -3667,7 +3694,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
             )}
             {/* Classic typed mode keeps the modal drawer — there is no room column to put
                 a panel in when the whole screen is already the conversation. */}
-            {!voiceMode && (
+            {!roomMode && (
               <button className="iq-audio-btn" onClick={() => setDrawerOpen(true)} title="Open transcript" aria-label="Open transcript">
                 <IconTranscript />
               </button>
@@ -3709,7 +3736,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
             </span>
           )}
           {/* On the stage the ORB is the state indicator, so the chip is removed there. */}
-          {!voiceMode && voiceChip && (
+          {!roomMode && voiceChip && (
             <span aria-live="polite" style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 10, padding: "2px 10px", borderRadius: 999, background: "rgba(255,255,255,0.10)", fontFamily: IQ.mono, fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", color: "#fff" }}>
               <span style={{ width: 7, height: 7, borderRadius: "50%", background: voiceChip.color, animation: "iqRecDot 1.1s ease-in-out infinite", flexShrink: 0 }} />
               {voiceChip.label}
@@ -3718,7 +3745,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
         </div>
       </div>
 
-      {voiceMode ? (
+      {roomMode ? (
         <>
           {/* ══ THE INTERVIEW ROOM ══ A two-person call, not a chat log.
               Read top to bottom, the room is now four rows and nothing floats:
@@ -3887,12 +3914,18 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
               </>
             )}
 
-            <button className={"iq-ctl" + (captions ? " iq-ctl--on" : "")}
-              onClick={() => setCaptions(!captions)}
-              title={captions ? "Turn captions off" : "Turn captions on"}
-              aria-pressed={captions} aria-label="Toggle captions">
-              <IconCC />
-            </button>
+            {/* QA-15: captions caption the sentence being SPOKEN. TEXT has no speech, so
+                the control toggles nothing — the same "a control for a device the mode does
+                not use is at best clutter and at worst a broken promise" rule the mic and
+                camera buttons already follow one block up. */}
+            {voiceLive && (
+              <button className={"iq-ctl" + (captions ? " iq-ctl--on" : "")}
+                onClick={() => setCaptions(!captions)}
+                title={captions ? "Turn captions off" : "Turn captions on"}
+                aria-pressed={captions} aria-label="Toggle captions">
+                <IconCC />
+              </button>
+            )}
 
             {/* TYPING and the TRANSCRIPT were two buttons opening two surfaces (a slide-out
                 composer and a modal drawer) that were really one thing: the conversation.
@@ -3985,7 +4018,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
           column to put a panel in, and the modal drawer stays. Both carry the correction
           affordance, because the answer is auto-submitted and a mis-transcription has to be
           fixable wherever you are reading it. */}
-      {!voiceMode && (
+      {!roomMode && (
         <TranscriptDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}
           messages={messages} name={config.name}
           onEditLast={ended ? null : onEditLast} editBusy={editBusy} />

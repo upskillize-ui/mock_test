@@ -298,3 +298,81 @@ def test_the_gather_never_reaches_for_anything_it_should_not():
     for forbidden in ("father_name", "parent_phone", "account_number", "pan_number",
                       "preferred_salary_min", "date_of_birth", "gender"):
         assert forbidden not in fields
+
+
+# ── QA-02: a TEXT session is never told that voice is available ──────────────
+# These pin the fix for the sweep's #1 TEXT defect: the interviewer telling a typing
+# student "You're on mute", five seconds into every question, in a mode whose pre-flight
+# promises "no microphone needed, so we won't ask for one".
+
+def test_stt_is_unavailable_in_text_however_the_flags_are_set():
+    """`stt_available` answers "can THIS SESSION use STT", not "are the flags on".
+
+    The client believed the old answer and kept its whole voice machinery armed in TEXT:
+    the mute fork, the voice-settings menu, the interviewer voice that never speaks.
+    """
+    from app import main as m
+
+    class _S:
+        STT_ENABLED = True
+        VOICE_ENABLED = True
+
+    real = m.settings
+    m.settings = _S()
+    try:
+        assert m._stt_available("TEXT") is False
+        assert m._stt_available("text") is False       # normalisation, not luck
+        assert m._stt_available("AUDIO") is True
+        assert m._stt_available("VIDEO") is True
+        # A database behind migration 009 has no mode: that is NOT text, and behaves
+        # exactly as it did before the column existed.
+        assert m._stt_available(None) is True
+    finally:
+        m.settings = real
+
+
+def test_stt_availability_still_obeys_the_flags():
+    """Mode is a second gate, not a replacement for the first."""
+    from app import main as m
+
+    class _Off:
+        STT_ENABLED = False
+        VOICE_ENABLED = True
+
+    real = m.settings
+    m.settings = _Off()
+    try:
+        for mode in ("TEXT", "AUDIO", "VIDEO", None):
+            assert m._stt_available(mode) is False
+    finally:
+        m.settings = real
+
+
+def test_build_state_refuses_to_guess_the_mode():
+    """The fail-open that caused QA-02, made structurally impossible.
+
+    Half of _build_state's callers pass a synthetic dict rather than a session row, so a
+    mode read off `row` returned None there — "not TEXT" — and a TEXT client was told it
+    had a microphone. The mode is now a required argument: forgetting it is a TypeError
+    this test catches, not a wrong answer a student hears.
+    """
+    import inspect
+    from app import main as m
+
+    sig = inspect.signature(m._build_state)
+    param = sig.parameters["session_mode"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default is inspect.Parameter.empty, "session_mode must not have a default"
+
+
+def test_the_device_forks_are_a_voice_feature():
+    """/session/reask's four kinds — mute, quiet, noise, re-ask — are all device forks.
+
+    TEXT has no device to fork on. The endpoint gates on mode server-side rather than
+    trusting the client not to ask, for the same reason the TTS gate does.
+    """
+    import inspect
+    from app import main as m
+
+    src = inspect.getsource(m.session_reask)
+    assert "_mode_is_text" in src, "/session/reask must gate on mode server-side"

@@ -251,19 +251,22 @@ def test_endpoint_graceful_null_on_transcribe_failure():
 # ── State signal: stt_available reflects the two flags ──────────────────────
 
 def test_state_stt_available_true_only_when_both_flags_on():
+    # QA-02: the flags are necessary but no longer sufficient — the MODE decides whether a
+    # mic exists at all, so this test now says which mode it is asking about. A spoken one.
+    # (TEXT is covered in test_intake_and_modes.py.)
     from app import main as m
     row = {"level": "Fresher", "current_stage": "BEHAVIOURAL", "round_index": 1,
            "awaiting_rating": 0, "answer_count": 1}
     o1, o2 = m.settings.STT_ENABLED, m.settings.VOICE_ENABLED
     try:
         m.settings.STT_ENABLED, m.settings.VOICE_ENABLED = True, True
-        assert m._build_state(row).stt_available is True
+        assert m._build_state(row, session_mode="AUDIO").stt_available is True
         m.settings.STT_ENABLED, m.settings.VOICE_ENABLED = True, False
-        assert m._build_state(row).stt_available is False   # VOICE off
+        assert m._build_state(row, session_mode="AUDIO").stt_available is False   # VOICE off
         m.settings.STT_ENABLED, m.settings.VOICE_ENABLED = False, True
-        assert m._build_state(row).stt_available is False   # STT off
+        assert m._build_state(row, session_mode="AUDIO").stt_available is False   # STT off
         m.settings.STT_ENABLED, m.settings.VOICE_ENABLED = False, False
-        assert m._build_state(row).stt_available is False
+        assert m._build_state(row, session_mode="AUDIO").stt_available is False
     finally:
         m.settings.STT_ENABLED, m.settings.VOICE_ENABLED = o1, o2
 

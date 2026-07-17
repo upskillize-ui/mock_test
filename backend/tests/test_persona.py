@@ -171,9 +171,31 @@ def test_mute_fork_directive_never_belittles_typing_and_never_re_asks():
 
 def test_the_persona_itself_carries_the_mute_fork():
     # The interviewer knows this moment natively — it is not bolted on.
-    s = flat(p.build_persona(_cfg()))
+    # A spoken mode: AUDIO (and VIDEO) have a mic, so the fork belongs.
+    s = flat(p.build_persona(_cfg(session_mode="AUDIO")))
     assert "You're on mute" in s
     assert "Typed answers are FULLY first-class" in s
+
+
+def test_the_persona_never_mentions_a_mic_in_text_mode():
+    """QA-02. This assertion is the inverse of the one above, and that is the point.
+
+    The persona is built once per session and cached, so a mute line in a TEXT persona is
+    not a stray string — it is a standing instruction to the interviewer, all session, in a
+    mode whose own pre-flight promises "no microphone needed, so we won't ask for one".
+    """
+    s = flat(p.build_persona(_cfg(session_mode="TEXT")))
+    for banned in ("You're on mute", "unmute", "mic", "microphone"):
+        assert banned.lower() not in s.lower(), f"TEXT persona mentions {banned!r}"
+    # ...and still knows how to handle the one device-agnostic moment.
+    assert "out of time on that one" in s
+    assert "Typed answers are FULLY first-class" in s
+
+
+def test_persona_defaults_to_the_spoken_fork_when_mode_is_unknown():
+    """A row without session_mode (a database behind migration 009) is not TEXT — it
+    behaves exactly as it did before the column existed, which is spoken."""
+    assert "You're on mute" in flat(p.build_persona(_cfg()))
 
 
 def test_mute_fork_never_asks_a_question_so_it_cannot_cost_a_slot():

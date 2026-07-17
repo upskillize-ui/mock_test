@@ -400,6 +400,18 @@ def _session_mode(db, session_id: str) -> str | None:
         return None
 
 
+def _stt_available(session_mode) -> bool:
+    """Can THIS session use spoken input?
+
+    QA-02: this used to answer a different question — "are the STT flags on?" — and the
+    client believed it. A TEXT session was told voice was available, so its voice machinery
+    stayed armed: the five-second mute fork fired on every question, and the voice-settings
+    menu offered an interviewer voice that never speaks. The flags are necessary but not
+    sufficient; the MODE decides whether a mic exists at all.
+    """
+    return bool(settings.STT_ENABLED and settings.VOICE_ENABLED) and not _mode_is_text(session_mode)
+
+
 def _mode_is_text(session_mode) -> bool:
     """Is this session typed? The one question every TTS path must ask first.
 
@@ -568,6 +580,10 @@ def _session_to_cfg(row: dict) -> dict:
         "duration_min": row["duration_min"],
         "difficulty": row["difficulty"],
         "mode": row["mode"],
+        # The FEEDBACK style is `mode`; the MODE they answer in is `session_mode`. Two
+        # different axes, one letter apart — and the persona needs the second one, or it
+        # tells a typing student they are on mute (QA-02).
+        "session_mode": row.get("session_mode") or "",
         "round": row.get("round") or "full",
         "round_label": row.get("round_label") or "",
         "round_detail": row.get("round_detail") or "",
@@ -580,7 +596,16 @@ def _session_to_cfg(row: dict) -> dict:
     }
 
 
-def _build_state(row: dict, *, stale: bool = False) -> SessionState:
+def _build_state(row: dict, *, session_mode, stale: bool = False) -> SessionState:
+    """The state the client steers on.
+
+    `session_mode` is a REQUIRED keyword, and deliberately not read off `row`. Half of
+    this function's callers hand it a synthetic dict rather than a session row, and a
+    `row.get("session_mode")` there returns None, which reads as "not TEXT", which tells a
+    TEXT client that voice is available — the fail-open that armed the mute fork (QA-02).
+    Making it an argument turns "someone forgot" from a silent wrong answer at runtime into
+    a TypeError the tests catch.
+    """
     """INT-04: assemble the client-facing state object from a session row.
 
     INT-06: status/started_at/stale ride along so the frontend can resume after a
@@ -605,7 +630,8 @@ def _build_state(row: dict, *, stale: bool = False) -> SessionState:
         stale=stale,
         # Voice Phase 2: spoken input exists only when both flags are on. The
         # frontend gates the mic further (BEHAVIOURAL stage + consent).
-        stt_available=bool(settings.STT_ENABLED and settings.VOICE_ENABLED),
+        # QA-02: ...and never in TEXT, whatever the flags say.
+        stt_available=_stt_available(session_mode),
         # Interview Room: once wrapped early this is set, and next_action is already
         # "readout" — so a refresh lands on the readout instead of resuming.
         early_wrap_reason=row.get("early_wrap_reason") or None,
@@ -924,10 +950,10 @@ async def start_session(
         "awaiting_rating": 0,
         "last_answer_id": None,
         "answer_count": 0,
-    })
+    }, session_mode=cfg.mode)
     return StartSessionResponse(
         session_id=session_id, greeting="", state=state,
-        stt_available=bool(settings.STT_ENABLED and settings.VOICE_ENABLED),
+        stt_available=_stt_available(cfg.mode),
         audio_segments=[],
     )
 
@@ -1379,7 +1405,7 @@ async def session_turn(
         "awaiting_rating": new_awaiting,
         "last_answer_id": new_last,
         "answer_count": answer_count + 1,
-    })
+    }, session_mode=session_row.get("session_mode"))
     # POSES: the register for this turn. The face follows the words.
     esc = _escalation_level(db, session_row)
     tone = turn_tone(cfg.get("difficulty"), new_stage, esc)
@@ -1525,7 +1551,8 @@ def session_wrap(
     log.info("session wrapped early: reason=%s at_stage=%s", reason, wrapped_at)
 
     row = _load_session(db, body.session_id, user_id)
-    return WrapResponse(wrapped=True, reason=reason, state=_build_state(row))
+    return WrapResponse(wrapped=True, reason=reason,
+                        state=_build_state(row, session_mode=row.get("session_mode")))
 
 
 @app.post("/session/reask", response_model=ReaskResponse)
@@ -1552,6 +1579,14 @@ async def session_reask(
     session_row = _load_session(db, body.session_id, user_id)
     if (session_row.get("status") or "") != "active":
         raise HTTPException(400, "Session is not active")
+
+    # QA-02: every kind here is a DEVICE fork — mute, quiet mic, background noise, "didn't
+    # catch that". A typed session has no device to fork on, so all four are nonsense in
+    # TEXT. Gated server-side, not just in the client, for the same reason _mode_is_text
+    # exists: TTS was already suppressed for TEXT, so the mute line arrived silent — but it
+    # still arrived, printed, in a mode whose pre-flight promises no microphone.
+    if _mode_is_text(session_row.get("session_mode")):
+        raise HTTPException(404, "Not found")
 
     cfg = _session_to_cfg(session_row)
     seed = int(session_row.get("answer_count") or 0)
@@ -1646,7 +1681,7 @@ def session_state(
             ts["db_now"] if ts else None,
             settings.SESSION_IDLE_MINUTES,
         )
-    return _build_state(row, stale=stale)
+    return _build_state(row, session_mode=row.get("session_mode"), stale=stale)
 
 
 @app.get("/session/{session_id}/messages", response_model=SessionMessagesResponse)
@@ -1848,7 +1883,7 @@ def submit_rating(
     locked = db.execute(
         text("""
             SELECT id, status, level, current_stage, round_index,
-                   awaiting_rating, last_answer_id, answer_count
+                   awaiting_rating, last_answer_id, answer_count, session_mode
             FROM vyom_sessions WHERE id=:id AND user_id=:u FOR UPDATE
         """),
         {"id": body.session_id, "u": user_id},
@@ -1897,7 +1932,7 @@ def submit_rating(
         "awaiting_rating": 0,
         "last_answer_id": None,
         "answer_count": int(locked["answer_count"] or 0),
-    })
+    }, session_mode=locked["session_mode"])
     return RatingResponse(accepted=True, state=state)
 
 
