@@ -10,6 +10,15 @@ log = logging.getLogger(__name__)
 
 
 _TIMEOUT = httpx.Timeout(connect=5.0, read=60.0, write=10.0, pool=5.0)
+# The turn calls are short and latency-critical; 60s of read is generous for them. The
+# DEBRIEF is neither: it is one long non-streaming generation at the end of the session,
+# and the read clock covers the model's entire writing time, not just the network. Sixty
+# seconds was already marginal for it (measured ~50s at the old 2500-token cap), and
+# raising that cap to fit a complete readout (QA-01) pushed straight through it — trading
+# a truncated readout for a timed-out one, which is the same 502 wearing a different hat.
+# This is the ceiling for how long a student's readout may take to write, so it is set for
+# the worst case, not the typical one.
+_DEBRIEF_TIMEOUT = httpx.Timeout(connect=5.0, read=240.0, write=10.0, pool=5.0)
 _RESUME_TIMEOUT = httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0)
 _MAX_RESUME_BYTES = 5_000_000
 
@@ -111,6 +120,7 @@ async def call_claude(
     model: str,
     max_tokens: int = 600,
     system_suffix: str = "",
+    timeout: httpx.Timeout | None = None,
 ) -> str:
     headers = _headers()
 
@@ -122,7 +132,7 @@ async def call_claude(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=timeout or _TIMEOUT) as client:
             r = await client.post(settings.ANTHROPIC_URL, headers=headers, json=payload)
     except httpx.RequestError as e:
         log.exception("Claude request failed: %s", e)

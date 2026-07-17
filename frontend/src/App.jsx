@@ -5044,6 +5044,11 @@ export default function App() {
     // clip was removed, so "Start fresh" threw a ReferenceError and did nothing at all.)
     setConfig(null); setSessionId(null); setGreeting(""); setGreetingSegments([]); setInitialState(null);
     setInitialMessages(null); setStartedAt(null); setResumeCfg(null); setHistoryDetailId(null);
+    // QA-13: the leftovers of the LAST attempt. Without these, "Start fresh" carried a
+    // stale red join error, or the gold "continue in text" seatbelt, into the next
+    // session's lobby — a warning about a failure that already happened, shown to someone
+    // who has not failed yet. The same class of bug as the setGreetingAudioUrl line above.
+    setJoinError(null); setSeatbeltOffer(null); setPendingConfig(null);
     setScreen("setup");
   };
 

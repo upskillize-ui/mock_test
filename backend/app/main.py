@@ -61,7 +61,9 @@ from .prompts import (
     quiet_mic_line, QUIET_MIC_DIRECTIVE, noise_line, NOISE_DIRECTIVE,
     partial_opening, first_complete_sentence,
 )
-from .claude_client import call_claude, stream_claude, extract_resume_text
+from .claude_client import (
+    call_claude, stream_claude, extract_resume_text, _DEBRIEF_TIMEOUT,
+)
 
 
 def _as_obj(v, default):
@@ -1171,8 +1173,14 @@ async def session_turn(
     # /session/stt. Re-validate the client payload and store it on the answer's row
     # (typed answers stay NULL). Informational only — never affects scoring. A skip has
     # no recording behind it, so it carries no metrics either.
+    # QA-11: "typed answers stay NULL" was true only because a typed client happens not to
+    # send the field. delivery_metrics is client-supplied and delivery.sanitize() validates
+    # SHAPE, not provenance, so a TEXT session could POST {wpm: 155, filler_count: 9} and
+    # have it stored and rendered as a Delivery Profile for a session with no voice in it.
+    # Held shut today only by a flag that defaults off. The mode is the honest gate.
     dm = None
-    if settings.DELIVERY_METRICS_ENABLED and not skipped:
+    if (settings.DELIVERY_METRICS_ENABLED and not skipped
+            and intake.mode_wants_mic(session_row.get("session_mode"))):
         dm = delivery.sanitize(body.delivery_metrics)
 
     # Persist the answer and capture its id (used later as the rating target). Only a
@@ -2021,6 +2029,9 @@ async def _generate_debrief(system_prompt: str, messages: list[dict]) -> dict:
             messages=messages,
             model=settings.MODEL_DEBRIEF,
             max_tokens=_DEBRIEF_MAX_TOKENS,
+            # A readout is a long single generation; the default 60s read clock is for
+            # short turn calls and cut this one off mid-write. See _DEBRIEF_TIMEOUT.
+            timeout=_DEBRIEF_TIMEOUT,
         )
         debrief = _parse_debrief_json(raw)
         if debrief is not None:
