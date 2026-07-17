@@ -20,6 +20,17 @@ import { useEffect, useRef, useState } from "react";
  *
  * onJoin({ mic, camera }) — we hand the room the CHOICES, not the streams. The room
  * re-acquires devices itself, so the existing voice pipeline is not disturbed.
+ *
+ * MODE (`sessionMode`, from the lobby picker) decides what this room may even ASK for:
+ *   TEXT  — the green room does not render. There is no permission moment, because we do
+ *           not request a permission the mode cannot use: asking a typing student for
+ *           their microphone is a scary browser dialog charged against our credibility in
+ *           exchange for nothing. This is a HARD guarantee, not a default — getUserMedia
+ *           is unreachable on this path, which is what makes acceptance (e) true rather
+ *           than merely usually-true.
+ *   AUDIO — unchanged: mic prompt, 5s mic test, camera offered.
+ *   VIDEO — the camera is part of the choice they already made, so the camera-first
+ *           request is the default rather than the secondary option.
  */
 
 const IQ = {
@@ -56,7 +67,9 @@ const CONSENT_COPY_CAMERA =
   "During the interview, InterviewIQ notices attention cues (like looking away) on your " +
   "device to coach your interview presence. No video is recorded.";
 
-export default function Lobby({ name, role, onJoin }) {
+export default function Lobby({ name, role, onJoin, sessionMode = "AUDIO" }) {
+  const isText = sessionMode === "TEXT";
+  const isVideo = sessionMode === "VIDEO";
   const [phase, setPhase] = useState("ask");     // ask | ready
   const [mic, setMic] = useState(false);
   const [camera, setCamera] = useState(false);
@@ -226,6 +239,43 @@ export default function Lobby({ name, role, onJoin }) {
 
   const initial = (name || "You").trim().charAt(0).toUpperCase() || "Y";
 
+  // ── TEXT: there is no green room, because there is nothing to check. ─────────
+  // This returns BEFORE any control that could call `request()`, so getUserMedia is not
+  // merely un-clicked on this path — it is unreachable. A typing student sees no browser
+  // permission dialog at all, which is the promise (B2), not a default we hope holds.
+  if (isText) {
+    return (
+      <div style={{ fontFamily: IQ.sans, width: "100%", boxSizing: "border-box",
+        minHeight: "calc(100vh - 70px)", background: IQ.navy, color: "#fff", display: "flex",
+        alignItems: "center", justifyContent: "center", padding: "28px 20px" }}>
+        <div style={{ width: "100%", maxWidth: 560, textAlign: "center" }}>
+          <div style={{ fontSize: 22, fontWeight: 800 }}>Ready to join?</div>
+          <div style={{ fontSize: 13, color: "rgba(255,255,255,.55)", marginTop: 5 }}>
+            {role ? `${role} interview` : "Interview"} — you're answering by typing.
+          </div>
+
+          <div style={{ margin: "22px 0", padding: "18px 20px", borderRadius: 12,
+            background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.10)",
+            display: "flex", alignItems: "center", gap: 12, textAlign: "left" }}>
+            <IconKeyboard size={22} style={{ color: IQ.teal, flexShrink: 0 }} />
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,.78)", lineHeight: 1.5 }}>
+              No microphone needed, so we won't ask for one. Your interviewer's questions
+              appear as text, and you'll type your answers. Every question is timed the
+              same way, and you're scored on what you say — not how you said it.
+            </div>
+          </div>
+
+          <button onClick={() => onJoin({ mic: false, camera: false })}
+            style={{ width: "100%", padding: "13px 18px", borderRadius: 10, border: "none",
+              background: IQ.teal, color: IQ.navy, fontWeight: 800, fontSize: 15,
+              fontFamily: IQ.sans, cursor: "pointer" }}>
+            Join interview
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     // No negative margin. This used to carry `margin: -24px -28px` to bleed the navy out
     // through a padded app shell — but the lobby is rendered straight into the page now,
@@ -366,8 +416,10 @@ export default function Lobby({ name, role, onJoin }) {
                   <button onClick={() => request(true)} disabled={busy} style={btnPrimary}>
                     <IconCam size={16} /> Allow mic &amp; camera
                   </button>
+                  {/* NEVER HARD-BLOCK holds even in VIDEO: they picked a camera mode, but a
+                      denied or broken camera must never cost them the interview. */}
                   <button onClick={() => request(false)} disabled={busy} style={btnGhost}>
-                    <IconMic size={16} /> Mic only
+                    <IconMic size={16} /> {isVideo ? "Continue without camera" : "Mic only"}
                   </button>
                   <button onClick={typeOnly} disabled={busy} style={btnGhost}>
                     <IconKeyboard size={16} /> Type instead

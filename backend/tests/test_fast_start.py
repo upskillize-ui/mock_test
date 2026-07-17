@@ -42,7 +42,10 @@ def fake_tts(monkeypatch):
     before the first word can be spoken is the whole point of this change."""
     calls = []
 
-    async def _synth(session_id, text_out, voice):
+    async def _synth(session_id, text_out, voice, **kw):
+        # **kw absorbs session_mode (and whatever the real signature grows next). This
+        # stub stands in for the vendor call; it must not fail the suite over a parameter
+        # it does not care about.
         calls.append(text_out)
         return f"/session/audio/{'a' * 64}"
 

@@ -60,14 +60,26 @@ async function api(path, opts = {}) {
   });
   if (!res.ok) {
     let serverMsg = "";
-    try { const j = await res.json(); serverMsg = j.detail || j.message || ""; }
+    let detail = null;
+    try {
+      const j = await res.json();
+      detail = j.detail ?? null;
+      // The intake boundary answers with a STRUCTURED detail — {errors, offer_text_mode}
+      // — because "voice is down, want to type instead?" is an offer the UI has to act on,
+      // not a string to print. Stringifying it here would render "[object Object]" at the
+      // student, which is how a seatbelt becomes a dead end.
+      serverMsg = typeof detail === "string" ? detail
+        : (Array.isArray(detail?.errors) ? detail.errors.join(" ") : "")
+        || j.message || "";
+    }
     catch { try { serverMsg = (await res.text()).slice(0, 200); } catch { /* noop */ } }
+    const attach = (e) => { e.status = res.status; e.detail = detail; return e; };
     // In dev, append the backend's specific reason (auth.py exposes it in `detail`)
     // so "Please log in again" becomes e.g. "Please log in again (token expired)".
-    if (res.status === 401) throw new Error("Please log in again to continue." + (import.meta.env?.DEV && serverMsg ? ` (${serverMsg})` : ""));
-    if (res.status === 429) throw new Error(serverMsg || "Daily limit reached. Try again tomorrow.");
-    if (res.status >= 500) throw new Error("InterviewIQ is having a hiccup. Please try again.");
-    throw new Error(serverMsg || `Request failed (${res.status}).`);
+    if (res.status === 401) throw attach(new Error("Please log in again to continue." + (import.meta.env?.DEV && serverMsg ? ` (${serverMsg})` : "")));
+    if (res.status === 429) throw attach(new Error(serverMsg || "Daily limit reached. Try again tomorrow."));
+    if (res.status >= 500) throw attach(new Error("InterviewIQ is having a hiccup. Please try again."));
+    throw attach(new Error(serverMsg || `Request failed (${res.status}).`));
   }
   return res.json();
 }
@@ -461,7 +473,24 @@ const DIFF_CHIPS = [
   ...DIFFICULTIES,
   { v: CRITICAL.v, l: CRITICAL.l, d: "Pressure panel", critical: true },
 ];
+// FEEDBACK — when they hear how it went. The heading says FEEDBACK; the wire field and
+// the DB column are still `mode`, which is exactly why the constant below is NOT called
+// MODES. Two different things named "mode" is the oldest trap in this codebase.
 const MODES = [{ v: "interview", l: "Interview mode", d: "Feedback at end only" }, { v: "coach", l: "Coach mode", d: "Feedback after each answer" }];
+
+// MODE — how they answer. Sent as `session_mode`; weighted by scoring.WEIGHTS["mode"]
+// (TEXT 0.90 / AUDIO 1.00 / VIDEO 1.00) and nowhere else.
+//   TEXT  — never asks for the mic (we do not request a permission the mode cannot use)
+//           and never spends a rupee at Sarvam.
+//   AUDIO — the default, and what every session before this picker existed did.
+//   VIDEO — camera on, answer by voice or typing per question. Presence metrics are
+//           Phase D; the camera is on because the chip says Video, not to measure them.
+const SESSION_MODES = [
+  { v: "TEXT", l: "Text", d: "Type your answers" },
+  { v: "AUDIO", l: "Audio", d: "Speak your answers" },
+  { v: "VIDEO", l: "Video", d: "Camera on — speak or type" },
+];
+const DEFAULT_SESSION_MODE = "AUDIO";
 const ROUNDS = [
   { v: "screening", l: "Screening Round", d: "Motivation, fitment & communication", badge: "SCREEN", detail: "Covers: Why this role? Why this company? Career goals, salary expectations, notice period. Short answers, rapid-fire pace. No technical depth." },
   { v: "technical", l: "Technical Round 1 / 2", d: "Domain knowledge, case analysis, problem solving", badge: "TECH", detail: "Covers: Role-specific concepts, case studies, data/finance/engineering problems, trade-offs, system/process design. Deep follow-up questioning." },
@@ -928,7 +957,8 @@ function SetupScreen({ onStart, userName }) {
   const [companyName, setCompanyName] = useState("");
   const [duration, setDuration] = useState(20);
   const [difficulty, setDifficulty] = useState("Realistic");
-  const [mode, setMode] = useState("interview");
+  const [mode, setMode] = useState("interview");        // FEEDBACK style (interview|coach)
+  const [sessionMode, setSessionMode] = useState(DEFAULT_SESSION_MODE);  // MODE: how they answer
   const [round, setRound] = useState("full");
   const [focus, setFocus] = useState([]);
   const [customFocus, setCustomFocus] = useState("");
@@ -981,12 +1011,20 @@ function SetupScreen({ onStart, userName }) {
         company: finalCompany,
         duration_min: duration,
         difficulty,
-        mode,
+        mode,                    // FEEDBACK style — interview | coach
+        session_mode: sessionMode,  // MODE — TEXT | AUDIO | VIDEO
         round,
         round_label: selectedRound?.l || "Full Interview",
         round_detail: selectedRound?.detail || "",
         focus: allFocus,
-        intro: [intro, jd ? "\n\n--- JOB DESCRIPTION ---\n" + jd : ""].filter(Boolean).join(""),
+        intro,
+        // The JD travels as its OWN field now. It used to be glued onto `intro` behind a
+        // "--- JOB DESCRIPTION ---" delimiter that the server split apart again — which
+        // meant a student who pasted that literal string into their JD re-partitioned
+        // their own session, and (worse) any student with a résumé on file had their JD
+        // silently swallowed into the self-intro half and never read as a JD at all.
+        // A field cannot be forged by its own contents.
+        jd,
         voice,
       };
       // Interview Room: the session is NOT started here any more. The pre-join lobby
@@ -1112,6 +1150,31 @@ function SetupScreen({ onStart, userName }) {
               )}
             </div>
           </div>
+
+          {/* MODE — how they answer. Three equal chips (.vg3), same .vchip style as every
+              other setting. Default Audio: it is what every session did before this card
+              existed, so an untouched picker changes nothing for anyone. */}
+          <div className="vc">
+            <div className="vc-h"><span className="vc-t">Mode</span></div>
+            <div className="vc-b">
+              <div className="vg3">
+                {SESSION_MODES.map(m => (
+                  <button
+                    key={m.v}
+                    className={"vchip" + (sessionMode === m.v ? " vchip-on" : "")}
+                    aria-pressed={sessionMode === m.v}
+                    onClick={() => setSessionMode(m.v)}
+                    style={{ padding: "8px 6px" }}
+                  >
+                    {m.l}
+                  </button>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, color: T.subtle, marginTop: 6 }}>
+                {(SESSION_MODES.find(m => m.v === sessionMode) || {}).d}
+              </div>
+            </div>
+          </div>
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1205,6 +1268,40 @@ function SetupScreen({ onStart, userName }) {
             {FOCUS_OPTIONS.map(f => <button key={f} className={"vchip" + (focus.includes(f) ? " vchip-on" : "")} onClick={() => toggleFocus(f)}>{f}</button>)}
           </div>
           {focus.includes("Other") && <input value={customFocus} onChange={e => setCustomFocus(e.target.value.slice(0, 80))} placeholder="Type your focus area..." className="vi" style={{ marginTop: 8 }} />}
+        </div>
+      </div>
+
+      {/* ── A6: the confirmation card ────────────────────────────────────────
+          The session you are about to have, in one place, before you pay for it.
+
+          These are the same fields, in the same order, that intake.SessionConfig.card()
+          returns on the server — which is what the readout's Session Profile strip and the
+          attempt record both render. It reads from form state rather than a round trip
+          because every field here is form-owned and FORM WINS (A2): what you typed IS the
+          answer, so there is nothing the server could tell us about these that we do not
+          already know. Anything NOT form-owned must not be added to this card without
+          fetching the merged object, or the card and the readout will drift — which is the
+          exact failure A6 exists to prevent. */}
+      <div className="vc" style={{ marginTop: 14, borderLeft: "3px solid " + T.teal }}>
+        <div className="vc-h"><span className="vc-t">Your session</span></div>
+        <div className="vc-b">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 22px" }}>
+            {[
+              ["Role", finalRole],
+              ["Level", level],
+              ["Difficulty", difficulty],
+              ["Length", `${duration} min`],
+              ["Mode", (SESSION_MODES.find(m => m.v === sessionMode) || {}).l],
+              ["Feedback", mode === "coach" ? "Coach" : "Interview"],
+              ["Round", (ROUNDS.find(r => r.v === round) || {}).l],
+              ["JD", jd.trim() ? "Used" : "Not used"],
+            ].map(([k, v]) => (
+              <div key={k}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: T.subtle, textTransform: "uppercase", letterSpacing: ".04em" }}>{k}</div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: T.navy, marginTop: 2 }}>{v || "—"}</div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -4758,6 +4855,9 @@ export default function App() {
   const [screen, setScreen] = useState("loading");   // INT-06: check for a resumable session first
   const [pendingConfig, setPendingConfig] = useState(null);   // Interview Room: config -> lobby -> start
   const [joinError, setJoinError] = useState(null);
+  // A5: {message, retry} when the voice vendor is unavailable and TEXT is the honest offer.
+  const [seatbeltOffer, setSeatbeltOffer] = useState(null);
+  const [retryAsText, setRetryAsText] = useState(false);
   const [config, setConfig] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const [greeting, setGreeting] = useState("");
@@ -4881,10 +4981,36 @@ export default function App() {
         r.session_id, r.greeting || "", r.state, r.audio_segments || [],
       );
     } catch (e) {
+      // A5, THE VENDOR SEATBELT. The voice vendor being down is not the student's problem
+      // to solve, and it is not a reason to send them back to a lobby with a red line on
+      // it. TEXT is a real, complete interview — so we offer it, and if they take it the
+      // session starts immediately in TEXT rather than making them find the picker and
+      // work out for themselves what went wrong.
+      if (e?.detail?.offer_text_mode) {
+        setSeatbeltOffer({
+          message: (e.detail.errors || []).join(" ") || e.message,
+          retry: () => {
+            setSeatbeltOffer(null);
+            setPendingConfig((c) => ({ ...c, session_mode: "TEXT" }));
+            setRetryAsText(true);
+          },
+        });
+        setScreen("lobby");
+        return;
+      }
       setJoinError(e.message);
       setScreen("lobby");
     }
   };
+
+  // The seatbelt's second half: pendingConfig has just been switched to TEXT, so re-run
+  // Join against the new config. Split out because setPendingConfig is async — joining in
+  // the same tick would re-send the AUDIO config we just replaced and 422 again.
+  useEffect(() => {
+    if (!retryAsText) return;
+    setRetryAsText(false);
+    handleJoin({ mic: false, camera: false });
+  }, [retryAsText]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // INT-06: resume a stale session — pull history, then re-enter the interview.
   const doResume = async () => {
@@ -4926,7 +5052,23 @@ export default function App() {
               <div style={{ padding: "10px 14px", borderRadius: 8, background: T.redSoft, color: T.red, fontSize: 13 }}>{joinError}</div>
             </div>
           )}
-          <Lobby name={userName} role={pendingConfig?.role} onJoin={handleJoin} />
+          {/* A5: not an error — an offer. Gold, not red: nothing has gone wrong for THEM,
+              and a red box would say "you broke something" about our vendor being down. */}
+          {seatbeltOffer && (
+            <div style={{ fontFamily: T.font, maxWidth: 900, margin: "0 auto", padding: "0 20px" }}>
+              <div style={{ padding: "12px 16px", borderRadius: 8, background: T.goldSoft,
+                border: "1px solid " + T.goldBorder, color: "#5a4500", fontSize: 13,
+                display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <span style={{ flex: 1, minWidth: 220 }}>{seatbeltOffer.message}</span>
+                <button onClick={seatbeltOffer.retry} className="vchip vchip-on"
+                  style={{ flexShrink: 0 }}>
+                  Continue in text
+                </button>
+              </div>
+            </div>
+          )}
+          <Lobby name={userName} role={pendingConfig?.role} onJoin={handleJoin}
+            sessionMode={pendingConfig?.session_mode || DEFAULT_SESSION_MODE} />
         </>
       )}
       {screen === "resume" && <ResumePrompt config={resumeCfg} onResume={doResume} onDiscard={restart} />}

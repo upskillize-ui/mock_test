@@ -377,7 +377,45 @@ def _resolve_speaker(voice: str | None) -> tts.Voice:
     return tts.resolve_voice(voice)
 
 
-async def _try_tts(session_id: str, text_out: str, voice: str | None) -> str | None:
+def _session_mode(db, session_id: str) -> str | None:
+    """How this session is being answered, straight from the row.
+
+    A primary-key lookup, and it runs on paths that are about to call an LLM or a voice
+    vendor — so its cost rounds to zero against what it is gating. Deliberately NOT cached
+    in-process: the app runs multiple workers, a session started on one is served by
+    another, and a cache miss that silently reads "not TEXT" would bill the vendor we just
+    promised not to call.
+
+    Returns None on a database without migration 009, which reads as "spoken" — exactly
+    how every session behaved before the column existed.
+    """
+    try:
+        r = db.execute(
+            text("SELECT session_mode FROM vyom_sessions WHERE id=:s"),
+            {"s": session_id},
+        ).first()
+        return r[0] if r else None
+    except Exception as e:
+        log.warning("session_mode unreadable (apply migration 009?): %s", type(e).__name__)
+        return None
+
+
+def _mode_is_text(session_mode) -> bool:
+    """Is this session typed? The one question every TTS path must ask first.
+
+    Server-side on purpose. A TEXT session making zero Sarvam calls is a SPEND promise
+    (B2), and a promise kept only by the client not asking is not kept at all — a stale
+    tab, a replayed request or a hand-rolled call would bill us anyway. The gate lives
+    where the money is spent.
+
+    Unknown/missing (a database without migration 009) reads as NOT text: the session
+    behaves exactly as it did before this column existed, which is spoken.
+    """
+    return str(session_mode or "").strip().upper() == "TEXT"
+
+
+async def _try_tts(session_id: str, text_out: str, voice: str | None,
+                   *, session_mode: str | None = None) -> str | None:
     """Best-effort synth of ONE clip → a relative audio_url, or None. Never raises;
     TTS must never block the interview (question text always goes out anyway).
 
@@ -386,6 +424,8 @@ async def _try_tts(session_id: str, text_out: str, voice: str | None) -> str | N
     sentence by _try_tts_segments below, and synthesising them whole as well was billing
     the same audio twice (see the 2-call lever in FIXUP_SPRINT_REPORT.md).
     """
+    if _mode_is_text(session_mode):
+        return None
     if not settings.TTS_ENABLED:
         return None
     try:
@@ -410,6 +450,7 @@ PRE_QUESTION_PAUSE_SUBSTANTIVE_MS = 1100   # spec: 1000-1200ms
 async def _try_tts_segments(
     session_id: str, text_out: str, voice: str | None,
     *, first_only: bool = False, pre_question_pause_ms: int = PRE_QUESTION_PAUSE_MS,
+    session_mode: str | None = None,
 ) -> list[dict]:
     """E2: synthesize ONE CLIP PER SENTENCE.
 
@@ -431,7 +472,12 @@ async def _try_tts_segments(
 
     Never blocks the interview: a sentence whose synth fails simply carries a null
     audio_url and the client shows its caption for a beat and moves on.
+
+    TEXT mode returns [] before a single sentence is split: the questions still go out as
+    text, and not one clip is billed (B2).
     """
+    if _mode_is_text(session_mode):
+        return []
     if not settings.TTS_ENABLED:
         return []
     sentences = tts.split_sentences(text_out)
@@ -439,9 +485,10 @@ async def _try_tts_segments(
         return []
 
     if first_only:
-        urls = [await _try_tts(session_id, sentences[0], voice)]
+        urls = [await _try_tts(session_id, sentences[0], voice, session_mode=session_mode)]
     else:
-        urls = await asyncio.gather(*[_try_tts(session_id, s, voice) for s in sentences])
+        urls = await asyncio.gather(*[_try_tts(session_id, s, voice, session_mode=session_mode)
+                                      for s in sentences])
 
     return build_segments(sentences, urls, pre_question_pause_ms=pre_question_pause_ms)
 
@@ -477,7 +524,7 @@ def build_segments(
 
 async def _greeting_segments(
     session_id: str, greeting: str, voice: str | None,
-    first_clip=None, first_sentence: str = "",
+    first_clip=None, first_sentence: str = "", session_mode: str | None = None,
 ) -> list[dict]:
     """The greeting's playback plan, reusing the clip we synthesised MID-GENERATION.
 
@@ -488,6 +535,8 @@ async def _greeting_segments(
     match: a wasted clip costs a fraction of a rupee, and a WRONG one would have the
     interviewer open with a sentence she does not go on to say.
     """
+    if _mode_is_text(session_mode):
+        return []
     if not settings.TTS_ENABLED:
         return []
     sentences = tts.split_sentences(greeting)
@@ -505,7 +554,7 @@ async def _greeting_segments(
             log.info("streamed first sentence did not survive the final parse; re-synthesising")
             first_url = None
     if first_url is None:
-        first_url = await _try_tts(session_id, sentences[0], voice)
+        first_url = await _try_tts(session_id, sentences[0], voice, session_mode=session_mode)
 
     return build_segments(sentences, [first_url])
 
@@ -937,13 +986,18 @@ async def session_greeting(
 
         def _on_delta(text_so_far: str) -> None:
             nonlocal first_clip, first_sentence
-            if first_clip is not None or not settings.TTS_ENABLED:
+            # TEXT bails before the task is even created. This is the earliest TTS call in
+            # the whole app — it fires MID-GENERATION, about a second in — so a gate added
+            # only downstream would already have paid the vendor by the time it ran.
+            if first_clip is not None or not settings.TTS_ENABLED \
+                    or _mode_is_text(session_row.get("session_mode")):
                 return
             sentence = first_complete_sentence(partial_opening(text_so_far))
             if sentence:
                 first_sentence = sentence
                 first_clip = asyncio.create_task(
-                    _try_tts(body.session_id, sentence, body.voice)
+                    _try_tts(body.session_id, sentence, body.voice,
+                             session_mode=session_row.get("session_mode"))
                 )
 
         raw_kickoff = await stream_claude(
@@ -984,7 +1038,8 @@ async def session_greeting(
         _update_session_counters(db, body.session_id)
 
     audio_segments = await _greeting_segments(
-        body.session_id, greeting, body.voice, first_clip, first_sentence
+        body.session_id, greeting, body.voice, first_clip, first_sentence,
+        session_mode=session_row.get("session_mode"),
     )
     return GreetingResponse(
         greeting=greeting,
@@ -1028,8 +1083,9 @@ async def session_speech(
     if not wanted:
         return SpeechResponse(segments=[])
 
+    mode = _session_mode(db, body.session_id)
     urls = await asyncio.gather(
-        *[_try_tts(body.session_id, s, body.voice) for _, s in wanted]
+        *[_try_tts(body.session_id, s, body.voice, session_mode=mode) for _, s in wanted]
     )
     return SpeechResponse(segments=[
         {"index": i, "audio_url": url}
@@ -1302,6 +1358,9 @@ async def session_turn(
         pre_question_pause_ms=(
             PRE_QUESTION_PAUSE_SUBSTANTIVE_MS if substantive else PRE_QUESTION_PAUSE_MS
         ),
+        # TEXT returns [] here and bills nothing. The reply text is unaffected — a typed
+        # session is a full interview that happens to be silent, not a lesser one.
+        session_mode=_session_mode(db, body.session_id),
     )
 
     # Realism v2: when this answer is rating-gated, IQ asks for the confidence rating
@@ -1310,7 +1369,8 @@ async def session_turn(
     rating_prompt = rating_audio_url = None
     if new_awaiting:
         rating_prompt = rating_ask(answer_id)
-        rating_audio_url = await _try_tts(body.session_id, rating_prompt, body.voice)
+        rating_audio_url = await _try_tts(body.session_id, rating_prompt, body.voice,
+                                          session_mode=_session_mode(db, body.session_id))
 
     state = _build_state({
         "level": level,
@@ -1519,7 +1579,8 @@ async def session_reask(
         # it came from a fixed pool and "avoid repeating it" is not a thing we can honour.
         remember_line(db, user_id, body.session_id, MEMORY_KIND_REASK, line)
 
-    audio_url = await _try_tts(body.session_id, line, body.voice)
+    audio_url = await _try_tts(body.session_id, line, body.voice,
+                               session_mode=_session_mode(db, body.session_id))
     return ReaskResponse(reply=line, audio_url=audio_url)
 
 
