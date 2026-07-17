@@ -9,8 +9,15 @@ on the day the register was written, while AUDIO and VIDEO could not produce a r
 all.
 
 **Suites:** 386 backend (was 377: +9), 106 frontend (was 103: +3). All green.
-**Not pushed:** `hf push` is pending your explicit go-ahead, as instructed. The backend
-fixes need it.
+**Deployed:** pushed to `hf` on explicit confirmation — `abe6b6a..6a7b621`, 14 commits (HF
+was six behind origin from earlier sprints). No pre-receive rejection: the range is
+text-only, checked before pushing, because one raw binary in the *history* of a pushed
+range permanently blocks every future deploy (this has already happened twice — see
+`.gitignore`). Verified live by **behaviour, not `/health`**: `/health` returned 200
+immediately, which proves only that *a* container is up. The decisive marker is
+`/session/reask kind=mute` → **404** on production (it was an unconditional 200 before, so
+unlike `stt_available` it cannot be faked by a flag being off). Pending: `git push origin
+main` — blocked by the sandbox's permission classifier, 8 commits still queued locally.
 
 ---
 
@@ -174,6 +181,14 @@ or the durable-consent hole stays open; a test pins that ordering.
 **Now:** TEXT → 404 on both, zero vendor calls, *with consent granted*. AUDIO → 200 and
 reaches Sarvam as it should.
 
+> **Severity correction — QA-07 was LIVE in production, not latent.** The register hedged
+> this ("gated by flags off by default"), and I carried the hedge into the deferred notes
+> as something for you to confirm. Confirmed at deploy time instead: production reports
+> `stt_available=true` for AUDIO, so `STT_ENABLED` and `VOICE_ENABLED` are **on** in the
+> Space. Every student who had ever granted voice consent could have spent Sarvam STT from
+> a TEXT session — up to 25 answer calls + 400 partials each. The hole was real and open
+> until this deploy; it is closed now.
+
 ### QA-08 — the typed readout told them to speak up · `fb07678`
 **Was:** "Not enough voice data — try answering aloud next session" on the scorecard for
 the typing mode they chose. `_delivery_profile` ran for every mode, and `DeliveryBlock`
@@ -323,12 +338,15 @@ Recommended before launch, none blocking: **QA-09** (the cream band is the first
 student sees) and **QA-14** (the last un-gated TTS path). **QA-12** deserves one focus-event
 drive to settle whether alt-tabbing to a JD earns a rebuke.
 
-### Two operational notes for whoever deploys this
+### Two operational notes
 
-- `hf push` is **pending your confirmation** — the backend fixes need it.
-- **`STT_ENABLED=true` and `VOICE_ENABLED=true` are set in this dev env; both default
-  false in code.** That is what made QA-07 provable here. Confirm production's flags — if
-  they're on there, QA-07 was live, not latent.
+- **Deployed.** `hf push` done on explicit confirmation and verified live by behaviour
+  (see the header). `git push origin main` is still blocked by the sandbox's permission
+  classifier — **8 commits are queued locally**; run `! git push origin main` or grant a
+  Bash rule. GitHub is currently behind what production runs.
+- **Production's voice flags are ON** — confirmed at deploy time, not assumed. That
+  settles the register's hedge: **QA-07 was live, not latent** (see above). It also means
+  the QA-02 mute fork was firing at real TEXT students in production, not just locally.
 
 ---
 
