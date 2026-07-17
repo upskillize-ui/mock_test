@@ -135,19 +135,69 @@ Sarvam credits   : ~1760    (cap 500)      ❌ EXCEEDS cap  (at the 0.5/s placeh
      credits, ~$0.5 LLM) and run the voice cells with `--over-caps` and your explicit sign-off,
      or reduce to 1 session per voice cell.
 
-**The Amit table and the 2,500-student projection will be filled in here from the gated run.**
-Structure (₹ per student per session, Realistic / Interview):
+### ESTIMATED cost per student — NOT MEASURED (money runs held at your instruction)
 
-| mode | 10 min | 20 min | 45 min |
-|------|-------:|-------:|-------:|
-| TEXT | _pending_ | _pending_ | _pending_ |
-| AUDIO | _pending_ | _pending_ | _pending_ |
-| VIDEO | _pending_ | _pending_ | _pending_ |
+Computed from **the ledger's own price book + rates** (`app/ledger.py`, `app/config.py`) applied
+to a documented per-session token/second model, **not** from a live run. Realistic / Interview,
+Fresher (13 answerable questions + greeting = 14 interviewer calls + 1 debrief). The question
+*count* is level-driven, so 20 vs 45 min differ only in answer richness (bigger transcript, more
+spoken seconds). Two configs shown because the model choice for turns is the single biggest LLM
+lever — the **deployed** Space currently runs Sonnet for turns; the code default is Haiku.
 
-Projection at 20 / 45 min × 2,500 students, per mode: _pending the run_.
-(TEXT will be dominated by the one Sonnet debrief; AUDIO/VIDEO add the Sarvam seconds. A useful
-early read even before the run: **LLM cost per session is ~₹5–₹13** at ₹88/$; the mode delta is
-almost entirely Sarvam.)
+**Read the two halves differently:** the **LLM ₹ is reliable** (real Anthropic prices × modelled
+tokens). The **Sarvam ₹ is placeholder-driven and almost certainly overstated** — it uses the
+config stand-in of 0.5 credit/sec × ₹1/credit = ₹0.5 per second of audio, which is far above real
+Sarvam pricing. What's reliable on the voice side is the **seconds** (the volume), not the ₹.
+
+**₹ per student per session — DEPLOYED config (Sonnet turns + Sonnet debrief):**
+
+| mode | 20 min | 45 min | reliable? |
+|------|-------:|-------:|-----------|
+| TEXT  | **₹18.5** | **₹24.2** | ✅ LLM-only, trustworthy |
+| AUDIO | ₹148.5 | ₹254.2 | ⚠️ ₹130 / ₹230 of this is Sarvam at the **placeholder** rate |
+| VIDEO | ₹148.5 | ₹254.2 | ⚠️ same as AUDIO (camera presence is on-device / free) |
+
+**Same table with the Haiku-turns lever (turns→Haiku, debrief stays Sonnet):**
+
+| mode | 20 min | 45 min |
+|------|-------:|-------:|
+| TEXT  | **₹8.9** | **₹11.3** |
+| AUDIO | ₹138.9 | ₹241.3 |
+| VIDEO | ₹138.9 | ₹241.3 |
+
+Voice volume (reliable): **~110 s TTS + 150 s STT** at 20 min; **~200 s TTS + 260 s STT** at 45
+min. Once the real Sarvam credit/sec rate is entered, multiply those seconds by it for the true
+voice ₹ — no re-estimate needed.
+
+**2,500 students × 1 session (deployed Sonnet config, TEXT is the reliable line):**
+
+| | 20 min | 45 min |
+|--|-------:|-------:|
+| TEXT  | ₹46,300 | ₹60,500 |
+| AUDIO/VIDEO | ₹371,000* | ₹635,000* |
+
+\* Sarvam-dominated and placeholder-inflated — **do not budget from these** until the real rate
+is set; the TEXT row and the LLM component are the trustworthy figures.
+
+**Takeaways:** (1) the interview is cheap in text — **₹9–₹24 per student** depending on model and
+length; (2) **switching turns to Haiku roughly halves LLM cost** (₹18.5→₹8.9 at 20 min) with the
+debrief still on Sonnet; (3) the *entire* mode-cost story is Sarvam seconds, so the voice budget
+hinges on one unknown rate — get it from the dashboard before quoting AUDIO/VIDEO.
+
+### Launch recommendation (one paragraph)
+
+Do **not** try to serve 2,500 students concurrently on the current single-worker `cpu-basic`
+Space: the real wall is the **~15-connection DB pool** (5 + 10, one worker), because each
+LLM-bearing request pins its connection across the multi-second model call — so ~12–15 concurrent
+interviews is the ceiling regardless of CPU. For next week, **keep the single instance but set
+`MAX_CONCURRENT_SESSIONS=12`** (just under the pool wall) so the new safety valve holds the 13th+
+student with the polite in-brand message instead of erroring, and **stagger onboarding into
+cohorts** so peak concurrency stays under 12; **default the cohort to TEXT** (≈₹9–₹24/student, zero
+Sarvam, no voice latency) with AUDIO/VIDEO opt-in once the Sarvam rate is confirmed. To actually
+raise the ceiling rather than queue, first **raise Aiven's connection cap**, then add uvicorn
+workers (each worker = its own 15-connection pool, so N workers × 15 must still fit under the
+Aiven cap minus the LMS's peak) — and the durable fix is to release the DB connection *before* the
+LLM await so concurrency stops being bound by the pool at all.
 
 ---
 
