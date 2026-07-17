@@ -11,7 +11,7 @@ import {
   QUESTION_WARN_SECONDS, CAMERA_GRACE_MS, SILENT_ABANDON_MS,
   WRAP_CAMERA_OFF, WRAP_NO_ANSWER, WRAP_SESSION_TIME_UP,
   shouldBackchannel, shouldBargeIn, canArmCapture, BARGE_IN_RMS, BARGE_IN_DUCK_MS,
-  textIdleAction, TEXT_IDLE_EXPIRY_MS, TEXT_IDLE_NUDGE_LINE,
+  textIdleAction, TEXT_IDLE_EXPIRY_MS, TEXT_IDLE_NUDGE_LINE, isSubstantiveAnswer,
 } from "./roomPolicy.js";
 import { isEmptyReadout, historyStatus, trendDirection } from "./readoutPolicy.js";
 // Phase D: on-device presence metrics (m1–m8). SHIPS DARK — isPresenceMonitorEnabled()
@@ -796,16 +796,18 @@ const CSS = `
   .iq-tile-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
   /* Student camera. LOCAL ONLY — never recorded, never uploaded, no MediaRecorder on
      this track anywhere. Mirrored, because a self-view that is not mirrored is unnerving. */
-  /* CAMERA CROP FIX: the tile takes its height from the room grid cell, so in a wide/short LMS
-     embed the self-view became a short strip and object-fit:COVER cropped the face down to a
-     band (the reported "only the top of the head shows"). object-fit:CONTAIN shows the WHOLE
-     camera frame instead — scaled to fit inside the tile and centred by the flex .iq-tile-body,
-     letterboxed on the tile's own dark background. The whole face is visible at every embed
-     width and height, never cropped. (contain, not cover: cover fills the tile but is exactly
-     what was cutting the face off — filling the strip is not worth losing the face.) The
-     background matches the tile so the letterbox reads as intentional, not empty. Mirrored,
-     as before. */
-  .iq-tile-video{width:100%;height:100%;object-fit:contain;background:#0a1220;transform:scaleX(-1)}
+  /* SELF-VIEW SIZING (items: camera crop + tile too short). The tile takes its height from
+     the room grid cell, which in a wide/short LMS embed is a wide, short rectangle. Two earlier
+     tries both failed: object-fit:cover on a full-bleed video CROPPED the face to a band; then
+     object-fit:contain showed the whole face but shrank it to a tiny letterboxed image in a
+     short cell. The fix is to SIZE THE VIDEO ITSELF to the largest 4:3 box that fits the cell,
+     centred by the flex .iq-tile-body — width/height auto + aspect-ratio 4/3 + max-width/height
+     let the browser pick the biggest 4:3 rectangle that fits (height-bound in a wide/short cell,
+     width-bound in a tall/narrow one). object-fit:cover then fills THAT 4:3 box, so a webcam
+     frame lands as a large, upright, uncropped face at every embed width — a proper camera tile,
+     not a strip and not a stamp. The dark background matches the tile for the small margins the
+     centring leaves. Mirrored, as before. */
+  .iq-tile-video{max-width:100%;max-height:100%;width:auto;height:auto;aspect-ratio:4/3;object-fit:cover;background:#0a1220;transform:scaleX(-1)}
   .iq-tile-initial{width:88px;height:88px;border-radius:50%;background:#1a2744;border:1px solid rgba(255,255,255,.10);display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,.88);font-weight:800;font-size:32px;font-family:'Plus Jakarta Sans',sans-serif}
 
   /* THE STUDENT'S INPUT SURFACE — their own tile's bottom row, open only while their
@@ -2187,10 +2189,20 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
           console.debug("[interviewer identity]", r.interviewer_identity);
         }
         if (r.tone) setTone(r.tone);
-        speechQueuedRef.current = !!(r.audio_segments || []).length;
+        const hasGreetingAudio = !!(r.audio_segments || []).length;
+        speechQueuedRef.current = hasGreetingAudio;
         setMessages([{ role: "assistant", content: r.greeting, audio_segments: r.audio_segments || [] }]);
-        connectingRef.current = false;   // the gate reads the ref; setState has not landed yet
-        setConnecting(false);
+        // Item 9 — smooth opening: hold "Connecting you with your interviewer…" until she
+        // ACTUALLY starts speaking, not the moment the greeting is fetched. Clearing it here
+        // left an empty beat between the connecting line vanishing and her first word. When
+        // there is greeting audio, `connecting` is now cleared by playOne's reveal on the
+        // first clip's "playing" event (below) — so the connecting line hands straight over
+        // to her voice + caption with no gap. Only a text-only greeting (no audio to wait
+        // for) clears immediately here.
+        if (!hasGreetingAudio) {
+          connectingRef.current = false;
+          setConnecting(false);
+        }
       } catch (e) {
         // The greeting is the one thing we cannot degrade around — with no opening line
         // there is no interview. Say so plainly and let them start again.
@@ -2302,15 +2314,25 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // Play ONE clip and resolve when it actually finishes. This replaces the old
   // event-driven flow: with per-sentence clips we must sequence explicitly, or the
   // shared 'ended' listener would fire once per sentence and trip auto-listen early.
-  const playOne = (url) => new Promise((resolve) => {
+  // `onStart` fires the moment this clip's audio ACTUALLY begins (the element's "playing"
+  // event) — item 6. The caption is revealed there, not before, so it appears AS Nia speaks
+  // the line rather than seconds ahead while the clip is still being fetched over the network.
+  // If playback is blocked or the clip fails, onStart is fired anyway (once) so the caption
+  // still shows for its beat and the transcript is never silently skipped.
+  const playOne = (url, onStart) => new Promise((resolve) => {
     const p = player();
-    if (!p || !url) { resolve(); return; }
+    let revealed = false;
+    const reveal = () => { if (!revealed) { revealed = true; try { onStart && onStart(); } catch { /* noop */ } } };
+    if (!p || !url) { reveal(); resolve(); return; }
     let settled = false;
+    const started = () => { p.removeEventListener("playing", started); reveal(); };
     const done = () => {
       if (settled) return;
       settled = true;
       p.removeEventListener("ended", done);
       p.removeEventListener("error", done);
+      p.removeEventListener("playing", started);
+      reveal();   // committed to this clip — make sure its caption showed even if it errored
       if (playAbortRef.current === done) playAbortRef.current = null;
       resolve();
     };
@@ -2327,10 +2349,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
         }
         p.addEventListener("ended", done);
         p.addEventListener("error", done);
+        p.addEventListener("playing", started);   // caption reveal is bound to real playback
         p.src = objUrl;
         resumeTtsAnalyser();
         const pr = p.play();
-        if (pr && pr.catch) pr.catch((e) => { logAudioBlocked("playOne", e); setNeedsTap(true); done(); });
+        if (pr && pr.catch) pr.catch((e) => { logAudioBlocked("playOne", e); setNeedsTap(true); reveal(); done(); });
         else setNeedsTap(false);
       } catch (e) { logAudioBlocked("playOne", e); done(); }
     })();
@@ -2422,11 +2445,19 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       }
       if (seg.pause_before_ms) await sleep(seg.pause_before_ms);
       if (speakTokenRef.current !== token) return;
-      setSpokenLine(seg.text || "");
       spoken.push(seg.text || "");
       spokenSoFarRef.current = spoken.join(" ");          // what she has ACTUALLY said
-      if (seg.audio_url) await playOne(seg.audio_url);
-      else await sleep(650);                              // TTS failed for this line
+      // Item 6: reveal the caption when the AUDIO starts, not before it. playOne fires
+      // `reveal` on the element's "playing" event, so the line appears as she speaks it
+      // rather than during the (possibly network-bound) fetch that precedes playback.
+      const reveal = () => {
+        if (speakTokenRef.current !== token) return;
+        setSpokenLine(seg.text || "");
+        // Item 9: the FIRST word she speaks is where "Connecting…" hands over to her voice.
+        if (connectingRef.current) { connectingRef.current = false; setConnecting(false); }
+      };
+      if (seg.audio_url) await playOne(seg.audio_url, reveal);
+      else { reveal(); await sleep(650); }                // TTS failed for this line — show + beat
     }
     if (speakTokenRef.current !== token) return;
     setSpeaking(false);
@@ -2449,13 +2480,18 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     }
     playedIdxRef.current = idx;
     speechQueuedRef.current = false;     // no longer QUEUED: it is in the air as of now
+    // Item 6: flip `speaking` on in the SAME commit the reply lands, so the caption band
+    // shows nothing (audioPlaying ? "" ...) during the clip fetch instead of flashing the
+    // whole reply text via idleCaption before a word is spoken. The per-sentence caption is
+    // then revealed by playOne on the audio's "playing" event.
+    setSpeaking(true);
     if (last.audio_segments?.length) playSegments(last.audio_segments);
     // A single-clip line (the re-ask, the mute fork). Same contract as a reply: the
     // caption shows what is in the air, and the mic does not open until it is over.
     else (async () => {
       setSpeaking(true);
-      setSpokenLine(last.content || "");
-      await playOne(last.audio_url);
+      // Item 6: reveal the caption when this single clip actually starts, not before its fetch.
+      await playOne(last.audio_url, () => setSpokenLine(last.content || ""));
       setSpeaking(false);
       setSpokenLine("");
       audioEndedRef.current?.();
@@ -3231,7 +3267,16 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
         return;
       }
 
-      if (transcript) {
+      // Item 7 — the NOISE/SILENCE guard. A non-null transcript is not automatically an
+      // answer: the loudness-only auto-stop can fire on a cough or ambient noise, and STT
+      // then hallucinates a stray token. In the instant (room) auto-submit flow, require a
+      // real spoken answer — a couple of words, a few characters, a recording that ran long
+      // enough — before we ever flash "captured" or submit. A forced timeout is exempt (the
+      // clock cut them off — submit what they DID get out), and classic mode is exempt (the
+      // transcript only populates the editable composer, nothing auto-submits).
+      const durMsHeard = durationSeconds * 1000;
+      const realAnswer = isSubstantiveAnswer(transcript, durMsHeard);
+      if (transcript && (forcedTimeout || !roomModeRef.current || realAnswer)) {
         sttFailRef.current = 0;
         noiseCoachCountRef.current = 0;   // a clean transcript resets the noise streak
         // Phase 3: mark this answer as SPOKEN and stash its delivery metrics for Send.
@@ -3252,6 +3297,13 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
           setInput(prev => ((prev ? prev.trimEnd() + " " : "") + transcript).slice(0, 4000));
           setTimeout(() => inputRef.current?.focus(), 50);
         }
+      } else if (transcript && roomModeRef.current) {
+        // A transcript came back but it is too short/brief to be a real answer — noise, a
+        // cough, a single stray word. Do NOT capture or submit: treat it exactly like an
+        // empty attempt so she says "I didn't quite catch that" and the mic reopens.
+        answeredByVoiceRef.current = false;
+        emitTurnLog();
+        await handleSttFailure();
       } else if (forcedTimeout) {
         emitTurnLog();
         submitExpiry();

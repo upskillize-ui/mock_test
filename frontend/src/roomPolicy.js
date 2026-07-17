@@ -91,6 +91,30 @@ export function expiryAction({ partial = "", draft = "" } = {}) {
     : { timeout: "skip", text: "" };
 }
 
+// ── The "is this a real spoken answer?" gate (item 7) ────────────────────────
+// The trailing-silence auto-stop is LOUDNESS-only: any sustained background noise above the
+// amplitude gate arms "they spoke", and once armed the recording stops and whatever the STT
+// hallucinated from the noise ("you", "um", ".") was submitted as an answer — the "ANSWER
+// CAPTURED before I said anything" complaint. So before a voice answer is auto-captured and
+// submitted, it must clear a CONTENT gate: a couple of real words, a few characters, and a
+// recording that actually ran long enough to be speech. A transcript that fails this is
+// treated exactly like an empty one — she says "I didn't quite catch that" and the mic
+// reopens; nothing is captured, nothing is submitted.
+export const ANSWER_MIN_WORDS = 2;     // a lone token is noise, not an answer
+export const ANSWER_MIN_CHARS = 6;     // "." / "um" / "you" don't clear this
+export const ANSWER_MIN_MS = 1200;     // and it must have run long enough to be speech
+
+export function isSubstantiveAnswer(transcript, durationMs = Infinity) {
+  const s = (transcript || "").trim();
+  if (s.length < ANSWER_MIN_CHARS) return false;
+  // Count only tokens that carry a letter or digit — punctuation and stray symbols the STT
+  // emits from noise ("...", "-") must not count toward the word floor.
+  const words = s.split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w));
+  if (words.length < ANSWER_MIN_WORDS) return false;
+  if (Number(durationMs) < ANSWER_MIN_MS) return false;
+  return true;
+}
+
 // ── The device-policy clocks (Phase E) ───────────────────────────────────────
 // These mirror app/presence.py — same numbers, same rules, tested on both sides.
 export const CAMERA_GRACE_MS = 60_000;
