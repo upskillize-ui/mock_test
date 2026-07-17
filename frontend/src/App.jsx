@@ -5078,6 +5078,9 @@ export default function App() {
   // A5: {message, retry} when the voice vendor is unavailable and TEXT is the honest offer.
   const [seatbeltOffer, setSeatbeltOffer] = useState(null);
   const [retryAsText, setRetryAsText] = useState(false);
+  // Capacity/Cost item 5: the polite HOLD when every panel is in session. A single message
+  // string — never an error, gold not red — set when /session/start answers 503 capacity_full.
+  const [capacityHold, setCapacityHold] = useState(null);
   const [config, setConfig] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const [greeting, setGreeting] = useState("");
@@ -5172,6 +5175,8 @@ export default function App() {
     // below breaks the user-gesture context. Same-origin iframes still enforce autoplay
     // policy, and a room reached by deep-link may never have seen the Start gesture.
     unlockAudioPlayback();
+    setJoinError(null);
+    setCapacityHold(null);
     setScreen("loading");
     // Seed the roster pick with a value we control and PERSIST, so the same interviewer
     // survives a refresh (session_id doesn't exist yet — we need the name to start).
@@ -5220,6 +5225,14 @@ export default function App() {
             setRetryAsText(true);
           },
         });
+        setScreen("lobby");
+        return;
+      }
+      // Capacity/Cost item 5: every panel is in session. This is a HOLD, not a failure —
+      // nothing is wrong with them or with us, there just isn't a free seat this second. Show
+      // the in-brand one-liner (gold, not red) and send them back to the lobby to retry.
+      if (e?.detail?.capacity_full) {
+        setCapacityHold(e.detail.message);
         setScreen("lobby");
         return;
       }
@@ -5284,6 +5297,18 @@ export default function App() {
           {joinError && (
             <div style={{ fontFamily: T.font, maxWidth: 900, margin: "0 auto", padding: "0 20px" }}>
               <div style={{ padding: "10px 14px", borderRadius: 8, background: T.redSoft, color: T.red, fontSize: 13 }}>{joinError}</div>
+            </div>
+          )}
+          {/* Capacity/Cost item 5: the polite hold. GOLD, never red — a full house is not a
+              fault, and a red box would tell the student they broke something. One line, the
+              exact approved copy, and the Join button below is still live so a retry the
+              moment a seat frees just works. */}
+          {capacityHold && (
+            <div style={{ fontFamily: T.font, maxWidth: 900, margin: "0 auto", padding: "0 20px" }}>
+              <div style={{ padding: "12px 16px", borderRadius: 8, background: T.goldSoft,
+                border: "1px solid " + T.goldBorder, color: "#5a4500", fontSize: 13 }}>
+                {capacityHold}
+              </div>
             </div>
           )}
           {/* A5: not an error — an offer. Gold, not red: nothing has gone wrong for THEM,

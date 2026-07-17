@@ -45,6 +45,37 @@ def note_stt_call(session_id: str) -> None:
     _session_stt_counts[session_id] = _session_stt_counts.get(session_id, 0) + 1
 
 
+# ── STT SECONDS meter (Capacity/Cost phase, item 2) ──────────────────────────
+# Sarvam bills AUDIO, so the cost ledger needs SECONDS, not just calls. Saarika is billed on
+# the length of the audio we upload, which the client reports as `duration_seconds` on every
+# /session/stt (and which we can also derive from the vendor's word timestamps). In-process
+# and no-DB, exactly like the call counter above and the TTS seconds meter in tts.py: a
+# restart under-counts that session, which is fine for a measurement and never a bill.
+_session_stt_seconds: dict[str, dict] = {}
+
+
+def note_stt_seconds(session_id: str, seconds: float, *, estimated: bool = False) -> None:
+    """Add `seconds` of transcribed audio to this session's STT meter. `estimated` marks a
+    duration we inferred (e.g. from word timestamps) rather than one the client measured, so
+    the ledger can flag it. Never raises."""
+    try:
+        row = _session_stt_seconds.setdefault(session_id, {"seconds": 0.0, "calls": 0, "estimated": False})
+        row["seconds"] += max(0.0, float(seconds or 0.0))
+        row["calls"] += 1
+        if estimated:
+            row["estimated"] = True
+    except Exception:
+        pass
+
+
+def session_seconds(session_id: str) -> dict:
+    """This session's transcribed-seconds meter. Zeroed shape when nothing was transcribed,
+    so a caller can always read the keys."""
+    row = dict(_session_stt_seconds.get(session_id, {"seconds": 0.0, "calls": 0, "estimated": False}))
+    row["seconds"] = round(row.get("seconds", 0.0), 1)
+    return row
+
+
 def stt_calls_used(session_id: str) -> int:
     return _session_stt_counts.get(session_id, 0)
 

@@ -5,6 +5,7 @@ import logging
 from urllib.parse import urlparse
 from fastapi import HTTPException
 from .config import settings
+from . import ledger
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ async def stream_claude(
     max_tokens: int = 600,
     system_suffix: str = "",
     on_delta=None,
+    session_id: str | None = None,
 ) -> str:
     """call_claude, but STREAMED — and the streaming is not decoration.
 
@@ -75,6 +77,11 @@ async def stream_claude(
     }
 
     chunks: list[str] = []
+    # Cost ledger (item 2): the streaming API carries usage across TWO events — input +
+    # cache tokens on `message_start`, output tokens on `message_delta` — so we accumulate
+    # both and record once at the end. Without this the streamed greeting/kickoff would be
+    # invisible to the ledger. Recording never affects the returned text.
+    usage: dict = {}
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             async with client.stream("POST", settings.ANTHROPIC_URL,
@@ -94,7 +101,20 @@ async def stream_claude(
                         event = json.loads(body)
                     except ValueError:
                         continue
-                    if event.get("type") != "content_block_delta":
+                    etype = event.get("type")
+                    if etype == "message_start":
+                        u = (event.get("message") or {}).get("usage") or {}
+                        for k in ("input_tokens", "cache_read_input_tokens",
+                                  "cache_creation_input_tokens", "output_tokens"):
+                            if u.get(k) is not None:
+                                usage[k] = u[k]
+                        continue
+                    if etype == "message_delta":
+                        u = event.get("usage") or {}
+                        if u.get("output_tokens") is not None:
+                            usage["output_tokens"] = u["output_tokens"]
+                        continue
+                    if etype != "content_block_delta":
                         continue
                     delta = event.get("delta") or {}
                     if delta.get("type") == "text_delta" and delta.get("text"):
@@ -110,6 +130,8 @@ async def stream_claude(
         log.exception("Claude stream failed: %s", e)
         raise HTTPException(status_code=502, detail="Upstream model unreachable")
 
+    if session_id and usage:
+        ledger.record_llm(session_id, model, usage)
     return "".join(chunks).strip()
 
 
@@ -121,6 +143,7 @@ async def call_claude(
     max_tokens: int = 600,
     system_suffix: str = "",
     timeout: httpx.Timeout | None = None,
+    session_id: str | None = None,
 ) -> str:
     headers = _headers()
 
@@ -145,6 +168,10 @@ async def call_claude(
         raise HTTPException(status_code=502, detail="Upstream model error")
 
     data = r.json()
+    # Cost ledger (item 2): record token usage for this call. Best-effort and never
+    # affects the returned text.
+    if session_id:
+        ledger.record_llm(session_id, model, data.get("usage"))
     # A truncated generation is a 200 with stop_reason="max_tokens" — the caller
     # only sees a string, so without this line an output cap reads downstream as
     # "the model returned garbage". It cost a sprint to find that once (QA-01).

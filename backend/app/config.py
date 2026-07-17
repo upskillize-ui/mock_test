@@ -157,6 +157,57 @@ class Settings:
         if h.strip()
     ]
 
+    # ── Capacity/Cost phase: the safety valve (item 5) ───────────────────────
+    # Hard ceiling on CONCURRENT live interviews on this instance. 0 = unlimited (the
+    # feature is inert until ops sets a real number from item 4's measured knee). Beyond the
+    # cap /session/start returns a polite, in-brand HOLD (503) — never an error, and sessions
+    # already running are never touched. See main._check_capacity.
+    MAX_CONCURRENT_SESSIONS: int = int(os.getenv("MAX_CONCURRENT_SESSIONS", "0"))
+    # The exact hold copy — legal/brand-approved, one line, never styled as an error. Env-
+    # overridable so ops can retune wording without a deploy.
+    CAPACITY_FULL_MESSAGE: str = os.getenv(
+        "CAPACITY_FULL_MESSAGE",
+        "Every panel is in session right now. Give us a few minutes — your seat is coming.",
+    )
+    # A session left 'active' forever (tab closed, no /session/end) must not wedge the cap
+    # permanently. Only sessions started within this window count toward "live" concurrency —
+    # comfortably longer than the longest interview (45 min) plus its debrief. A stale 'active'
+    # row past this window is treated as gone for capacity purposes (its status is fixed lazily
+    # on the next end/abandon it ever gets).
+    CONCURRENCY_ACTIVE_WINDOW_MINUTES: int = int(os.getenv("CONCURRENCY_ACTIVE_WINDOW_MINUTES", "75"))
+
+    # ── Capacity/Cost phase: the cost ledger rates (item 2) ──────────────────
+    # These are the INPUTS the cost report is required to state, and they move with the
+    # vendor plan and the forex rate — so they are config, not constants, and ledger.py
+    # echoes the exact values it used back into every stored ledger. Defaults are marked and
+    # MUST be confirmed against the live Anthropic invoice / Sarvam dashboard before the
+    # numbers are quoted to finance (see docs/CAPACITY_COST_REPORT.md §rates).
+    USD_TO_INR: float = float(os.getenv("USD_TO_INR", "88.0"))
+    SARVAM_CREDIT_TO_INR: float = float(os.getenv("SARVAM_CREDIT_TO_INR", "1.0"))
+    # Sarvam bills AUDIO. Bulbul (TTS) and Saarika (STT) credit-per-second rates from the
+    # plan. Placeholder defaults — set from the dashboard before quoting.
+    SARVAM_TTS_CREDITS_PER_SEC: float = float(os.getenv("SARVAM_TTS_CREDITS_PER_SEC", "0.5"))
+    SARVAM_STT_CREDITS_PER_SEC: float = float(os.getenv("SARVAM_STT_CREDITS_PER_SEC", "0.5"))
+
+    # ── Capacity/Cost phase: DB pool sizing (item 6) ─────────────────────────
+    # The Space shares one Aiven MySQL with the LMS, and a request holds its pooled
+    # connection across the multi-second LLM await (the read transaction opens on the first
+    # SELECT and stays open until the turn's final commit). So the pool ceiling — pool_size +
+    # max_overflow — is a hard cap on concurrent LLM-bearing requests, and every connection
+    # the Space can open is one the LMS cannot. These are ENV-CONFIGURABLE (they were hard-
+    # coded 5/10) precisely so ops can right-size them against Aiven's measured connection
+    # limit MINUS the LMS's headroom, without a code change — see docs/CAPACITY_COST_REPORT.md
+    # §DB pool. Defaults preserve the historical 5 + 10 = 15 ceiling.
+    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "5"))
+    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+    # Seconds a request waits for a free pooled connection before giving up (SQLAlchemy
+    # default is 30). Kept modest so a saturated pool fails fast and visibly rather than
+    # hanging every request behind the same wall.
+    DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "15"))
+    # Recycle below Aiven's idle-connection timeout so a long-idle pooled connection is not
+    # handed out already-dead. 280s was the historical value.
+    DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "280"))
+
     ANTHROPIC_URL: str = "https://api.anthropic.com/v1/messages"
     ANTHROPIC_VERSION: str = "2023-06-01"
 

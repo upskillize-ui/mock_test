@@ -13,9 +13,17 @@ log = logging.getLogger(__name__)
 engine = create_engine(
     settings.DATABASE_URL,
     pool_pre_ping=True,
-    pool_recycle=280,
-    pool_size=5,
-    max_overflow=10,
+    # Pool sizing is env-configurable (Capacity/Cost item 6): the Space shares one Aiven
+    # instance with the LMS, and a request pins its pooled connection across the whole LLM
+    # await, so pool_size + max_overflow is a hard ceiling on concurrent LLM-bearing requests
+    # AND a claim on connections the LMS also needs. Defaults preserve the historical
+    # 5 + 10 = 15 ceiling; ops raises/lowers them against Aiven's cap minus the LMS headroom.
+    pool_recycle=settings.DB_POOL_RECYCLE,
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
+    # Fail fast and visibly when the pool is saturated rather than hanging every request for
+    # the full SQLAlchemy default (30s) behind the same wall.
+    pool_timeout=settings.DB_POOL_TIMEOUT,
     # An EXPLICIT connect timeout, rather than whatever the driver happens to default to.
     # The boot-time schema check (app.schema_check) opens a connection during the ASGI
     # lifespan — i.e. before the server accepts its first request — so an unreachable

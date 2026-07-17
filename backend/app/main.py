@@ -38,6 +38,7 @@ from . import presence
 from . import scoring
 from . import schema_check
 from . import intake
+from . import ledger
 from .schemas import (
     StartSessionRequest, StartSessionResponse,
     GreetingRequest, GreetingResponse, SpeechRequest, SpeechResponse, ClipPackResponse,
@@ -259,6 +260,48 @@ def _check_rate_limit(db: Session, user_id: str) -> None:
             429,
             f"Daily limit of {settings.MAX_SESSIONS_PER_DAY} interviews reached. Come back tomorrow.",
             headers={"Retry-After": "86400"},
+        )
+
+
+def _live_session_count(db: Session) -> int:
+    """How many interviews are live RIGHT NOW, for the concurrency cap (item 5).
+
+    Counts 'active', non-deleted sessions started within CONCURRENCY_ACTIVE_WINDOW_MINUTES.
+    The window is the whole trick: a session whose tab was closed without a /session/end
+    stays 'active' forever, and counting those raw would wedge the cap permanently. Anything
+    older than the window (longer than the longest interview + its debrief) is treated as
+    gone. Single indexed COUNT on idx_status — cheap enough to run on every start.
+    """
+    row = db.execute(
+        text("""
+            SELECT COUNT(*) AS n FROM vyom_sessions
+            WHERE status = 'active'
+              AND deleted_at IS NULL
+              AND started_at >= (NOW() - INTERVAL :win MINUTE)
+        """),
+        {"win": settings.CONCURRENCY_ACTIVE_WINDOW_MINUTES},
+    ).first()
+    return int(row.n) if row else 0
+
+
+def _check_capacity(db: Session) -> None:
+    """The safety valve (item 5). Beyond MAX_CONCURRENT_SESSIONS, refuse a NEW session with a
+    polite, in-brand HOLD — never an error, and never touching the sessions already running.
+
+    Inert when the cap is 0 (unset), so the feature ships dark until ops sets item 4's
+    measured number. Returns a structured 503 detail the lobby renders as a gold hold panel
+    (see frontend App.jsx handleJoin), plus a Retry-After so a client can back off politely.
+    """
+    cap = settings.MAX_CONCURRENT_SESSIONS
+    if cap <= 0:
+        return
+    live = _live_session_count(db)
+    if live >= cap:
+        log.info("capacity hold: %d live >= cap %d — new session held", live, cap)
+        raise HTTPException(
+            status_code=503,
+            detail={"capacity_full": True, "message": settings.CAPACITY_FULL_MESSAGE},
+            headers={"Retry-After": "30"},
         )
 
 
@@ -697,6 +740,32 @@ def _finalize_session(db: Session, session_id: str, completion_type: str) -> Non
     )
     db.commit()
     _update_session_counters(db, session_id)
+    _write_cost_ledger(db, session_id)
+
+
+def _write_cost_ledger(db: Session, session_id: str) -> None:
+    """Assemble this session's cost ledger (item 2) and persist it onto the session row.
+
+    Called from the single close funnel (_finalize_session), so every completed or abandoned
+    session gets a ledger — real students included; this is product telemetry, not test
+    scaffolding. Fully defensive, like every post-base column write in this file: a database
+    without migration 011 (cost_ledger column missing) must never turn a session's close into
+    a 500. On any failure the ledger is simply not stored and schema_check has already said so
+    at boot. The in-process accumulator is dropped afterwards so a long-lived process does not
+    retain one row per session forever.
+    """
+    try:
+        data = ledger.build_ledger(session_id)
+        db.execute(
+            text("UPDATE vyom_sessions SET cost_ledger=:c WHERE id=:id"),
+            {"c": json.dumps(data), "id": session_id},
+        )
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        log.warning("cost_ledger not stored (apply migration 011?): %s", type(e).__name__)
+    finally:
+        ledger.forget(session_id)
 
 
 # Set at boot by the schema check: the migration files this database still needs, or []
@@ -845,6 +914,10 @@ async def start_session(
     db: Session = Depends(get_db),
     user_id: str = Depends(current_user),
 ):
+    # The safety valve runs FIRST — before the daily cap, before intake, before any spend —
+    # so a held student never pays an LLM call to be told to wait. Sessions already running
+    # are unaffected; this only gates NEW entries. See _check_capacity.
+    _check_capacity(db)
     _check_rate_limit(db, user_id)
 
     # Voice Phase 2 (Decision 1 — consent at point of capture): starting a session
@@ -1053,6 +1126,7 @@ async def session_greeting(
             model=settings.MODEL_INTERVIEW,
             max_tokens=500,
             on_delta=_on_delta,
+            session_id=body.session_id,
         )
         identity, greeting = parse_kickoff(raw_kickoff)
         if identity:
@@ -1293,6 +1367,7 @@ async def session_turn(
         model=settings.MODEL_INTERVIEW,
         max_tokens=500,
         system_suffix=directive,
+        session_id=body.session_id,
     )
     _save_message(db, body.session_id, "assistant", reply)
 
@@ -1690,6 +1765,7 @@ async def session_reask(
             messages=[{"role": "user", "content": directive}],
             model=settings.MODEL_INTERVIEW,
             max_tokens=60,
+            session_id=body.session_id,
         )).strip()
     except HTTPException:
         line = ""   # upstream model failed — fall back, never block the candidate
@@ -1890,6 +1966,23 @@ async def session_stt(
     )
     _stt_ms = int((time.perf_counter() - _t0) * 1000)
 
+    # Cost ledger (item 2): Sarvam bills the AUDIO we upload, so meter its SECONDS. The
+    # client reports the recording length as duration_seconds; if it's missing we fall back
+    # to the vendor's last word-timestamp (marked estimated). Billed regardless of whether a
+    # transcript came back, because the vendor call already happened.
+    _stt_secs = float(duration_seconds or 0.0)
+    _stt_est = False
+    if _stt_secs <= 0.0 and result:
+        _ts = result.get("timestamps") or {}
+        _ends = _ts.get("end_time_seconds") if isinstance(_ts, dict) else None
+        if isinstance(_ends, list) and _ends:
+            try:
+                _stt_secs, _stt_est = float(_ends[-1]), True
+            except (TypeError, ValueError):
+                _stt_secs = 0.0
+    if _stt_secs > 0.0:
+        stt.note_stt_seconds(session_id, _stt_secs, estimated=_stt_est)
+
     transcript = result.get("transcript") if result else None
     # INSTRUMENTATION (item 3): one diagnostic line per answer attempt, server side. It
     # carries NO transcript text and NO audio — only shapes and timings — so a future
@@ -2085,7 +2178,8 @@ def _parse_debrief_json(raw: str) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-async def _generate_debrief(system_prompt: str, messages: list[dict]) -> dict:
+async def _generate_debrief(system_prompt: str, messages: list[dict],
+                            session_id: str | None = None) -> dict:
     """The billed readout generation, with one retry on unusable JSON.
 
     On total failure this raises 502 and stores NOTHING — deliberately. The obvious
@@ -2104,6 +2198,7 @@ async def _generate_debrief(system_prompt: str, messages: list[dict]) -> dict:
             # A readout is a long single generation; the default 60s read clock is for
             # short turn calls and cut this one off mid-write. See _DEBRIEF_TIMEOUT.
             timeout=_DEBRIEF_TIMEOUT,
+            session_id=session_id,
         )
         debrief = _parse_debrief_json(raw)
         if debrief is not None:
@@ -2518,7 +2613,7 @@ async def end_session(
     # mode they chose, so a hard-won score reads as the verdict on a hard interview.
     messages.append({"role": "user", "content": debrief_instruction(cfg)})
 
-    debrief = await _generate_debrief(system_prompt, messages)
+    debrief = await _generate_debrief(system_prompt, messages, session_id=body.session_id)
 
     # INT-11: the model's per-answer scores now echo answerId — the join key for
     # both calibration and band math.

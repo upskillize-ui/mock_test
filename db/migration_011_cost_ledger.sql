@@ -1,0 +1,35 @@
+-- ==========================================================================
+-- InterviewIQ — Migration 011 (Capacity/Cost phase: per-session cost ledger)
+--
+-- WHY THIS EXISTS
+--   Before 2,000–2,500 students onboard, we need the measured cost per student per
+--   session per mode — and to keep it honest, every REAL student session must carry the
+--   same ledger, not just the synthetic ones. This column is where that ledger lives: a
+--   single JSON blob written once at session close (app.main._write_cost_ledger, from the
+--   one _finalize_session funnel), holding the LLM token spend by model in $, the Sarvam
+--   TTS/STT audio seconds in credits, a rolled-up ₹ total, and — crucially — the exact
+--   $/₹ and credit/₹ rates used, so a stored ledger explains its own numbers after the
+--   forex rate or the vendor plan has moved.
+--
+-- PERMANENT TELEMETRY, NOT TEST SCAFFOLDING
+--   This is product data. It is written for the founder's cost dashboard and for finance,
+--   for the life of the product — the synthetic cost matrix is just its first heavy reader.
+--
+-- ADDITIVE ONLY: one nullable JSON column, no backfill, no rewrites, no drops. A session
+--   closed before this migration (or on a process that restarted mid-session and lost its
+--   in-process meters) simply has NULL here — the honest "no ledger captured" default, and
+--   never a penalty or an error.
+-- Run once. Rollback: migration_011_cost_ledger_rollback.sql
+-- ==========================================================================
+
+-- Shape (app.ledger.build_ledger):
+--   { "llm": { "by_model": {model: {calls, input_tokens, output_tokens,
+--                                   cache_read_tokens, cache_creation_tokens, usd}},
+--             "total_usd": ..., "total_inr": ... },
+--     "tts": { "vendor_seconds": ..., "cached_seconds": ..., "credits": ..., "inr": ... },
+--     "stt": { "seconds": ..., "calls": ..., "credits": ..., "inr": ... },
+--     "total_inr": ...,
+--     "rates": { "usd_to_inr": ..., "sarvam_credit_to_inr": ...,
+--                "sarvam_tts_credits_per_sec": ..., "sarvam_stt_credits_per_sec": ... } }
+ALTER TABLE vyom_sessions
+  ADD COLUMN cost_ledger JSON DEFAULT NULL AFTER presence_metrics;

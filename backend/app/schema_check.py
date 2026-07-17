@@ -73,6 +73,11 @@ EXPECTED: list[tuple[str, str, str | None]] = [
     # defensively — without the column the readout simply shows the "No presence data"
     # line and no score changes. Report-only; it never enters a benchmark or a band.
     ("010_presence_metrics", "vyom_sessions", "presence_metrics"),
+    # 011 — the per-session cost ledger (Capacity/Cost phase). Permanent product telemetry:
+    # every completed/abandoned session stores its LLM $ + Sarvam credit breakdown here.
+    # Written defensively from _finalize_session — without the column a session still closes
+    # normally, it just closes without a stored ledger (and the in-process meters are lost).
+    ("011_cost_ledger", "vyom_sessions", "cost_ledger"),
 ]
 
 # The newest migration the code expects. Reported at boot so a deploy can be eyeballed in
