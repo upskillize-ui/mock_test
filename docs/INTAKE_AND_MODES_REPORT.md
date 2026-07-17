@@ -1,0 +1,296 @@
+# INTAKE_AND_MODES_REPORT.md — one intake boundary, and TEXT / AUDIO / VIDEO
+
+**Sprint:** Phases A and B. **Phase D (presence) is excluded** and runs as a later sprint —
+nothing here computes a presence metric, and no MediaPipe asset was added.
+
+**Suites:** 377 backend (was 341) + 103 frontend (was 100). All green.
+**Migration 009 applied** to `defaultdb`. **Nothing pushed to `hf`** — awaiting explicit
+confirmation (§8). No screenshots committed (`.gitignore`, §9).
+
+---
+
+## 0. The thing that was actually broken
+
+Before a line of this sprint was written, the gather was dead — and it had been for weeks,
+silently.
+
+`db.get_student_context` read three sources. **None of them existed.**
+
+| It read | Reality | Consequence |
+|---|---|---|
+| `student_profiles` | table GONE; columns now on `users` | education, skills, résumé, psychometrics → dead |
+| `student_ai_profiles` | RENAMED to `ai_profiles` (29 live rows) | ProfileIQ → dead |
+| `enrollments.student_id = user_id` | it is a `students.id`, not a user id | course history → dead (0 of 10 rows matched, always) |
+
+Every read was wrapped in `except: log.debug(...)`. So nothing failed. The function just
+returned a dict of `None`s and the interview carried on knowing a first name.
+
+Measured, before the fix, for **user 74 (Andrew Carter)** — a real student with three
+enrolments, a COMPLETED ProfileIQ summary, a résumé and a London address on file:
+
+```
+name             = Andrew Carter
+ai_profile       = None
+enrollments      = []
+education        = None
+skills           = None
+source           = []          <- seven feeds of data, none of them read
+```
+
+**The ice-breaker was not skipping because of the prompt.** `prompts.py` forbids inventing
+personal facts and skips the beat when it has nothing safe — correctly. It had nothing
+because the gather handed it nothing. The prompt was doing its job perfectly on empty input.
+
+`schema_check` could not have caught this: `_read_schema` filtered `LIKE 'vyom\_%'`, so the
+one thing built to notice a schema moving was structurally blind to the half we do not own.
+
+After the repair, the same user:
+
+```
+source = ['education','work_profile','city','ai_enhancer','enrollments']
+city   = London
+```
+
+and user 87: `city = Bangalore`, `interests = "Reading, watching movie"`, plus psychometrics
+and a ProfileIQ summary.
+
+---
+
+## 1. Naming, reconciled (this sprint's call)
+
+`SCORING_CONTEXT_REPORT.md:44-49` left this decision here, deliberately:
+
+> *this prompt says TEXT/AUDIO/VIDEO; INTAKE_AND_MODES says TEXT/VOICE/HYBRID. I implemented
+> this prompt's rows as authoritative and added `MODE_ALIASES`... **Reconciling the two names
+> is that sprint's call.***
+
+**Resolved: TEXT / AUDIO / VIDEO.** The constants table was already authoritative and your
+override agreed with it. `MODE_ALIASES` (`VOICE→AUDIO`, `HYBRID→VIDEO`) is kept in both
+`scoring.py` and `intake.py` so stored rows and older clients resolve rather than silently
+scoring 1.00 for a name nobody recognises. A test asserts the two copies agree.
+
+**The other "mode" is untouched.** `vyom_sessions.mode` holds the FEEDBACK style
+(`interview`|`coach`). It keeps its name; the lobby heading already says FEEDBACK. Two live
+factors with different weights share that word, and reading the wrong one silently
+re-weights a session — which is exactly why migration 009 adds a **new column** rather than
+overloading the old one.
+
+| | means | column | weights |
+|---|---|---|---|
+| **MODE** | *how* they answer | `session_mode` (009) | TEXT 0.90 / AUDIO 1.00 / VIDEO 1.00 |
+| **FEEDBACK** | *when* they hear about it | `mode` (unchanged) | interview 1.00 / coach 0.90 |
+
+**VIDEO** = camera on + self-view, speak **or** type per question (your decision). Presence
+metrics stay Phase D. The camera is on because the chip says Video — a chip promising video
+while nothing video happens is a lie we would be shipping.
+
+---
+
+## 2. Phase A — the intake boundary (`backend/app/intake.py`, new)
+
+| Rule | Where | Note |
+|---|---|---|
+| A1 GATHER | `intake.gather` → `db.get_student_context` | repaired; §0 |
+| A2 MERGE, FORM WINS | `intake.merge` | deliberately dumb: if the student typed it, it is true |
+| A3 SANITIZE ONCE | `intake.merge`, caps declared in one place | one documented exception, below |
+| A4 VALIDATE BEFORE SPEND | `intake.validate` | now literally before the first LLM/TTS call |
+| A5 VENDOR SEATBELT | `IntakeError(offer_text_mode=True)` → 422 | an offer, not a dead end |
+| A6 ONE OBJECT | `SessionConfig.card()` | card + Session Profile + attempt record |
+
+**A3's one honest exception.** `prompts.py` still sanitises what it renders, and it must:
+every session stored *before* this boundary holds **raw** text (sanitising used to happen at
+render time, so it was never applied at rest). Removing that pass would replay old
+un-defused JDs into the model — a security regression bought for a tidier diagram. It is
+free to keep because `sanitize_untrusted` is **idempotent**, which acceptance (b) pins.
+
+**Phase A addition — city + interests.** No migration needed: they were already on `users`
+(`city`, `hobbies`). Sparse on real data (**city 3/14, interests 1/14**), so "where
+available" is exactly right and the beat must still skip gracefully. Sanitized once at the
+same boundary. The gather reaches for **exactly these two** personal fields — `users` also
+carries parents' phone numbers, bank details, caste-adjacent fields and salary
+expectations, and `SessionConfig` has nowhere to put any of it (tested).
+
+The ice-breaker rule now has two forms. **The ban on invention is word-for-word identical in
+both.** What changed is whether there is anything real to be friendly *with*:
+
+- no facts on file (most students) → *"You do not know their city..."* — unchanged
+- facts on file → *"...the personal facts written in CANDIDATE BACKGROUND are REAL... you may
+  use ONE of them"*, plus an explicit ban on extrapolating from a city to its weather/traffic
+  or from an interest to a skill.
+
+---
+
+## 3. Two bugs found while wiring Phase A
+
+**The JD was never in the JD slot.** The blob was assembled
+`[intro] --- JOB DESCRIPTION --- [jd] [background] --- RESUME --- [resume]`, and
+`prompts._split_intro` looks for `RESUME` **first**. So for any student with a résumé on
+file, the JD was swallowed whole into `self_intro` and `jd_section` came out **empty**. The
+JD reached the model; it never reached the instructions that read a JD. Order now matches
+the split, and the JD travels as its own field — a field cannot be forged by its own
+contents (the old delimiter could be re-partitioned by a student pasting it).
+
+**A test that tested nothing.** `test_stt` patched `main.get_student_context`; the gather had
+moved to `intake`, so the patch bound nothing and the test passed only because
+`intake.gather` swallows the error. Green for the wrong reason. It now patches where the
+code runs, and `main` no longer imports the name at all.
+
+---
+
+## 4. Phase B — modes
+
+**TEXT never asks for the mic.** Not "defaults to off": the green room returns before any
+control that could call `getUserMedia`, so the dialog is unreachable on that path.
+
+**TEXT spends nothing at Sarvam, gated server-side** (`_try_tts`, `_try_tts_segments`,
+`_greeting_segments`, and inside `_on_delta` — that clip fires *mid-generation*, so a gate
+added only downstream would already have paid). A spend promise kept only by the client not
+asking is not kept: a stale tab or a replayed request would bill us anyway. Counted at the
+vendor boundary:
+
+| mode | vendor calls |
+|---|---|
+| AUDIO | 5 |
+| VIDEO | 5 |
+| **TEXT** | **0** |
+| unknown (pre-009 DB) | 5 — behaves exactly as it always did |
+
+**An unknown mode is never charged the TEXT discount** (1.00, not 0.90). A database without
+009 has no `session_mode`, and marking a spoken session down for a missing column would be
+charging the student for our deploy state.
+
+---
+
+## 5. Scoring (`WEIGHTS_VERSION` 2026.07-1 → **2026.07-2**)
+
+`MODE_FACTOR_ACTIVE = True`. The rule the dormancy guarded is now satisfied rather than
+deferred: nothing may be weighted by a mode nobody can choose — there is a picker.
+
+**No existing session moved.** AUDIO and VIDEO are 1.00 and every session that ever ran was
+spoken. The bump exists because the *meaning* changed, and a benchmark whose meaning changes
+silently is what the version field is for. Only TEXT moves: raw 80 → benchmark 72.
+
+The readout shows a Mode row **only when a mode is known** — "Mode — Unknown ×1.00" is a row
+that explains nothing while implying we measured something. A TEXT session gets
+`Mode — Text ×0.90` and the reason, because an unexplained 0.90 is the "score with no
+context" that table exists to stop.
+
+```
+raw          Your answers, scored for your level    80
+difficulty   Difficulty — Realistic                 ×1.00
+evidence     Evidence — 20 min                      ×1.00
+feedback     Feedback style — Interview             ×1.00
+coverage     Coverage — 4 of 4 rounds               ×1.00
+mode         Mode — Text                            ×0.90
+total        Benchmark                              72
+```
+
+---
+
+## 6. What driving the real app found (that 480 tests did not)
+
+Both suites were green through all of this.
+
+1. **The room told a typing student to tap the mic.** `You're muted — tap the mic to answer`
+   ran for the whole TEXT session: `micOn=false + answerDue=true` *is* the muted state, and
+   TEXT is muted by definition. It instructed them to fix something working as chosen, and
+   pointed at the one control the mode promises never to need. Now: `Your turn — type your
+   answer`.
+2. **The mic and camera buttons were still in the control bar.** Unmuting calls
+   `getUserMedia` — a one-tap route to the exact dialog TEXT guarantees they never see,
+   sitting under a banner telling them to tap it. Removed in TEXT.
+3. **A "silent" session was about to say "Hmm."** The clip pack fetched unconditionally (two
+   `/session/clips` in a TEXT session) and `playAck()` fires on answer submit — a spoken
+   acknowledgment in the one mode whose entire promise is silence. TEXT now skips the fetch.
+4. **The placeholder this sprint was named in.** `const textMode = config.mode === "text"` —
+   `config.mode` is the FEEDBACK style and has never held `"text"`, so the text layout could
+   not fire. Its comment said *"INTAKE/MODES, landing later"*. Wired to `session_mode`; the
+   chat panel now takes the student tile's slot as intended.
+
+---
+
+## 7. Acceptance
+
+| | | |
+|---|---|---|
+| (a) | form role ≠ ProfileIQ → form wins | ✅ verified on real data: ProfileIQ "Intern" vs form "Data Analyst" → Data Analyst, override recorded |
+| (b) | JD injection is data, sanitized once | ✅ `"Ignore previous instructions"` → `"[REDACTED] instructions"`; `sanitize(sanitize(x)) == sanitize(x)` |
+| (c) | invalid config → zero LLM/TTS | ✅ `IntakeError` before any paid call |
+| (d) | Sarvam dry → TEXT offer | ✅ `offer_text_mode=True`; TEXT validates fine against a dead vendor |
+| (e) | TEXT → no mic prompt, no TTS | ✅ **0** `getUserMedia` in a real browser; **0** vendor calls |
+| (f) | VIDEO → camera + per-question channel | ✅ camera on, typing allowed, TTS on |
+| (g)(h) | presence | ⏸ **Phase D — excluded by instruction** |
+| (i) | emotion-word lint | ✅ already enforced by `test_readout.py:105`; still green |
+| (j) | all suites green, capture gate untouched | ✅ 377 + 103 |
+
+---
+
+## 8. Backend / deploy — NEEDS YOUR CONFIRMATION
+
+**Migration 009 applied to `defaultdb`** (per your override 5), verified via the real boot check:
+
+```
+INFO app.schema_check lms schema: all 21 expected object(s) present
+INFO app.schema_check schema: up to date (through migration 009_intake_and_modes)
+pending_migrations = []
+
+vyom_sessions.session_mode   type=varchar(10)  nullable=NO   default=AUDIO
+vyom_messages.input_channel  type=varchar(10)  nullable=YES  default=None
+session_mode = AUDIO -> 163 rows      (they were all spoken; this is not a guess)
+```
+
+**`hf` is NOT pushed.** Origin has all four commits. The Space needs, in order:
+
+1. `db/migration_009_intake_and_modes.sql` against the Space's database.
+2. The push itself.
+
+**Say the word and I will push.**
+
+---
+
+## 9. Files touched
+
+| file | |
+|---|---|
+| `backend/app/intake.py` | **new** — the boundary |
+| `backend/app/db.py` | gather repointed at tables that exist; +city/interests |
+| `backend/app/schema_check.py` | LMS half (warn, never block); 009 rows; `_read_schema` unblinded |
+| `backend/app/scoring.py` | `MODE_FACTOR_ACTIVE=True`, `WEIGHTS_VERSION` 2026.07-2, mode row honesty |
+| `backend/app/main.py` | `/session/start` through the boundary; TTS mode gates; `session_mode` in profile/score |
+| `backend/app/prompts.py` | conditional ice-breaker rule; fact-label contract |
+| `backend/app/schemas.py` | `session_mode`, `jd` as its own field |
+| `frontend/src/App.jsx` | MODE picker, confirmation card, seatbelt UI, `textMode` wired, clip-pack gate |
+| `frontend/src/Lobby.jsx` | TEXT green room (no permission moment); VIDEO camera-first |
+| `frontend/src/roomLayout.js` | `statusStrip` textMode |
+| `db/migration_009_intake_and_modes.sql` + rollback | **new** — additive only |
+| tests | `test_intake_and_modes.py` (new, 21); `test_schema_check` +8; `test_scoring` +5; `roomLayout.test.mjs` +3 |
+
+---
+
+## 10. UAT screenshots
+
+On disk, **not committed** (`.gitignore` — build evidence never goes in git). Referenced by
+filename only:
+
+| file | shows |
+|---|---|
+| `01_setup.png` | MODE picker in the left column below Target Role, above Focus Areas; three equal chips; Audio default; confirmation card |
+| `02_Text_card.png` | confirmation card with MODE=Text, FEEDBACK=Interview as distinct fields |
+| `03_Text_lobby.png` | the TEXT green room — no permission moment, no device controls |
+| `04_Text_after_join.png` | the TEXT room: "Your turn — type your answer", no mic/camera buttons, chat in the student tile slot |
+| `05_audio_greenroom.png` | AUDIO green room unchanged — pre-prompt, mic test, camera offer |
+
+---
+
+## 11. Two things I did not touch, that you should know about
+
+1. **`[PENDING LEGAL REVIEW]` is student-visible today.** The AUDIO/VIDEO green room renders
+   `DRAFT NOTICE — PENDING LEGAL REVIEW` plus draft consent copy (`Lobby.jsx:62-70`), and the
+   setup consent card carries the same. The sprint rules say nothing student-visible ships
+   with that copy. It predates this sprint and I did not rewrite legal copy without review —
+   flagging it rather than silently changing it. (The new TEXT green room sidesteps it
+   entirely: it makes no device claims, because it uses no devices.)
+
+2. **`CONSENT_COPY_CAMERA` mentions attention cues.** It is accurate *today* — camera-on
+   attention drift check-ins already exist and predate this sprint. But when Phase D lands
+   m1–m8, this copy is the one that needs re-reading against D7's consent gate.
