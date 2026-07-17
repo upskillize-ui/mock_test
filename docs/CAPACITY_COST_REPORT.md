@@ -11,13 +11,50 @@ student per session per mode, measured max safe concurrency, and a safety valve.
 |---|------|--------|
 | 1 | Synthetic student driver | **Built & unit-verified.** Live end-to-end run is itself the item-3 spend (gated). |
 | 2 | Per-session cost ledger | **Shipped.** Instrumented, stored on the session row (migration 011), 7 unit tests. |
-| 3 | The cost matrix | **Harness built, NOT run.** Spends real money → **needs go-ahead** (projection below). |
-| 4 | Capacity ramp | **Harness built, NOT run.** Loads the Space + spends money → **needs go-ahead**. |
+| 3 | The cost matrix | **Harness built; go-ahead GIVEN (full, over-caps); BLOCKED on deploy + migration.** See Execution status. |
+| 4 | Capacity ramp | **Harness built; go-ahead GIVEN (deployed Space); BLOCKED on deploy + test-window env.** See Execution status. |
 | 5 | Safety valve | **Shipped.** Server gate + in-brand hold UI + 14 tests. Ships dark (cap defaults to 0). |
 | 6 | DB pool + connection audit | **Analysed & pool made configurable.** Live Aiven numbers pending an allowlisted run. |
 
 **Total spend of the test itself so far: $0.00 / 0 Sarvam credits.** No money-spending run has
-executed — items 3 and 4 are dry-run-gated and await explicit go-ahead.
+executed.
+
+### Execution status — go-ahead received, runs blocked on environment (as of 2026-07-18)
+
+Go-ahead was given to run the **full cost matrix (over-caps)** and the **capacity ramp against
+the deployed Space**. Both are held because the deployed Space is running **pre-phase code**, so
+spending now would capture nothing:
+
+- The Space (`https://upskill25-mock-test.hf.space`) is **up and healthy** (`db: ok`) but its
+  `/health` reports `pending_migrations: ["010_presence_metrics"]` and no knowledge of
+  migration 011 — i.e. **the ledger instrumentation, the `cost_ledger` column write, and the
+  safety valve from this phase are NOT deployed there.** Driving it would spend real LLM/Sarvam
+  money and store **zero** ledger data → no Amit table.
+- The deployed `model_interview` is `claude-sonnet-4-6` (not the Haiku default), so the *real*
+  per-turn LLM cost will be **higher** than the Haiku-based projection — the ledger will capture
+  the actual figure once it's live.
+- The ramp would additionally hit the Space's `MAX_SESSIONS_PER_DAY` cap (10 per user) after 10
+  synthetic sessions from the single dev user, and the locally-minted token must match the
+  Space's `JWT_SECRET`.
+
+**Unblock checklist (then both runs execute immediately):**
+
+1. **Deploy this branch to the Space.** The code is pushed to `origin/capacity-cost-phase`.
+   Deploying to the hf Space is a push to the `hf` remote — **not done, and I will not do it
+   without your explicit confirmation** (per the phase rules). Confirm and I'll push `hf`, or
+   have ops deploy the branch.
+2. **Apply migrations** `010_presence_metrics` **and** `011_cost_ledger` to the shared Aiven DB
+   (010 is currently drifted; 011 is new). Additive/nullable — safe.
+3. **For the test window only:** raise `MAX_SESSIONS_PER_DAY` (or set `APP_ENV=development`) so
+   the synthetic user isn't daily-capped mid-ramp, and set `MAX_CONCURRENT_SESSIONS=0` so the
+   ramp measures the hardware knee, not the valve.
+4. **Confirm** the local `backend/.env` `JWT_SECRET` matches the Space's, and confirm the Sarvam
+   credit quota covers the over-caps matrix (~1,760 credits at the placeholder rate).
+5. (Optional but needed for item-6 live numbers) fix DB access from a runner host, or run
+   `scripts/db_pool_audit.py` from an allowlisted host.
+
+A local run is not a fallback: this host **cannot reach the Aiven DB** (`Access denied for user
+'avnadmin'`), so a locally-run backend can't start sessions and the harness can't read ledgers.
 
 ---
 
