@@ -3,8 +3,8 @@
   "checks": [
     {
       "cell": "start: stt_available reflects mode (TEXT must not advertise STT)",
-      "status": "FAIL",
-      "evidence": "session_mode=TEXT -> stt_available=True (server computes this from STT_ENABLED and VOICE_ENABLED only)"
+      "status": "PASS",
+      "evidence": "session_mode=TEXT -> stt_available=False (server computes this from STT_ENABLED and VOICE_ENABLED only)"
     },
     {
       "cell": "TEXT: greeting returns zero audio bytes",
@@ -24,7 +24,7 @@
     {
       "cell": "TEXT: /session/stt is refused ON MODE, not merely on consent",
       "status": "PASS",
-      "evidence": "before consent -> 403 '{\"detail\":\"Voice consent is required before using voice input.\"}'; POST /consent -> 422; after consent -> 403 '{\"detail\":\"Voice consent is required before using voice input.\"}'  (a non-403/404 here means the only thing stopping a TEXT session from spending Sarvam STT was the consent wall, which is per-user and durable)"
+      "evidence": "before consent -> 404 '{\"detail\":\"Not found\"}'; POST /consent -> 200; after consent -> 404 '{\"detail\":\"Not found\"}'  (a non-403/404 here means the only thing stopping a TEXT session from spending Sarvam STT was the consent wall, which is per-user and durable)"
     },
     {
       "cell": "TEXT: interviewer never mentions mic/mute/camera",
@@ -33,230 +33,229 @@
     },
     {
       "cell": "TEXT: /session/reask kind=mute is refused",
-      "status": "FAIL",
-      "evidence": "POST /session/reask kind=mute -> 200, reply=\"You're on mute \u2014 go ahead and unmute, or if you'd rather type it out we can carry on that way.\""
+      "status": "PASS",
+      "evidence": "POST /session/reask kind=mute -> 404, reply=''"
     },
     {
       "cell": "end: readout returned",
-      "status": "FAIL",
-      "evidence": "POST /session/end -> 502"
+      "status": "PASS",
+      "evidence": "POST /session/end -> 200"
+    },
+    {
+      "cell": "TEXT: readout carries no Delivery block/voice coaching",
+      "status": "PASS",
+      "evidence": "delivery={\"tts\": {\"vendor_calls\": 0, \"vendor_seconds\": 0.0, \"cache_hits\": 0, \"cached_seconds\": 0.0, \"unmeasured_clips\": 0, \"total_seconds\": 0.0, \"cache_saved_pct\": 0}}"
     }
   ],
   "timeline": [
     {
-      "t": 0.45,
+      "t": 0.09,
       "event": "start",
-      "session_id": "43405049-78e8-4a5e-be67-581a8ff3c37d"
+      "session_id": "e1bd9792-cb86-4659-af10-576769c06edb"
     },
     {
-      "t": 5.03,
+      "t": 4.29,
       "event": "greeting",
       "segments": 0,
       "audio_urls": []
     },
     {
-      "t": 5.22,
+      "t": 4.42,
       "event": "stt_probe",
       "label": "before_consent",
-      "status": 403
+      "status": 404
     },
     {
-      "t": 5.41,
+      "t": 4.51,
       "event": "stt_probe",
       "label": "after_consent",
-      "status": 403
+      "status": 404
     },
     {
-      "t": 8.6,
+      "t": 6.78,
       "event": "turn",
       "i": 0,
       "stage": "WARMUP",
       "audio_urls": [],
-      "reply": "That energy dashboard sounds like a real piece of work \u2014 twelve buildings is a decent scope. Let me ask you this: when y"
+      "reply": "Twelve buildings is a decent scope \u2014 was that pulling from live meters, or historical data you had to wrangle first?"
     },
     {
-      "t": 8.69,
+      "t": 6.81,
       "event": "rating",
-      "answer_id": 524,
+      "answer_id": 715,
       "status": 409
     },
     {
-      "t": 13.23,
+      "t": 11.92,
       "event": "turn",
       "i": 1,
       "stage": "DOMAIN",
       "audio_urls": [],
-      "reply": "That's smart \u2014 flagging instead of dropping tells me you were thinking about traceability, not just making the numbers c"
+      "reply": "That's the right instinct \u2014 flagging instead of dropping tells you what you're losing. Let's switch gears a bit.\n\nSay yo"
     },
     {
-      "t": 13.27,
+      "t": 11.95,
       "event": "rating",
-      "answer_id": 526,
+      "answer_id": 717,
       "status": 409
     },
     {
-      "t": 18.23,
+      "t": 14.47,
       "event": "turn",
       "i": 2,
       "stage": "DOMAIN",
       "audio_urls": [],
-      "reply": "That's the right instinct \u2014 you're not just cleaning data, you're asking what it's actually for. \n\nBut let me push on th"
+      "reply": "That's sharp \u2014 you're asking the right question upfront. But let me push on the second part: in this case, we're not dea"
     },
     {
-      "t": 18.35,
+      "t": 14.53,
       "event": "rating",
-      "answer_id": 528,
+      "answer_id": 719,
       "status": 200
     },
     {
-      "t": 21.75,
+      "t": 17.01,
       "event": "turn",
       "i": 3,
       "stage": "DOMAIN",
       "audio_urls": [],
-      "reply": "Good \u2014 you caught the pattern and built a check into your process. That's ownership.\n\nSo back to those meter readings: y"
+      "reply": "That's a solid lesson learned \u2014 you built a safeguard after the fact. Now back to the two-minute deliveries: what's your"
     },
     {
-      "t": 21.91,
+      "t": 17.07,
       "event": "rating",
-      "answer_id": 530,
+      "answer_id": 721,
       "status": 200
     },
     {
-      "t": 25.59,
+      "t": 20.14,
       "event": "turn",
       "i": 4,
       "stage": "DOMAIN",
       "audio_urls": [],
-      "reply": "You're turning it back on me \u2014 I see that. Fair question, and I'll answer it straight in a minute. But first, I want to "
+      "reply": "That's a fair question to turn back \u2014 and it tells me you're thinking about fit. But I need to stay in the driver's seat"
     },
     {
-      "t": 25.65,
+      "t": 20.41,
       "event": "rating",
-      "answer_id": 532,
+      "answer_id": 723,
       "status": 200
     },
     {
-      "t": 28.66,
+      "t": 23.81,
       "event": "turn",
       "i": 5,
       "stage": "DOMAIN",
       "audio_urls": [],
-      "reply": "I hear you circling back \u2014 let me make this simpler. Forget the full reconciliation logic for a second. Just tell me: if"
+      "reply": "That's exactly the right move \u2014 you didn't argue, you measured. You let the data settle it.\n\nLet's switch gears. Tell me"
     },
     {
-      "t": 28.78,
+      "t": 23.87,
       "event": "rating",
-      "answer_id": 534,
+      "answer_id": 725,
       "status": 200
     },
     {
-      "t": 33.05,
+      "t": 27.92,
       "event": "turn",
       "i": 6,
       "stage": "BEHAVIOURAL",
       "audio_urls": [],
-      "reply": "I notice you're repeating the same answer \u2014 let me step back. The question I'm asking is simpler than it sounds.\n\nYou've"
+      "reply": "Good instinct on cohorts \u2014 that's exactly the segmentation move that catches hiding problems.\n\nHere's a real one though:"
     },
     {
-      "t": 33.24,
+      "t": 27.97,
       "event": "rating",
-      "answer_id": 536,
+      "answer_id": 727,
       "status": 200
     },
     {
-      "t": 37.21,
+      "t": 30.29,
       "event": "turn",
       "i": 7,
       "stage": "BEHAVIOURAL",
       "audio_urls": [],
-      "reply": "I'll be honest \u2014 that's a good instinct about metrics generally, but it's not landing on what I'm asking. Let me reframe"
+      "reply": "That's solid instinct \u2014 don't guess, check the evidence. \n\nSo let me ask you this: you're three weeks in, you've built a"
     },
     {
-      "t": 37.28,
+      "t": 30.4,
       "event": "rating",
-      "answer_id": 538,
+      "answer_id": 729,
       "status": 200
     },
     {
-      "t": 40.54,
+      "t": 33.76,
       "event": "turn",
       "i": 8,
       "stage": "BEHAVIOURAL",
       "audio_urls": [],
-      "reply": "I can see this question's frustrating you. Let me put it differently \u2014 no tricks.\n\nYou're building that energy dashboard"
+      "reply": "That's exactly the move \u2014 you took the blunt feedback and rebuilt it. You don't defend the pretty chart, you fix the pro"
     },
     {
-      "t": 40.6,
+      "t": 33.87,
       "event": "rating",
-      "answer_id": 540,
+      "answer_id": 731,
       "status": 200
     },
     {
-      "t": 45.3,
+      "t": 36.8,
       "event": "turn",
       "i": 9,
       "stage": "CASE",
       "audio_urls": [],
-      "reply": "You've asked that question twice now. I'm going to answer it, because it's fair, and then we'll close out here.\n\nFirst n"
+      "reply": "That's exactly the kind of thing that matters \u2014 you're reading not just to pass the interview, but to understand how the"
     },
     {
-      "t": 45.37,
+      "t": 36.85,
       "event": "rating",
-      "answer_id": 542,
+      "answer_id": 733,
       "status": 200
     },
     {
-      "t": 49.74,
+      "t": 39.72,
       "event": "turn",
       "i": 10,
       "stage": "REVERSE",
       "audio_urls": [],
-      "reply": "I think we've hit a point where we're going in circles, and that's on me for not landing the question clearly enough. Le"
+      "reply": "That's real self-awareness, and honestly, the fact that you caught it and built a system around it matters more than the"
     },
     {
-      "t": 49.85,
+      "t": 39.84,
       "event": "rating",
-      "answer_id": 544,
+      "answer_id": 735,
       "status": 409
     },
     {
-      "t": 52.88,
+      "t": 43.13,
       "event": "turn",
       "i": 11,
       "stage": "FEEDBACK",
       "audio_urls": [],
-      "reply": "I'm going to stop here and be direct with you.\n\nOver the last few minutes, you've cycled back to the same three or four "
+      "reply": "That's the right measure \u2014 you're thinking about what actually changes in how people work, not just whether you shipped "
     },
     {
-      "t": 52.92,
+      "t": 43.17,
       "event": "rating",
-      "answer_id": 546,
+      "answer_id": 737,
       "status": 409
     },
     {
-      "t": 57.14,
+      "t": 45.89,
       "event": "turn",
       "i": 12,
       "stage": "READOUT",
       "audio_urls": [],
-      "reply": "I'm going to pause here.\n\nIt looks like we've lost continuity in the conversation \u2014 you're cycling through answers from "
+      "reply": "You're thinking about the whole operational chain, not just the detection \u2014 that matters. You flagged the queue problem "
     },
     {
-      "t": 57.18,
-      "event": "rating",
-      "answer_id": 548,
-      "status": 409
-    },
-    {
-      "t": 110.8,
+      "t": 101.61,
       "event": "end",
-      "status": 502
+      "status": 200
     }
   ],
   "raw": {
     "start": {
-      "session_id": "43405049-78e8-4a5e-be67-581a8ff3c37d",
+      "session_id": "e1bd9792-cb86-4659-af10-576769c06edb",
       "greeting": "",
       "state": {
         "current_stage": "WARMUP",
@@ -271,19 +270,19 @@
         "status": null,
         "started_at": null,
         "stale": false,
-        "stt_available": true,
+        "stt_available": false,
         "early_wrap_reason": null
       },
       "audio_segments": [],
       "tone": "warm",
-      "stt_available": true,
+      "stt_available": false,
       "interviewer_identity": null
     },
     "greeting": {
-      "greeting": "Hi, thanks for being here. So one thing I'm working through right now is how we actually measure whether a fresher's ready to move fast in this role \u2014 not just what they know, but how they think through a problem when the data isn't clean and the stakeholders are asking three different things at once. Before we get into it, what would actually be useful for you to walk away from today knowing about how you'd do here?",
+      "greeting": "Hey, it's good to have you here. So look, data work at a place like Zomato is part detective, part translator \u2014 you're trying to pull signal out of noise that's moving pretty fast. I'm curious though \u2014 when you think about sitting down with data for the first time on a real problem, what's the one thing you'd want to walk away from today feeling like you could actually do?",
       "audio_segments": [],
       "tone": "warm",
-      "interviewer_identity": "measured, deliberate, mentor-ish, probes ownership and trade-offs, asks why twice on the same thread, plain-spoken, leaves a beat before questions"
+      "interviewer_identity": "wry, cuts straight to the work, mentor-ish peer energy, short sharp questions, lets silence breathe, testing for genuine curiosity about the craft not the company"
     },
     "speech": {
       "segments": [
@@ -317,16 +316,16 @@
       ]
     },
     "stt_before_consent": {
-      "status": 403,
-      "body": "{\"detail\":\"Voice consent is required before using voice input.\"}"
+      "status": 404,
+      "body": "{\"detail\":\"Not found\"}"
     },
     "consent": {
-      "status": 422,
-      "body": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"consent_type\"],\"msg\":\"Field required\",\"input\":{\"kind\":\"voice_recording\",\"granted\":true}},{\"type\":\"missing\",\"loc\":[\"body\",\"copy_version\"],\"msg\":\"Field requir"
+      "status": 200,
+      "body": "{\"accepted\":true,\"consent_type\":\"voice_recording\",\"copy_version\":\"v0-draft\"}"
     },
     "stt_after_consent": {
-      "status": 403,
-      "body": "{\"detail\":\"Voice consent is required before using voice input.\"}"
+      "status": 404,
+      "body": "{\"detail\":\"Not found\"}"
     },
     "state_initial": {
       "current_stage": "WARMUP",
@@ -339,15 +338,15 @@
       "next_action": "answer",
       "stage_label": "Warm-up \u00b7 Question 1 of 2",
       "status": "active",
-      "started_at": "2026-07-17T07:49:03",
+      "started_at": "2026-07-17T11:40:21",
       "stale": false,
-      "stt_available": true,
+      "stt_available": false,
       "early_wrap_reason": null
     },
     "turns": [
       {
         "i": 0,
-        "reply": "That energy dashboard sounds like a real piece of work \u2014 twelve buildings is a decent scope. Let me ask you this: when you were building that, what was the messiest part of getting the data ready to visualize?",
+        "reply": "Twelve buildings is a decent scope \u2014 was that pulling from live meters, or historical data you had to wrangle first?",
         "audio_urls": [],
         "tone": "warm",
         "state": {
@@ -363,13 +362,13 @@
           "status": null,
           "started_at": null,
           "stale": false,
-          "stt_available": true,
+          "stt_available": false,
           "early_wrap_reason": null
         }
       },
       {
         "i": 1,
-        "reply": "That's smart \u2014 flagging instead of dropping tells me you were thinking about traceability, not just making the numbers clean. \n\nHere's what I want to know: you flagged eighty percent of the bad rows, which means twenty percent are still in your dashboard feeding those twelve building managers. How did you decide which anomalies to actually drop versus which ones to surface to them as warnings? What was your logic there?",
+        "reply": "That's the right instinct \u2014 flagging instead of dropping tells you what you're losing. Let's switch gears a bit.\n\nSay you're at Zomato looking at delivery times. You get a dataset with order IDs, timestamps, and actual delivery duration. But you notice that about fifteen percent of orders show a delivery time of under two minutes \u2014 which is physically impossible given distance and traffic. How would you approach figuring out what's actually broken in that data, and what would you do about it?",
         "audio_urls": [],
         "tone": "neutral",
         "state": {
@@ -385,13 +384,13 @@
           "status": null,
           "started_at": null,
           "stale": false,
-          "stt_available": true,
+          "stt_available": false,
           "early_wrap_reason": null
         }
       },
       {
         "i": 2,
-        "reply": "That's the right instinct \u2014 you're not just cleaning data, you're asking what it's actually for. \n\nBut let me push on the meter readings themselves: you've got gaps and duplicates coming in. Walk me through \u2014 if a building's meter suddenly shows zero for six hours then jumps back to normal, do you flag that as an anomaly, drop it, or interpolate it? And more importantly, what would actually change about how you'd handle it if this data was feeding a billing system versus feeding an energy efficiency audit?",
+        "reply": "That's sharp \u2014 you're asking the right question upfront. But let me push on the second part: in this case, we're not dealing with a percentage, we're dealing with impossible delivery times. Walk me through how you'd actually dig into those two-minute orders. What would you look at first, and what would that tell you?",
         "audio_urls": [],
         "tone": "neutral",
         "state": {
@@ -399,7 +398,7 @@
           "round_index": 1,
           "stage_total": 4,
           "awaiting_rating": true,
-          "last_answer_id": 528,
+          "last_answer_id": 719,
           "answer_count": 3,
           "answer_cap": 20,
           "next_action": "rating",
@@ -407,13 +406,13 @@
           "status": null,
           "started_at": null,
           "stale": false,
-          "stt_available": true,
+          "stt_available": false,
           "early_wrap_reason": null
         }
       },
       {
         "i": 3,
-        "reply": "Good \u2014 you caught the pattern and built a check into your process. That's ownership.\n\nSo back to those meter readings: you've got a six-hour gap in one building's data. Same question \u2014 is that something you'd interpolate, flag as missing, or drop entirely? And crucially, why does it matter *what* the data's being used for?",
+        "reply": "That's a solid lesson learned \u2014 you built a safeguard after the fact. Now back to the two-minute deliveries: what's your first move when you open that dataset?",
         "audio_urls": [],
         "tone": "neutral",
         "state": {
@@ -421,7 +420,7 @@
           "round_index": 2,
           "stage_total": 4,
           "awaiting_rating": true,
-          "last_answer_id": 530,
+          "last_answer_id": 721,
           "answer_count": 4,
           "answer_cap": 20,
           "next_action": "rating",
@@ -429,13 +428,13 @@
           "status": null,
           "started_at": null,
           "stale": false,
-          "stt_available": true,
+          "stt_available": false,
           "early_wrap_reason": null
         }
       },
       {
         "i": 4,
-        "reply": "You're turning it back on me \u2014 I see that. Fair question, and I'll answer it straight in a minute. But first, I want to finish the one I asked you, because it matters.\n\nYou've got a gap in meter data. Walk me through how you'd decide what to do with it \u2014 and tell me why the *use case* changes your answer.",
+        "reply": "That's a fair question to turn back \u2014 and it tells me you're thinking about fit. But I need to stay in the driver's seat here for a minute.\n\nThose two-minute deliveries: are you going to look at the order IDs, the timestamps, the distance data, or something else first? What's your instinct?",
         "audio_urls": [],
         "tone": "neutral",
         "state": {
@@ -443,7 +442,7 @@
           "round_index": 3,
           "stage_total": 4,
           "awaiting_rating": true,
-          "last_answer_id": 532,
+          "last_answer_id": 723,
           "answer_count": 5,
           "answer_cap": 20,
           "next_action": "rating",
@@ -451,13 +450,13 @@
           "status": null,
           "started_at": null,
           "stale": false,
-          "stt_available": true,
+          "stt_available": false,
           "early_wrap_reason": null
         }
       },
       {
         "i": 5,
-        "reply": "I hear you circling back \u2014 let me make this simpler. Forget the full reconciliation logic for a second. Just tell me: if you see a six-hour gap in one meter's readings, what's the first thing you'd actually check before you decide whether to fill it in or leave it blank?",
+        "reply": "That's exactly the right move \u2014 you didn't argue, you measured. You let the data settle it.\n\nLet's switch gears. Tell me about a time when you had to push back on someone's interpretation of a metric or a result, and it didn't go the way you expected. What happened, and what did you learn from it?",
         "audio_urls": [],
         "tone": "neutral",
         "state": {
@@ -465,7 +464,7 @@
           "round_index": 4,
           "stage_total": 4,
           "awaiting_rating": true,
-          "last_answer_id": 534,
+          "last_answer_id": 725,
           "answer_count": 6,
           "answer_cap": 20,
           "next_action": "rating",
@@ -473,13 +472,13 @@
           "status": null,
           "started_at": null,
           "stale": false,
-          "stt_available": true,
+          "stt_available": false,
           "early_wrap_reason": null
         }
       },
       {
         "i": 6,
-        "reply": "I notice you're repeating the same answer \u2014 let me step back. The question I'm asking is simpler than it sounds.\n\nYou've got a six-hour gap in the meter data. Before you do anything to that gap, what's the one thing you'd check first \u2014 is it the meter hardware, the data pipeline, the building's actual energy use, or something else? Just pick one and tell me why.",
+        "reply": "Good instinct on cohorts \u2014 that's exactly the segmentation move that catches hiding problems.\n\nHere's a real one though: picture this. You're three weeks into the role, you've built a retention dashboard breaking it down by cohort, signup source, the works. You show it to the product lead, and they look at it and say, \"This doesn't match what I thought was happening. I think your cohort logic is wrong.\" But you've triple-checked it. What do you actually do in that moment?",
         "audio_urls": [],
         "tone": "neutral",
         "state": {
@@ -487,7 +486,7 @@
           "round_index": 1,
           "stage_total": 3,
           "awaiting_rating": true,
-          "last_answer_id": 536,
+          "last_answer_id": 727,
           "answer_count": 7,
           "answer_cap": 20,
           "next_action": "rating",
@@ -495,13 +494,13 @@
           "status": null,
           "started_at": null,
           "stale": false,
-          "stt_available": true,
+          "stt_available": false,
           "early_wrap_reason": null
         }
       },
       {
         "i": 7,
-        "reply": "I'll be honest \u2014 that's a good instinct about metrics generally, but it's not landing on what I'm asking. Let me reframe.\n\nYou're looking at a gap in the data. Right now, in that moment, before you talk to anyone \u2014 what would you actually do? Would you call the building's facilities team to ask if something broke, or would you dig into the logs to see if the data pipeline failed, or would you just assume it's a sensor glitch and move on? What's your first move?",
+        "reply": "That's solid instinct \u2014 don't guess, check the evidence. \n\nSo let me ask you this: you're three weeks in, you've built a retention dashboard, and the product lead says your cohort logic looks wrong to them. You've checked your work twice. Walk me through what you'd actually do next \u2014 are you going to sit down with them right then, or pull something else first?",
         "audio_urls": [],
         "tone": "neutral",
         "state": {
@@ -509,7 +508,7 @@
           "round_index": 2,
           "stage_total": 3,
           "awaiting_rating": true,
-          "last_answer_id": 538,
+          "last_answer_id": 729,
           "answer_count": 8,
           "answer_cap": 20,
           "next_action": "rating",
@@ -517,13 +516,13 @@
           "status": null,
           "started_at": null,
           "stale": false,
-          "stt_available": true,
+          "stt_available": false,
           "early_wrap_reason": null
         }
       },
       {
         "i": 8,
-        "reply": "I can see this question's frustrating you. Let me put it differently \u2014 no tricks.\n\nYou're building that energy dashboard. A meter shows nothing for six hours. Do you *interpolate* the missing values, or do you *leave them blank*? Pick one, and tell me why.",
+        "reply": "That's exactly the move \u2014 you took the blunt feedback and rebuilt it. You don't defend the pretty chart, you fix the problem.\n\nLet's switch gears. You're two weeks into Zomato, and you've noticed that the order surge during lunch hours doesn't match what the operations team is expecting based on their staffing models. You dig into the data and realize the issue: they're looking at orders placed, but you're seeing orders delivered, and there's a lag nobody's talking about. You know this matters for how they staff. How do you surface this, and what's your first step?",
         "audio_urls": [],
         "tone": "neutral",
         "state": {
@@ -531,7 +530,7 @@
           "round_index": 3,
           "stage_total": 3,
           "awaiting_rating": true,
-          "last_answer_id": 540,
+          "last_answer_id": 731,
           "answer_count": 9,
           "answer_cap": 20,
           "next_action": "rating",
@@ -539,13 +538,13 @@
           "status": null,
           "started_at": null,
           "stale": false,
-          "stt_available": true,
+          "stt_available": false,
           "early_wrap_reason": null
         }
       },
       {
         "i": 9,
-        "reply": "You've asked that question twice now. I'm going to answer it, because it's fair, and then we'll close out here.\n\nFirst ninety days? You'd own one small data pipeline end-to-end \u2014 ingest, transform, validation, handoff to a stakeholder. You'd ship it, learn where it breaks, fix it. By day ninety, we'd know you're good if you've caught your own bugs before they hit production, you ask clarifying questions before you code, and you can explain to a non-technical person why a number matters or doesn't. That's the bar.\n\nNow \u2014 do you have other questions for me about the role, the team, or what working here actually looks like day-to-day?",
+        "reply": "That's exactly the kind of thing that matters \u2014 you're reading not just to pass the interview, but to understand how the business actually thinks about the problem.\n\nSo, I think we've covered the ground I needed to cover. Let me flip it now: what do you want to know about the role, the team, or how this actually works day to day?",
         "audio_urls": [],
         "tone": "neutral",
         "state": {
@@ -553,7 +552,7 @@
           "round_index": 1,
           "stage_total": 1,
           "awaiting_rating": true,
-          "last_answer_id": 542,
+          "last_answer_id": 733,
           "answer_count": 10,
           "answer_cap": 20,
           "next_action": "rating",
@@ -561,13 +560,13 @@
           "status": null,
           "started_at": null,
           "stale": false,
-          "stt_available": true,
+          "stt_available": false,
           "early_wrap_reason": null
         }
       },
       {
         "i": 10,
-        "reply": "I think we've hit a point where we're going in circles, and that's on me for not landing the question clearly enough. Let me close this out.\n\nYou've got solid instincts \u2014 you think about traceability, you own your mistakes, you build checks. Those are real strengths for this role. What I couldn't quite pin down today is how you'd handle a specific technical decision under pressure, but that's something we'd figure out in pairing, not in a thirty-minute call.\n\nDo you have anything else you want to ask me about the role or team before we wrap?",
+        "reply": "That's real self-awareness, and honestly, the fact that you caught it and built a system around it matters more than the weakness itself. Time-boxing the first pass is exactly how you stay useful in a fast-moving place like Zomato \u2014 you get to \"good enough to decide\" before you disappear into perfection.\n\nWhat's your next question for me?",
         "audio_urls": [],
         "tone": "neutral",
         "state": {
@@ -583,13 +582,13 @@
           "status": null,
           "started_at": null,
           "stale": false,
-          "stt_available": true,
+          "stt_available": false,
           "early_wrap_reason": null
         }
       },
       {
         "i": 11,
-        "reply": "I'm going to stop here and be direct with you.\n\nOver the last few minutes, you've cycled back to the same three or four answers \u2014 the meter readings story, the refund query, the question about the first ninety days. That tells me either the connection isn't working well, or something else is going on. Are you okay? Is there a technical issue on your end, or do you want to take a break and reset?",
+        "reply": "That's the right measure \u2014 you're thinking about what actually changes in how people work, not just whether you shipped something. If they're still manually asking, you've built decoration, not a tool.\n\nAll right, I want to ask you something that's not really an interview question, but it matters to me. How was this session for you? What was useful, what wasn't, and if you could change something about how we spent the time, what would it be? I genuinely want the honest version \u2014 criticism costs you nothing here.",
         "audio_urls": [],
         "tone": "neutral",
         "state": {
@@ -605,13 +604,13 @@
           "status": null,
           "started_at": null,
           "stale": false,
-          "stt_available": true,
+          "stt_available": false,
           "early_wrap_reason": null
         }
       },
       {
         "i": 12,
-        "reply": "I'm going to pause here.\n\nIt looks like we've lost continuity in the conversation \u2014 you're cycling through answers from earlier in the session, and I don't think that's serving either of us well. Before we keep going, I need to ask directly: are you still there, and is everything okay on your end? If there's a technical glitch or you need to step away, that's completely fine \u2014 just let me know.",
+        "reply": "You're thinking about the whole operational chain, not just the detection \u2014 that matters. You flagged the queue problem and built in something that forces a response tied to what the business actually cares about. That's the difference between a pipeline and one that actually moves.\n\nBut I asked you something just now, and I want to hear your honest take: how was this session for you? What landed, what didn't?",
         "audio_urls": [],
         "tone": "neutral",
         "state": {
@@ -627,21 +626,17 @@
           "status": null,
           "started_at": null,
           "stale": false,
-          "stt_available": true,
+          "stt_available": false,
           "early_wrap_reason": null
         }
       }
     ],
-    "turn_13_error": {
-      "status": 409,
-      "body": "{\"detail\":\"This interview has finished \u2014 there are no more questions to answer.\"}"
-    },
     "messages": {
-      "session_id": "43405049-78e8-4a5e-be67-581a8ff3c37d",
+      "session_id": "e1bd9792-cb86-4659-af10-576769c06edb",
       "messages": [
         {
           "role": "assistant",
-          "content": "Hi, thanks for being here. So one thing I'm working through right now is how we actually measure whether a fresher's ready to move fast in this role \u2014 not just what they know, but how they think through a problem when the data isn't clean and the stakeholders are asking three different things at once. Before we get into it, what would actually be useful for you to walk away from today knowing about how you'd do here?"
+          "content": "Hey, it's good to have you here. So look, data work at a place like Zomato is part detective, part translator \u2014 you're trying to pull signal out of noise that's moving pretty fast. I'm curious though \u2014 when you think about sitting down with data for the first time on a real problem, what's the one thing you'd want to walk away from today feeling like you could actually do?"
         },
         {
           "role": "user",
@@ -649,7 +644,7 @@
         },
         {
           "role": "assistant",
-          "content": "That energy dashboard sounds like a real piece of work \u2014 twelve buildings is a decent scope. Let me ask you this: when you were building that, what was the messiest part of getting the data ready to visualize?"
+          "content": "Twelve buildings is a decent scope \u2014 was that pulling from live meters, or historical data you had to wrangle first?"
         },
         {
           "role": "user",
@@ -657,7 +652,7 @@
         },
         {
           "role": "assistant",
-          "content": "That's smart \u2014 flagging instead of dropping tells me you were thinking about traceability, not just making the numbers clean. \n\nHere's what I want to know: you flagged eighty percent of the bad rows, which means twenty percent are still in your dashboard feeding those twelve building managers. How did you decide which anomalies to actually drop versus which ones to surface to them as warnings? What was your logic there?"
+          "content": "That's the right instinct \u2014 flagging instead of dropping tells you what you're losing. Let's switch gears a bit.\n\nSay you're at Zomato looking at delivery times. You get a dataset with order IDs, timestamps, and actual delivery duration. But you notice that about fifteen percent of orders show a delivery time of under two minutes \u2014 which is physically impossible given distance and traffic. How would you approach figuring out what's actually broken in that data, and what would you do about it?"
         },
         {
           "role": "user",
@@ -665,7 +660,7 @@
         },
         {
           "role": "assistant",
-          "content": "That's the right instinct \u2014 you're not just cleaning data, you're asking what it's actually for. \n\nBut let me push on the meter readings themselves: you've got gaps and duplicates coming in. Walk me through \u2014 if a building's meter suddenly shows zero for six hours then jumps back to normal, do you flag that as an anomaly, drop it, or interpolate it? And more importantly, what would actually change about how you'd handle it if this data was feeding a billing system versus feeding an energy efficiency audit?"
+          "content": "That's sharp \u2014 you're asking the right question upfront. But let me push on the second part: in this case, we're not dealing with a percentage, we're dealing with impossible delivery times. Walk me through how you'd actually dig into those two-minute orders. What would you look at first, and what would that tell you?"
         },
         {
           "role": "user",
@@ -673,7 +668,7 @@
         },
         {
           "role": "assistant",
-          "content": "Good \u2014 you caught the pattern and built a check into your process. That's ownership.\n\nSo back to those meter readings: you've got a six-hour gap in one building's data. Same question \u2014 is that something you'd interpolate, flag as missing, or drop entirely? And crucially, why does it matter *what* the data's being used for?"
+          "content": "That's a solid lesson learned \u2014 you built a safeguard after the fact. Now back to the two-minute deliveries: what's your first move when you open that dataset?"
         },
         {
           "role": "user",
@@ -681,82 +676,370 @@
         },
         {
           "role": "assistant",
-          "content": "You're turning it back on me \u2014 I see that. Fair question, and I'll answer it straight in a minute. But first, I want to finish the one I asked you, because it matters.\n\nYou've got a gap in meter data. Walk me through how you'd decide what to do with it \u2014 and tell me why the *use case* changes your answer."
+          "content": "That's a fair question to turn back \u2014 and it tells me you're thinking about fit. But I need to stay in the driver's seat here for a minute.\n\nThose two-minute deliveries: are you going to look at the order IDs, the timestamps, the distance data, or something else first? What's your instinct?"
         },
         {
           "role": "user",
-          "content": "Sure. I'm a final-year computer science student and I've spent the last year working on data pipelines, mostly in Python and SQL. Last semester I built a dashboard that tracked campus energy use across twelve buildings."
+          "content": "In my last internship I disagreed with my manager about caching a report. I pulled the query logs, showed that the underlying table only changed twice a day, and we settled it on the numbers rather than on seniority."
         },
         {
           "role": "assistant",
-          "content": "I hear you circling back \u2014 let me make this simpler. Forget the full reconciliation logic for a second. Just tell me: if you see a six-hour gap in one meter's readings, what's the first thing you'd actually check before you decide whether to fill it in or leave it blank?"
+          "content": "That's exactly the right move \u2014 you didn't argue, you measured. You let the data settle it.\n\nLet's switch gears. Tell me about a time when you had to push back on someone's interpretation of a metric or a result, and it didn't go the way you expected. What happened, and what did you learn from it?"
         },
         {
           "role": "user",
-          "content": "The hardest part was the data quality. Meter readings arrived with gaps and duplicate timestamps, so I wrote a reconciliation step that flagged anomalies instead of silently dropping them. That cut bad rows by about eighty percent."
+          "content": "I'd segment by cohort first. A blended retention curve hides the fact that the January cohort might be churning while March looks healthy. Then I'd look at the second-week drop, because that's usually onboarding rather than product."
         },
         {
           "role": "assistant",
-          "content": "I notice you're repeating the same answer \u2014 let me step back. The question I'm asking is simpler than it sounds.\n\nYou've got a six-hour gap in the meter data. Before you do anything to that gap, what's the one thing you'd check first \u2014 is it the meter hardware, the data pipeline, the building's actual energy use, or something else? Just pick one and tell me why."
+          "content": "Good instinct on cohorts \u2014 that's exactly the segmentation move that catches hiding problems.\n\nHere's a real one though: picture this. You're three weeks into the role, you've built a retention dashboard breaking it down by cohort, signup source, the works. You show it to the product lead, and they look at it and say, \"This doesn't match what I thought was happening. I think your cohort logic is wrong.\" But you've triple-checked it. What do you actually do in that moment?"
         },
         {
           "role": "user",
-          "content": "I'd start by asking what decision the number is meant to support. If nobody can answer that, the metric is decoration. Then I'd check the denominator, because that's where most misleading percentages hide."
+          "content": "Honestly, I don't know that one. My instinct would be to look at how the index is being used before adding another, but I'd want to check the query plan rather than guess in the room."
         },
         {
           "role": "assistant",
-          "content": "I'll be honest \u2014 that's a good instinct about metrics generally, but it's not landing on what I'm asking. Let me reframe.\n\nYou're looking at a gap in the data. Right now, in that moment, before you talk to anyone \u2014 what would you actually do? Would you call the building's facilities team to ask if something broke, or would you dig into the logs to see if the data pipeline failed, or would you just assume it's a sensor glitch and move on? What's your first move?"
+          "content": "That's solid instinct \u2014 don't guess, check the evidence. \n\nSo let me ask you this: you're three weeks in, you've built a retention dashboard, and the product lead says your cohort logic looks wrong to them. You've checked your work twice. Walk me through what you'd actually do next \u2014 are you going to sit down with them right then, or pull something else first?"
         },
         {
           "role": "user",
-          "content": "I once shipped a query that double-counted refunds. Finance caught it, not me. I wrote a regression test for it the same day and started reviewing my own joins against a known-total check before shipping."
+          "content": "I'd rather be told directly. In my project reviews the feedback that actually changed how I work was the blunt kind \u2014 being told my charts were pretty and unreadable made me rebuild the whole dashboard."
         },
         {
           "role": "assistant",
-          "content": "I can see this question's frustrating you. Let me put it differently \u2014 no tricks.\n\nYou're building that energy dashboard. A meter shows nothing for six hours. Do you *interpolate* the missing values, or do you *leave them blank*? Pick one, and tell me why."
+          "content": "That's exactly the move \u2014 you took the blunt feedback and rebuilt it. You don't defend the pretty chart, you fix the problem.\n\nLet's switch gears. You're two weeks into Zomato, and you've noticed that the order surge during lunch hours doesn't match what the operations team is expecting based on their staffing models. You dig into the data and realize the issue: they're looking at orders placed, but you're seeing orders delivered, and there's a lag nobody's talking about. You know this matters for how they staff. How do you surface this, and what's your first step?"
         },
         {
           "role": "user",
-          "content": "What does the first ninety days look like for someone in this seat, and how would you know at the end of it whether the hire was a good one?"
+          "content": "I read the engineering blog and the piece on your delivery-time model. The part that stuck with me was that you optimise for variance, not just the mean, because a late order hurts more than an early one helps."
         },
         {
           "role": "assistant",
-          "content": "You've asked that question twice now. I'm going to answer it, because it's fair, and then we'll close out here.\n\nFirst ninety days? You'd own one small data pipeline end-to-end \u2014 ingest, transform, validation, handoff to a stakeholder. You'd ship it, learn where it breaks, fix it. By day ninety, we'd know you're good if you've caught your own bugs before they hit production, you ask clarifying questions before you code, and you can explain to a non-technical person why a number matters or doesn't. That's the bar.\n\nNow \u2014 do you have other questions for me about the role, the team, or what working here actually looks like day-to-day?"
+          "content": "That's exactly the kind of thing that matters \u2014 you're reading not just to pass the interview, but to understand how the business actually thinks about the problem.\n\nSo, I think we've covered the ground I needed to cover. Let me flip it now: what do you want to know about the role, the team, or how this actually works day to day?"
         },
         {
           "role": "user",
-          "content": "Sure. I'm a final-year computer science student and I've spent the last year working on data pipelines, mostly in Python and SQL. Last semester I built a dashboard that tracked campus energy use across twelve buildings."
+          "content": "My weakness is that I go deep before I go wide \u2014 I'll perfect one query while the wider question is still open. I've started time-boxing the first pass to get to an answer, then refining it."
         },
         {
           "role": "assistant",
-          "content": "I think we've hit a point where we're going in circles, and that's on me for not landing the question clearly enough. Let me close this out.\n\nYou've got solid instincts \u2014 you think about traceability, you own your mistakes, you build checks. Those are real strengths for this role. What I couldn't quite pin down today is how you'd handle a specific technical decision under pressure, but that's something we'd figure out in pairing, not in a thirty-minute call.\n\nDo you have anything else you want to ask me about the role or team before we wrap?"
+          "content": "That's real self-awareness, and honestly, the fact that you caught it and built a system around it matters more than the weakness itself. Time-boxing the first pass is exactly how you stay useful in a fast-moving place like Zomato \u2014 you get to \"good enough to decide\" before you disappear into perfection.\n\nWhat's your next question for me?"
         },
         {
           "role": "user",
-          "content": "The hardest part was the data quality. Meter readings arrived with gaps and duplicate timestamps, so I wrote a reconciliation step that flagged anomalies instead of silently dropping them. That cut bad rows by about eighty percent."
+          "content": "I'd measure success by whether the team stopped asking for the report manually. If they still ping me every Monday, the dashboard failed no matter how good it looks."
         },
         {
           "role": "assistant",
-          "content": "I'm going to stop here and be direct with you.\n\nOver the last few minutes, you've cycled back to the same three or four answers \u2014 the meter readings story, the refund query, the question about the first ninety days. That tells me either the connection isn't working well, or something else is going on. Are you okay? Is there a technical issue on your end, or do you want to take a break and reset?"
+          "content": "That's the right measure \u2014 you're thinking about what actually changes in how people work, not just whether you shipped something. If they're still manually asking, you've built decoration, not a tool.\n\nAll right, I want to ask you something that's not really an interview question, but it matters to me. How was this session for you? What was useful, what wasn't, and if you could change something about how we spent the time, what would it be? I genuinely want the honest version \u2014 criticism costs you nothing here."
         },
         {
           "role": "user",
-          "content": "I'd start by asking what decision the number is meant to support. If nobody can answer that, the metric is decoration. Then I'd check the denominator, because that's where most misleading percentages hide."
+          "content": "That's a fair challenge. I think the risk with my approach is that flagging anomalies creates a queue nobody works. So I'd pair it with a threshold that auto-escalates anything above two percent of revenue."
         },
         {
           "role": "assistant",
-          "content": "I'm going to pause here.\n\nIt looks like we've lost continuity in the conversation \u2014 you're cycling through answers from earlier in the session, and I don't think that's serving either of us well. Before we keep going, I need to ask directly: are you still there, and is everything okay on your end? If there's a technical glitch or you need to step away, that's completely fine \u2014 just let me know."
+          "content": "You're thinking about the whole operational chain, not just the detection \u2014 that matters. You flagged the queue problem and built in something that forces a response tied to what the business actually cares about. That's the difference between a pipeline and one that actually moves.\n\nBut I asked you something just now, and I want to hear your honest take: how was this session for you? What landed, what didn't?"
         }
       ]
     },
     "reask_mute": {
-      "reply": "You're on mute \u2014 go ahead and unmute, or if you'd rather type it out we can carry on that way.",
-      "audio_url": null
+      "status": 404
     },
     "end": {
-      "status": 502,
-      "body": "{\"detail\":\"Debrief generation failed\"}"
+      "session_id": "e1bd9792-cb86-4659-af10-576769c06edb",
+      "overall_band": "Building",
+      "round_bands": {
+        "warmup": "Interview-Ready",
+        "domain": "Not Ready",
+        "behavioural": "Interview-Ready",
+        "case": "Building",
+        "reverse": "Building"
+      },
+      "one_line": "Strong analytical instincts and genuine intellectual honesty, but a pattern of answering adjacent questions instead of the one actually asked cost credibility at the technical depth stage.",
+      "sub_scores": {
+        "communication": 7,
+        "roleKnowledge": 6,
+        "clarity": 5,
+        "confidence": 7,
+        "structure": 5,
+        "problemSolving": 6
+      },
+      "strengths": [
+        {
+          "strength": "You built safeguards from failure rather than moving on \u2014 and you named exactly what the safeguard was tied to.",
+          "evidence": "I wrote a regression test for it the same day and started reviewing my own joins against a known-total check before shipping."
+        },
+        {
+          "strength": "You showed real product-level thinking when you framed anomaly detection operationally, not just technically.",
+          "evidence": "I'd pair it with a threshold that auto-escalates anything above two percent of revenue."
+        },
+        {
+          "strength": "Your pre-interview preparation was specific enough to be useful in the room \u2014 you quoted the actual reasoning behind the model, not just the company name.",
+          "evidence": "You optimise for variance, not just the mean, because a late order hurts more than an early one helps."
+        },
+        {
+          "strength": "You defined dashboard success in terms of behaviour change, not delivery \u2014 that's a senior instinct for a fresher.",
+          "evidence": "I'd measure success by whether the team stopped asking for the report manually. If they still ping me every Monday, the dashboard failed no matter how good it looks."
+        }
+      ],
+      "gaps": [
+        {
+          "gap": "You repeatedly gave strong answers \u2014 to questions you weren't asked. When pushed three times on the impossible delivery times, you answered with cohort logic, an internship story, and a reverse question instead.",
+          "cost": "It made me wonder whether you couldn't answer or were avoiding it \u2014 either way, the technical credibility took a hit.",
+          "tryThisNextTime": "When you feel stuck on a technical question, say out loud: 'I'd start by pulling the records where delivery time is under two minutes and checking whether the timestamp columns have the same timezone or source system' \u2014 give me one concrete first step, even if you're unsure of the rest.",
+          "upskillizeCourse": "SQL for Data Analysis \u2014 Data Quality and Debugging"
+        },
+        {
+          "gap": "Your answers were strong in isolation but rarely connected to each other \u2014 each one felt like a fresh start rather than building on what came before.",
+          "cost": "In a real panel, that reads as someone who has good instincts but hasn't yet learned to run a thread of reasoning across a conversation.",
+          "tryThisNextTime": "Before you answer, spend one sentence linking back: 'Same issue as the meter data problem \u2014 I'd flag before dropping.' It takes five seconds and makes you sound like someone who thinks in systems.",
+          "upskillizeCourse": "Structured Communication for Analysts"
+        },
+        {
+          "gap": "You deflected the 'what went well, what didn't' question at the end of the session twice \u2014 first with a cohort answer, then with an anomaly answer.",
+          "cost": "The reverse round is where interviewers see whether you're genuinely curious about the role or just managing the room \u2014 and two deflections in a row signals the latter.",
+          "tryThisNextTime": "When the interviewer opens the floor, ask the question you actually want answered \u2014 'What does good look like in the first ninety days, and how will I know?' is a much stronger close than a third prepared answer.",
+          "upskillizeCourse": "Interview Strategy and Reverse Round Preparation"
+        }
+      ],
+      "star_breakdown": [
+        {
+          "question": "Data quality in the campus energy dashboard",
+          "situation": 2,
+          "task": 1,
+          "action": 2,
+          "result": 2,
+          "note": "Strong on action and result \u2014 'flagging instead of dropping' and 'cut bad rows by eighty percent' are exactly the specifics that land. Task was implied rather than stated."
+        },
+        {
+          "question": "Shipping a query that double-counted refunds",
+          "situation": 1,
+          "task": 1,
+          "action": 2,
+          "result": 1,
+          "note": "The action was clear and honest. Situation was thin \u2014 we never learned what the query was for or why it mattered. Result was about the fix, not the impact of the original error."
+        },
+        {
+          "question": "Disagreeing with manager on caching",
+          "situation": 1,
+          "task": 1,
+          "action": 2,
+          "result": 1,
+          "note": "The action was the best part \u2014 'pulled the query logs, showed the table only changed twice a day' is specific and credible. But we never heard what the outcome actually was beyond 'settled it on the numbers'."
+        }
+      ],
+      "interviewer_thoughts": [
+        {
+          "answer": "Meter readings with gaps and duplicate timestamps",
+          "thought": "This is real \u2014 they've actually debugged messy data, not just described it in theory. The eighty percent number is specific enough to be believable."
+        },
+        {
+          "answer": "First response to impossible delivery times question",
+          "thought": "They answered a different question entirely. Either they didn't register what I asked, or they don't have a first-principles move for data debugging and pivoted to something safer."
+        },
+        {
+          "answer": "Second and third deflection on delivery times",
+          "thought": "Three attempts and still no answer to the actual question. I'm genuinely uncertain now whether this is avoidance or a gap. If it's a gap, I need them to just say so \u2014 that's recoverable. This isn't."
+        },
+        {
+          "answer": "Zomato delivery-time model, variance vs mean",
+          "thought": "They actually read the engineering blog. That's not performance \u2014 that framing is specific enough that you'd only have it if you understood the piece."
+        },
+        {
+          "answer": "Dashboard success measured by whether the team stops pinging manually",
+          "thought": "That's a sharp way to define impact. Most freshers say 'stakeholder satisfaction'. This one is thinking about what actually changes."
+        }
+      ],
+      "plan": [
+        "Day 1: Take one messy public dataset (Kaggle or data.gov.in) and write out loud your exact first five steps for finding what's broken in it \u2014 don't query yet, just narrate.",
+        "Day 2: Practice the 'one concrete first step' rule \u2014 for any technical question you get stuck on, your floor answer is always one observable, checkable action you would take first.",
+        "Day 3: Do three mock STAR answers and record yourself. For each one, check: did I name the result in numbers or a behaviour change? If not, add it.",
+        "Day 4: Reread the Zomato engineering blog piece you mentioned. Write three follow-up questions you'd ask the team who built that model \u2014 these become your reverse-round questions.",
+        "Day 5: Practice linking consecutive answers in a conversation \u2014 take any two things you said in this session and write a one-sentence bridge between them.",
+        "Day 6: Run a timed SQL debugging exercise: take a query with a known error, find it in under ten minutes, and document your reasoning step by step.",
+        "Day 7: Do a full mock session and deliberately answer the literal question asked \u2014 before each answer, repeat back in one sentence what you're being asked, then answer that."
+      ],
+      "next_focus": "Answer the question that was actually asked \u2014 when you feel the pull to pivot to something more comfortable, name your first concrete step on the hard question instead.",
+      "calibration": {
+        "profile": "well_calibrated",
+        "avg_confidence": 4.0,
+        "avg_score": 3.6,
+        "calibration_delta": 0.4,
+        "per_answer": [
+          {
+            "rating": 4,
+            "score": 3.0,
+            "category": "well_calibrated"
+          },
+          {
+            "rating": 4,
+            "score": 4.0,
+            "category": "well_calibrated"
+          },
+          {
+            "rating": 4,
+            "score": 3.0,
+            "category": "well_calibrated"
+          },
+          {
+            "rating": 4,
+            "score": 4.0,
+            "category": "well_calibrated"
+          },
+          {
+            "rating": 4,
+            "score": 4.0,
+            "category": "well_calibrated"
+          }
+        ],
+        "rated_count": 5,
+        "sentence": "Your ratings tracked your actual performance closely (4.0/5 against 3.6/5) \u2014 knowing what you know is worth as much in the room as the knowledge itself."
+      },
+      "delivery": {
+        "tts": {
+          "vendor_calls": 0,
+          "vendor_seconds": 0.0,
+          "cache_hits": 0,
+          "cached_seconds": 0.0,
+          "unmeasured_clips": 0,
+          "total_seconds": 0.0,
+          "cache_saved_pct": 0
+        }
+      },
+      "professional_presence": {
+        "measured": true,
+        "events_total": 0,
+        "by_type": {},
+        "coaching_note": "You stayed present throughout \u2014 no attention drift picked up. That is exactly how a panel wants to be met.",
+        "camera_signals_disabled": true
+      },
+      "early_wrap": null,
+      "profile": {
+        "role": "Data Analyst",
+        "company": "Zomato",
+        "level": "Fresher",
+        "difficulty": "Realistic",
+        "duration_min": 20,
+        "mode": "TEXT",
+        "feedback": "interview",
+        "rounds_covered": [
+          "Warm-up",
+          "Domain",
+          "Behavioural",
+          "Case"
+        ],
+        "rounds_skipped": []
+      },
+      "scored": true,
+      "substantive_answers": 13,
+      "evidence": {},
+      "score": {
+        "benchmark": 56,
+        "benchmark_uncapped": 55.8,
+        "raw": 62,
+        "earned_band": "Building",
+        "capped": false,
+        "gate_copy": "",
+        "gates": [],
+        "factors": {
+          "difficulty": 1.0,
+          "evidence": 1.0,
+          "feedback": 1.0,
+          "coverage": 1.0,
+          "mode": 0.9
+        },
+        "weights_version": "2026.07-2",
+        "math": [
+          {
+            "key": "raw",
+            "label": "Your answers, scored for your level",
+            "value": "62",
+            "note": "The rubric verdict on what you actually said. Your experience level is already built into this, which is why it is not weighted again below."
+          },
+          {
+            "key": "difficulty",
+            "label": "Difficulty \u2014 Realistic",
+            "value": "\u00d71.00",
+            "note": "This is the real bar, so your answers count exactly as they are."
+          },
+          {
+            "key": "evidence",
+            "label": "Evidence \u2014 20 min",
+            "value": "\u00d71.00",
+            "note": "A longer session shows more, so it can support a stronger claim. This is about how much we saw, not how well you did."
+          },
+          {
+            "key": "feedback",
+            "label": "Feedback style \u2014 Interview \u2014 feedback at the end",
+            "value": "\u00d71.00",
+            "note": "No help mid-session, exactly like a real room."
+          },
+          {
+            "key": "coverage",
+            "label": "Coverage \u2014 4 of 4 rounds",
+            "value": "\u00d71.00",
+            "note": "You reached every scored round, so nothing is held back here."
+          },
+          {
+            "key": "mode",
+            "label": "Mode \u2014 Text",
+            "value": "\u00d70.90",
+            "note": "Typed answers are scored on the same content bar; the weight reflects the one you chose."
+          },
+          {
+            "key": "total",
+            "label": "Benchmark",
+            "value": "56",
+            "note": "Your answers, weighted for the bar you chose."
+          }
+        ]
+      },
+      "reattempt_window": {
+        "days": 7,
+        "copy": "Give the 7-day plan a full week before you re-attempt. Going again tomorrow just re-runs the same interview."
+      },
+      "ecopro": {
+        "session_id": "e1bd9792-cb86-4659-af10-576769c06edb",
+        "scored": true,
+        "band": "Building",
+        "benchmark": 56,
+        "top_fixes": [
+          {
+            "fix": "You repeatedly gave strong answers \u2014 to questions you weren't asked. When pushed three times on the impossible delivery times, you answered with cohort logic, an internship story, and a reverse question instead.",
+            "try_this_next_time": "When you feel stuck on a technical question, say out loud: 'I'd start by pulling the records where delivery time is under two minutes and checking whether the timestamp columns have the same timezone or source system' \u2014 give me one concrete first step, even if you're unsure of the rest.",
+            "course": "SQL for Data Analysis \u2014 Data Quality and Debugging"
+          },
+          {
+            "fix": "Your answers were strong in isolation but rarely connected to each other \u2014 each one felt like a fresh start rather than building on what came before.",
+            "try_this_next_time": "Before you answer, spend one sentence linking back: 'Same issue as the meter data problem \u2014 I'd flag before dropping.' It takes five seconds and makes you sound like someone who thinks in systems.",
+            "course": "Structured Communication for Analysts"
+          },
+          {
+            "fix": "You deflected the 'what went well, what didn't' question at the end of the session twice \u2014 first with a cohort answer, then with an anomaly answer.",
+            "try_this_next_time": "When the interviewer opens the floor, ask the question you actually want answered \u2014 'What does good look like in the first ninety days, and how will I know?' is a much stronger close than a third prepared answer.",
+            "course": "Interview Strategy and Reverse Round Preparation"
+          }
+        ],
+        "reattempt_window": {
+          "days": 7,
+          "copy": "Give the 7-day plan a full week before you re-attempt. Going again tomorrow just re-runs the same interview."
+        },
+        "weights_version": "2026.07-2"
+      }
+    },
+    "delivery_block": {
+      "tts": {
+        "vendor_calls": 0,
+        "vendor_seconds": 0.0,
+        "cache_hits": 0,
+        "cached_seconds": 0.0,
+        "unmeasured_clips": 0,
+        "total_seconds": 0.0,
+        "cache_saved_pct": 0
+      }
     }
   },
-  "session_id": "43405049-78e8-4a5e-be67-581a8ff3c37d"
+  "session_id": "e1bd9792-cb86-4659-af10-576769c06edb"
 }

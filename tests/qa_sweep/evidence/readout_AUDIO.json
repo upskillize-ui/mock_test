@@ -1,0 +1,299 @@
+{
+  "session_id": "9f0110cd-52e5-4876-85f2-231b078ff86d",
+  "overall_band": "Interview-Ready",
+  "round_bands": {
+    "case": "Interview-Ready",
+    "domain": "Building",
+    "warmup": "Interview-Ready",
+    "reverse": "Interview-Ready",
+    "behavioural": "Building"
+  },
+  "one_line": "Sharp analytical instincts and honest self-awareness, but you consistently answered the question you wanted instead of the one you were asked \u2014 and that pattern will cost you in a real panel.",
+  "sub_scores": {
+    "clarity": 7,
+    "structure": 6,
+    "confidence": 7,
+    "communication": 8,
+    "roleKnowledge": 7,
+    "problemSolving": 7
+  },
+  "strengths": [
+    {
+      "evidence": "The risk with my approach is that flagging anomalies creates a queue nobody works. So I'd pair it with a threshold that auto-escalates anything above two percent of revenue.",
+      "strength": "You think about systems, not just outputs \u2014 you flagged the failure mode of your own anomaly detection before being prompted to."
+    },
+    {
+      "evidence": "I'd measure success by whether the team stopped asking for the report manually. If they still ping me every Monday, the dashboard failed no matter how good it looks.",
+      "strength": "You measure success by behavioural change in the team, not by the quality of the artefact \u2014 that's a mature product instinct for a fresher."
+    },
+    {
+      "evidence": "The part that stuck with me was that you optimise for variance, not just the mean, because a late order hurts more than an early one helps.",
+      "strength": "You showed genuine domain preparation \u2014 you'd read the engineering blog and extracted the right insight from it."
+    },
+    {
+      "evidence": "I once shipped a query that double-counted refunds. Finance caught it, not me. I wrote a regression test for it the same day.",
+      "strength": "You were honest about your own failure in a way that showed learning, not just self-flagellation."
+    }
+  ],
+  "gaps": [
+    {
+      "gap": "You answered the question you prepared instead of the one you were asked \u2014 repeatedly.",
+      "cost": "I asked you three times to walk me through the Friday cancellation data concretely. Each time you pivoted to a principle or a different story. In a real panel, that reads as avoidance, not depth.",
+      "tryThisNextTime": "Before you answer, repeat the specific question back in one sentence \u2014 'So you want me to walk through what I'd check in the raw data first' \u2014 then answer exactly that. It forces you to stay on target.",
+      "upskillizeCourse": "Structured Problem-Solving for Data Analysts"
+    },
+    {
+      "gap": "You never gave a complete STAR story across the whole interview.",
+      "cost": "Every time I asked for a real situation from your own experience \u2014 being under deadline, pushing back on someone \u2014 you gave me a principle or a hypothetical. I left the interview without a single concrete picture of you in a hard moment.",
+      "tryThisNextTime": "Prepare three real stories with a named date, a named constraint, and a named outcome \u2014 write them down as one paragraph each. When a behavioural question lands, open with 'Last October, during my campus dashboard project...' and don't leave the situation until you've said what was actually at stake.",
+      "upskillizeCourse": "Behavioural Interview Preparation \u2014 STAR Framework"
+    },
+    {
+      "gap": "Your technical answers stayed at the strategy layer and never hit the execution layer.",
+      "cost": "When I asked what you'd look at in those fifty raw rows, you gave me frameworks \u2014 cohort segmentation, checking the denominator \u2014 but never said 'I'd look at the timestamp column for duplicates' or 'I'd check whether the restaurant_id is consistent.' That gap shows in a technical screen.",
+      "tryThisNextTime": "After every technical answer, ask yourself: 'Did I name a column, a join, a specific check?' If not, add one concrete example before you stop talking.",
+      "upskillizeCourse": "SQL for Data Analysis \u2014 Advanced Querying and Debugging"
+    }
+  ],
+  "star_breakdown": [
+    {
+      "note": "Never answered directly. Pivoted to a principle about being told directly, then to a self-weakness. No situation was ever established.",
+      "task": 0,
+      "action": 0,
+      "result": 0,
+      "question": "Tell me about a time you were under pressure or had to make a call with incomplete data",
+      "situation": 0
+    },
+    {
+      "note": "The caching disagreement story had a real action \u2014 pulling the query logs \u2014 but no named situation, no stake established, and the result was vague ('we settled it'). Close, but incomplete.",
+      "task": 1,
+      "action": 2,
+      "result": 1,
+      "question": "Tell me about a time you pushed back on someone about how you wanted to work",
+      "situation": 1
+    },
+    {
+      "note": "Honest and specific on the action (regression test, same day), but the situation was one sentence and the result was implied rather than stated. Strongest STAR attempt in the session.",
+      "task": 1,
+      "action": 2,
+      "result": 1,
+      "question": "Double-counting refunds \u2014 what happened and what did you do",
+      "situation": 1
+    }
+  ],
+  "interviewer_thoughts": [
+    {
+      "answer": "Flagging anomalies, cut bad rows by eighty percent",
+      "thought": "This is specific and shows real craft. The eighty percent figure tells me they actually measured it. I want to go deeper here \u2014 but they moved on before I could."
+    },
+    {
+      "answer": "Check the denominator, that's where most misleading percentages hide",
+      "thought": "Good principle. But I asked them what they'd do with these specific fifty rows and they gave me a framework. They're not answering the question \u2014 they're performing competence."
+    },
+    {
+      "answer": "I'd segment by cohort first \u2014 a blended retention curve hides the January cohort churning",
+      "thought": "Solid. But I didn't ask about retention curves. This was a prepared answer looking for a question to attach to. That's a pattern now."
+    },
+    {
+      "answer": "Read the engineering blog \u2014 optimise for variance, not just the mean",
+      "thought": "Genuine. That's a real insight from a real piece of content. This person did their homework. I'm more interested in them now than I was two questions ago."
+    },
+    {
+      "answer": "Weakness is going deep before going wide \u2014 I've started time-boxing the first pass",
+      "thought": "The self-awareness is good. The fix they've implemented is real. This answer actually lands."
+    },
+    {
+      "answer": "Success is when they stop asking for the report manually",
+      "thought": "This is the best answer of the session. Clean, specific, and shows they think about adoption not just delivery. I'd remember this one."
+    }
+  ],
+  "plan": [
+    "Day 1: Write down three real stories from your projects \u2014 one deadline, one disagreement, one failure. One paragraph each, named dates and named stakes.",
+    "Day 2: Drill the STAR format on those three stories out loud. Record yourself. Listen back for whether you ever said 'I' and an action verb together.",
+    "Day 3: Practice the Friday cancellations scenario again \u2014 this time list five specific columns you'd check and why, in order.",
+    "Day 4: Take one SQL query you've written and explain it out loud to a wall as if someone asked you to debug it. Get comfortable naming things concretely.",
+    "Day 5: Read one more Zomato engineering or product blog post. Extract one specific design decision and be ready to say why it matters.",
+    "Day 6: Do a mock interview with a friend. Each time you give a principle instead of a story, they say 'give me an example.' Keep going until the example is specific.",
+    "Day 7: Prepare two sharp reverse-round questions \u2014 one about how the team measures the quality of their own analysis, one about a decision they got wrong. Write them down."
+  ],
+  "next_focus": "Stop answering the question you prepared and start answering the question you were asked \u2014 practise repeating the question back before every answer until it's a reflex.",
+  "calibration": {
+    "profile": "well_calibrated",
+    "sentence": "Your ratings tracked your actual performance closely (4.0/5 against 3.3/5) \u2014 knowing what you know is worth as much in the room as the knowledge itself.",
+    "avg_score": 3.3,
+    "per_answer": [
+      {
+        "score": 3.0,
+        "rating": 4,
+        "category": "well_calibrated"
+      },
+      {
+        "score": 4.0,
+        "rating": 4,
+        "category": "well_calibrated"
+      },
+      {
+        "score": 3.0,
+        "rating": 4,
+        "category": "well_calibrated"
+      },
+      {
+        "score": 3.0,
+        "rating": 4,
+        "category": "well_calibrated"
+      },
+      {
+        "score": 3.0,
+        "rating": 4,
+        "category": "well_calibrated"
+      },
+      {
+        "score": 3.0,
+        "rating": 4,
+        "category": "well_calibrated"
+      },
+      {
+        "score": 4.0,
+        "rating": 4,
+        "category": "well_calibrated"
+      }
+    ],
+    "rated_count": 7,
+    "avg_confidence": 4.0,
+    "calibration_delta": 0.7
+  },
+  "delivery": {
+    "spoken_answers": 0,
+    "enough_data": false,
+    "message": "Not enough voice data \u2014 try answering aloud next session.",
+    "tts": {
+      "vendor_calls": 18,
+      "vendor_seconds": 88.2,
+      "cache_hits": 9,
+      "cached_seconds": 34.9,
+      "unmeasured_clips": 0,
+      "total_seconds": 123.1,
+      "cache_saved_pct": 28
+    }
+  },
+  "professional_presence": {
+    "measured": true,
+    "events_total": 0,
+    "by_type": {},
+    "coaching_note": "You stayed present throughout \u2014 no attention drift picked up. That is exactly how a panel wants to be met.",
+    "camera_signals_disabled": true
+  },
+  "early_wrap": null,
+  "profile": {
+    "role": "Data Analyst",
+    "company": "Zomato",
+    "level": "Fresher",
+    "difficulty": "Realistic",
+    "duration_min": 20,
+    "mode": "AUDIO",
+    "feedback": "interview",
+    "rounds_covered": [
+      "Warm-up",
+      "Domain",
+      "Behavioural",
+      "Case"
+    ],
+    "rounds_skipped": []
+  },
+  "scored": true,
+  "substantive_answers": 13,
+  "evidence": {},
+  "score": {
+    "benchmark": 72,
+    "benchmark_uncapped": 72.0,
+    "raw": 72,
+    "earned_band": "Interview-Ready",
+    "capped": false,
+    "gate_copy": "",
+    "gates": [],
+    "factors": {
+      "mode": 1.0,
+      "coverage": 1.0,
+      "evidence": 1.0,
+      "feedback": 1.0,
+      "difficulty": 1.0
+    },
+    "weights_version": "2026.07-2",
+    "math": [
+      {
+        "key": "raw",
+        "label": "Your answers, scored for your level",
+        "value": "72",
+        "note": "The rubric verdict on what you actually said. Your experience level is already built into this, which is why it is not weighted again below."
+      },
+      {
+        "key": "difficulty",
+        "label": "Difficulty \u2014 Realistic",
+        "value": "\u00d71.00",
+        "note": "This is the real bar, so your answers count exactly as they are."
+      },
+      {
+        "key": "evidence",
+        "label": "Evidence \u2014 20 min",
+        "value": "\u00d71.00",
+        "note": "A longer session shows more, so it can support a stronger claim. This is about how much we saw, not how well you did."
+      },
+      {
+        "key": "feedback",
+        "label": "Feedback style \u2014 Interview \u2014 feedback at the end",
+        "value": "\u00d71.00",
+        "note": "No help mid-session, exactly like a real room."
+      },
+      {
+        "key": "coverage",
+        "label": "Coverage \u2014 4 of 4 rounds",
+        "value": "\u00d71.00",
+        "note": "You reached every scored round, so nothing is held back here."
+      },
+      {
+        "key": "mode",
+        "label": "Mode \u2014 Audio",
+        "value": "\u00d71.00",
+        "note": "Speaking is the full bar \u2014 no adjustment."
+      },
+      {
+        "key": "total",
+        "label": "Benchmark",
+        "value": "72",
+        "note": "Your answers, weighted for the bar you chose."
+      }
+    ]
+  },
+  "reattempt_window": {
+    "days": 3,
+    "copy": "Work the first three days of the plan, then go again. You're close enough that the gap is reps, not study."
+  },
+  "ecopro": {
+    "session_id": "9f0110cd-52e5-4876-85f2-231b078ff86d",
+    "scored": true,
+    "band": "Interview-Ready",
+    "benchmark": 72,
+    "top_fixes": [
+      {
+        "fix": "You answered the question you prepared instead of the one you were asked \u2014 repeatedly.",
+        "try_this_next_time": "Before you answer, repeat the specific question back in one sentence \u2014 'So you want me to walk through what I'd check in the raw data first' \u2014 then answer exactly that. It forces you to stay on target.",
+        "course": "Structured Problem-Solving for Data Analysts"
+      },
+      {
+        "fix": "You never gave a complete STAR story across the whole interview.",
+        "try_this_next_time": "Prepare three real stories with a named date, a named constraint, and a named outcome \u2014 write them down as one paragraph each. When a behavioural question lands, open with 'Last October, during my campus dashboard project...' and don't leave the situation until you've said what was actually at stake.",
+        "course": "Behavioural Interview Preparation \u2014 STAR Framework"
+      },
+      {
+        "fix": "Your technical answers stayed at the strategy layer and never hit the execution layer.",
+        "try_this_next_time": "After every technical answer, ask yourself: 'Did I name a column, a join, a specific check?' If not, add one concrete example before you stop talking.",
+        "course": "SQL for Data Analysis \u2014 Advanced Querying and Debugging"
+      }
+    ],
+    "reattempt_window": {
+      "days": 3,
+      "copy": "Work the first three days of the plan, then go again. You're close enough that the gap is reps, not study."
+    },
+    "weights_version": "2026.07-2"
+  }
+}

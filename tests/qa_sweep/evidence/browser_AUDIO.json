@@ -15,17 +15,17 @@
     {
       "cell": "AUDIO: getUserMedia never requests video",
       "status": "PASS",
-      "evidence": "1 call(s); with video: []"
+      "evidence": "2 call(s); with video: []"
     },
     {
       "cell": "AUDIO (a) server layer: /session/speech returns audio",
-      "status": "FAIL",
-      "evidence": "0 audio fetch(es), 0 bytes total"
+      "status": "PASS",
+      "evidence": "12 audio fetch(es), 376992 bytes total"
     },
     {
       "cell": "AUDIO (b) app layer: client creates + plays an audio element",
-      "status": "FAIL",
-      "evidence": "1 Audio() constructed, 0 play() call(s)"
+      "status": "PASS",
+      "evidence": "1 Audio() constructed, 4 play() call(s)"
     },
     {
       "cell": "AUDIO (c) permission layer: playback not blocked",
@@ -33,18 +33,116 @@
       "evidence": "rejected: [] | 'Tap to enable audio' visible: False"
     }
   ],
-  "network": [],
-  "console": [
-    "error: Access to fetch at 'http://localhost:8000/health' from origin 'http://localhost:5174' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Contr",
-    "error: Failed to load resource: net::ERR_FAILED",
-    "error: Access to fetch at 'http://localhost:8000/session/start' from origin 'http://localhost:5174' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Acces",
-    "error: Failed to load resource: net::ERR_FAILED"
+  "network": [
+    {
+      "url": "/session/start",
+      "method": "POST",
+      "status": 200
+    },
+    {
+      "url": "/consent",
+      "method": "POST",
+      "status": 200
+    },
+    {
+      "url": "/session/clips?voice=female",
+      "method": "GET",
+      "status": 200
+    },
+    {
+      "url": "/consent",
+      "method": "POST",
+      "status": 200
+    },
+    {
+      "url": "/session/audio/ed10efb02535efd2086b0d2d9dc7b5cd520238de0c24603897904e057149936c",
+      "method": "GET",
+      "status": 200,
+      "bytes": 13374
+    },
+    {
+      "url": "/session/audio/b8fda9d1a2e657eaf6501be060c91c817c7d801cc443b02469212f105fbad05c",
+      "method": "GET",
+      "status": 200,
+      "bytes": 9195
+    },
+    {
+      "url": "/session/audio/6366f44e4f20d94256c170794ccdcff53f1d2548a79ed87d7e80ffa3180487db",
+      "method": "GET",
+      "status": 200,
+      "bytes": 19644
+    },
+    {
+      "url": "/session/audio/1a358c7c8b8eff043f89b1c1092040dc7a94f18944406214bb1bc9f7652293ff",
+      "method": "GET",
+      "status": 200,
+      "bytes": 12120
+    },
+    {
+      "url": "/session/audio/784fa1ec301c173ca17e326da845b873f86b568663387ea94479412718e00d8c",
+      "method": "GET",
+      "status": 200,
+      "bytes": 12120
+    },
+    {
+      "url": "/session/audio/8197f1abf392f5971fe51074db49b6868bad8865bc388719f431bc67907fe615",
+      "method": "GET",
+      "status": 200,
+      "bytes": 16300
+    },
+    {
+      "url": "/session/audio/f384bf5c44fc85181b9827cb8964fee6a8e82e9471ef904dfc68fdba92a7ec64",
+      "method": "GET",
+      "status": 200,
+      "bytes": 23823
+    },
+    {
+      "url": "/session/audio/494fcdfb1635208463e0f912ed6d476b47e1e2abdd01b9e7eb4adf46842ad962",
+      "method": "GET",
+      "status": 200,
+      "bytes": 22569
+    },
+    {
+      "url": "/session/greeting",
+      "method": "POST",
+      "status": 200
+    },
+    {
+      "url": "/session/audio/153401498aae05b929b2ac9dc40b3bc1dcd7a7a598e4ce687009da59a28f4e42",
+      "method": "GET",
+      "status": 200,
+      "bytes": 26749
+    },
+    {
+      "url": "/session/speech",
+      "method": "POST",
+      "status": 200
+    },
+    {
+      "url": "/session/audio/37dd911717fe632096c5392e5f5e8fc8505fdb9e7bcbb613a4c42756df06a515",
+      "method": "GET",
+      "status": 200,
+      "bytes": 23823
+    },
+    {
+      "url": "/session/audio/74671461dc0659278e2019999a4223b502296f95ca282875c08a718280645427",
+      "method": "GET",
+      "status": 200,
+      "bytes": 135418
+    },
+    {
+      "url": "/session/audio/91a294617fcbf157b56c4a1b48da31b98ca62cd712b50740623ee0efe73494b9",
+      "method": "GET",
+      "status": 200,
+      "bytes": 61857
+    }
   ],
+  "console": [],
   "screens": [
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_prod\\AUDIO_1_setup.png",
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_prod\\AUDIO_2_lobby.png",
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_prod\\AUDIO_3_room.png",
-    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_prod\\AUDIO_4_idle.png"
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_final\\AUDIO_1_setup.png",
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_final\\AUDIO_2_lobby.png",
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_final\\AUDIO_3_room.png",
+    "C:\\Users\\user\\AppData\\Local\\Temp\\claude\\C--Users-user-Desktop-Agent-Versions-Mock-Interview-vyom-build\\73c615db-ae37-484c-98b7-29090b972a64\\scratchpad\\shots_final\\AUDIO_4_idle.png"
   ],
   "consent_accepted": true,
   "lobby_text": "History\nSettings\nReady to join?\nSoftware Engineer (SDE) interview \u2014 check your setup before you go in.\nQ\nBefore you join\n\nYour mic converts answers to text \u2014 audio is never stored. You can type instead at any time.\n\nAllow mic\nType instead",
@@ -58,20 +156,38 @@
     "Allow mic",
     "Join interview"
   ],
-  "reached_room": false,
-  "lobby_stuck_buttons": [
-    "History",
-    "Settings",
-    "Allow mic",
-    "Type instead"
-  ],
+  "reached_room": true,
   "getUserMedia_calls": [
     {
-      "t": 1784286982998,
+      "t": 1784288560087,
       "constraints": {
         "audio": true
       },
-      "stack": "    at F (http://localhost:5174/assets/index-sfWu3oFR.js:118:7076) |     at onClick (http://localhost:5174/assets/index-sfWu3oFR.js:118:16019) |     at Object.i0 (http://localhost:5174/assets/index-sfWu3oFR.js:37:9855)",
+      "stack": "    at F (http://localhost:5174/assets/index-D38XonPO.js:118:7076) |     at onClick (http://localhost:5174/assets/index-D38XonPO.js:118:16019) |     at Object.i0 (http://localhost:5174/assets/index-D38XonPO.js:37:9855)",
+      "granted": true,
+      "tracks": [
+        {
+          "kind": "audio",
+          "label": "Fake Default Audio Input"
+        }
+      ]
+    },
+    {
+      "t": 1784288566235,
+      "constraints": {
+        "audio": {
+          "echoCancellation": true,
+          "noiseSuppression": true,
+          "autoGainControl": true,
+          "sampleRate": {
+            "ideal": 16000
+          },
+          "channelCount": {
+            "ideal": 1
+          }
+        }
+      },
+      "stack": "    at og (http://localhost:5174/assets/index-D38XonPO.js:542:40261) |     at http://localhost:5174/assets/index-D38XonPO.js:542:41083 |     at Us (http://localhost:5174/assets/index-D38XonPO.js:40:24263)",
       "granted": true,
       "tracks": [
         {
@@ -84,27 +200,56 @@
   "idle_seconds_watched": 25,
   "device_lines_while_idle": [
     {
-      "at_s": 0.5,
-      "line": "Your mic converts answers to text \u2014 audio is never stored. You can type instead at any time."
+      "at_s": 12.9,
+      "line": "Listening in 0.4s \u2014 mute to cancel"
     }
   ],
-  "room_text": "History\nSettings\nFailed to fetch\nReady to join?\nSoftware Engineer (SDE) interview \u2014 check your setup before you go in.\nQ\nBefore you join\n\nYour mic converts answers to text \u2014 audio is never stored. You can type instead at any time.\n\nAllow mic\nType instead",
+  "room_text": "InterviewIQ\nSoftware Engineer (SDE) \u2014 General\n19:23\nEnd\nWarm-up \u00b7 Question 1 of 2\nNia \u00b7 InterviewIQ\nQ\nQA\nYOU\n0:12\nLISTENING\n0:12\nQA, I'm Nia. Good to have you here. So we've got twenty minutes together, and I want to use it to understand how you actually think about problems \u2014 not run through a checklist. By the time we're done, what would make you feel like this time was well spent?\nEnd",
   "room_buttons": [
-    "History",
-    "Settings",
-    "Allow mic",
-    "Type instead"
+    "Replay question",
+    "Open transcript",
+    "Voice settings",
+    "End",
+    "Listening. Click to mute.",
+    "Toggle captions",
+    "Chat and transcript",
+    "End"
   ],
   "silent_unlock_plays": 2,
-  "audio_play_calls": [],
+  "audio_play_calls": [
+    {
+      "t": 1784288567403,
+      "src": "blob:http://localhost:5174/2a047b5e-8494-4b35-90af-487e85e55356",
+      "tag": "AUDIO",
+      "result": "played"
+    },
+    {
+      "t": 1784288572059,
+      "src": "blob:http://localhost:5174/43bee926-3ad1-48ba-bb15-5e7c90aa1ab3",
+      "tag": "AUDIO",
+      "result": "played"
+    },
+    {
+      "t": 1784288573975,
+      "src": "blob:http://localhost:5174/ea93cd92-50c8-4d3f-af12-974fe640f7bb",
+      "tag": "AUDIO",
+      "result": "played"
+    },
+    {
+      "t": 1784288583181,
+      "src": "blob:http://localhost:5174/5d42f594-5c2e-4d3c-b57d-901fe20f2154",
+      "tag": "AUDIO",
+      "result": "played"
+    }
+  ],
   "audio_constructed": 1,
   "layers": {
-    "server_speech_calls": 0,
-    "clip_pack_calls": 0,
-    "audio_byte_fetches": 0,
-    "audio_bytes_total": 0,
+    "server_speech_calls": 1,
+    "clip_pack_calls": 1,
+    "audio_byte_fetches": 12,
+    "audio_bytes_total": 376992,
     "audio_elements_constructed": 1,
-    "play_attempts": 0,
+    "play_attempts": 4,
     "play_rejected": 0
   },
   "js_errors": []

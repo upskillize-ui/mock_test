@@ -1,134 +1,154 @@
 {
-  "session_id": "43405049-78e8-4a5e-be67-581a8ff3c37d",
-  "overall_band": "Not Ready",
+  "session_id": "e1bd9792-cb86-4659-af10-576769c06edb",
+  "overall_band": "Building",
   "round_bands": {
-    "case": "Not Ready",
+    "case": "Building",
     "domain": "Not Ready",
-    "warmup": "Building",
-    "reverse": "Not Ready",
-    "behavioural": "Not Ready"
+    "warmup": "Interview-Ready",
+    "reverse": "Building",
+    "behavioural": "Interview-Ready"
   },
-  "one_line": "You have real instincts about data quality and ownership, but the session stalled because you cycled through the same three answers without engaging with the actual questions being asked.",
+  "one_line": "Strong analytical instincts and genuine intellectual honesty, but a pattern of answering adjacent questions instead of the one actually asked cost credibility at the technical depth stage.",
   "sub_scores": {
-    "clarity": 2,
-    "structure": 2,
-    "confidence": 3,
-    "communication": 3,
-    "roleKnowledge": 3,
-    "problemSolving": 2
+    "clarity": 5,
+    "structure": 5,
+    "confidence": 7,
+    "communication": 7,
+    "roleKnowledge": 6,
+    "problemSolving": 6
   },
   "strengths": [
     {
-      "evidence": "I wrote a reconciliation step that flagged anomalies instead of silently dropping them. That cut bad rows by about eighty percent.",
-      "strength": "You named the right instinct on data traceability \u2014 flagging anomalies instead of silently dropping them is exactly what a careful analyst does."
+      "evidence": "I wrote a regression test for it the same day and started reviewing my own joins against a known-total check before shipping.",
+      "strength": "You built safeguards from failure rather than moving on \u2014 and you named exactly what the safeguard was tied to."
     },
     {
-      "evidence": "I once shipped a query that double-counted refunds. Finance caught it, not me. I wrote a regression test for it the same day and started reviewing my own joins against a known-total check before shipping.",
-      "strength": "You showed genuine ownership of a production mistake \u2014 you didn't deflect, you fixed the root cause the same day."
+      "evidence": "I'd pair it with a threshold that auto-escalates anything above two percent of revenue.",
+      "strength": "You showed real product-level thinking when you framed anomaly detection operationally, not just technically."
     },
     {
-      "evidence": "I'd start by asking what decision the number is meant to support. If nobody can answer that, the metric is decoration.",
-      "strength": "Your framing on metric quality \u2014 asking what decision a number is meant to support before touching it \u2014 is a mature instinct for a fresher."
+      "evidence": "You optimise for variance, not just the mean, because a late order hurts more than an early one helps.",
+      "strength": "Your pre-interview preparation was specific enough to be useful in the room \u2014 you quoted the actual reasoning behind the model, not just the company name."
+    },
+    {
+      "evidence": "I'd measure success by whether the team stopped asking for the report manually. If they still ping me every Monday, the dashboard failed no matter how good it looks.",
+      "strength": "You defined dashboard success in terms of behaviour change, not delivery \u2014 that's a senior instinct for a fresher."
     }
   ],
   "gaps": [
     {
-      "gap": "You could not answer a concrete technical decision question: interpolate, flag, or drop a six-hour gap in meter data.",
-      "cost": "The interviewer asked this question six times in progressively simpler forms and never got an answer. That signals to a panel that you can articulate principles but cannot apply them to a specific scenario under mild pressure.",
-      "tryThisNextTime": "When you hear a decision question, pick one option out loud first \u2014 'I'd flag it, and here's why' \u2014 even if you're unsure. A committed answer you can defend is worth ten times more than a principle that doesn't land on the question.",
-      "upskillizeCourse": "Data Cleaning and Validation Techniques"
+      "gap": "You repeatedly gave strong answers \u2014 to questions you weren't asked. When pushed three times on the impossible delivery times, you answered with cohort logic, an internship story, and a reverse question instead.",
+      "cost": "It made me wonder whether you couldn't answer or were avoiding it \u2014 either way, the technical credibility took a hit.",
+      "tryThisNextTime": "When you feel stuck on a technical question, say out loud: 'I'd start by pulling the records where delivery time is under two minutes and checking whether the timestamp columns have the same timezone or source system' \u2014 give me one concrete first step, even if you're unsure of the rest.",
+      "upskillizeCourse": "SQL for Data Analysis \u2014 Data Quality and Debugging"
     },
     {
-      "gap": "You repeated the same answers verbatim multiple times instead of engaging with the follow-up.",
-      "cost": "From a panel's perspective, this looks like an inability to adapt when a question goes beyond a prepared talking point. It stopped the interview from progressing into technical depth entirely.",
-      "tryThisNextTime": "If a follow-up question feels unfamiliar, say 'Let me think through this differently' and pause for five seconds before answering. That beat buys you time and signals you're engaging with the specific question, not retreating to a script.",
-      "upskillizeCourse": "Analytical Thinking and Problem Solving"
+      "gap": "Your answers were strong in isolation but rarely connected to each other \u2014 each one felt like a fresh start rather than building on what came before.",
+      "cost": "In a real panel, that reads as someone who has good instincts but hasn't yet learned to run a thread of reasoning across a conversation.",
+      "tryThisNextTime": "Before you answer, spend one sentence linking back: 'Same issue as the meter data problem \u2014 I'd flag before dropping.' It takes five seconds and makes you sound like someone who thinks in systems.",
+      "upskillizeCourse": "Structured Communication for Analysts"
     },
     {
-      "gap": "The reverse-round question you asked was strong but came at the wrong moment \u2014 you used it to deflect a technical question rather than as a genuine close.",
-      "cost": "It read as avoidance, not curiosity. A good question at the wrong time costs you credibility on both fronts.",
-      "tryThisNextTime": "Hold your candidate questions for the explicit reverse round. If you're stuck on a technical question, acknowledge it directly: 'I'm not certain on this one, but my first move would be...' and attempt it.",
-      "upskillizeCourse": "Interview Readiness and Professional Communication"
+      "gap": "You deflected the 'what went well, what didn't' question at the end of the session twice \u2014 first with a cohort answer, then with an anomaly answer.",
+      "cost": "The reverse round is where interviewers see whether you're genuinely curious about the role or just managing the room \u2014 and two deflections in a row signals the latter.",
+      "tryThisNextTime": "When the interviewer opens the floor, ask the question you actually want answered \u2014 'What does good look like in the first ninety days, and how will I know?' is a much stronger close than a third prepared answer.",
+      "upskillizeCourse": "Interview Strategy and Reverse Round Preparation"
     }
   ],
   "star_breakdown": [
     {
-      "note": "Good situation and action \u2014 you described the problem and what you built. Result was partial: eighty percent reduction mentioned but no outcome for the dashboard users or decisions it enabled.",
-      "task": 2,
+      "note": "Strong on action and result \u2014 'flagging instead of dropping' and 'cut bad rows by eighty percent' are exactly the specifics that land. Task was implied rather than stated.",
+      "task": 1,
       "action": 2,
-      "result": 1,
-      "question": "Messiest part of getting dashboard data ready",
+      "result": 2,
+      "question": "Data quality in the campus energy dashboard",
       "situation": 2
     },
     {
-      "note": "The action was the strongest part \u2014 regression test plus known-total check is concrete. But situation and task were thin, and there was no result showing whether it prevented future incidents.",
+      "note": "The action was clear and honest. Situation was thin \u2014 we never learned what the query was for or why it mattered. Result was about the fix, not the impact of the original error.",
       "task": 1,
       "action": 2,
       "result": 1,
-      "question": "How did you handle the double-counted refunds query",
+      "question": "Shipping a query that double-counted refunds",
       "situation": 1
     },
     {
-      "note": "No answer was given despite six attempts at the question in progressively simpler forms.",
-      "task": 0,
-      "action": 0,
-      "result": 0,
-      "question": "Six-hour gap in meter data \u2014 interpolate, flag, or drop",
-      "situation": 0
+      "note": "The action was the best part \u2014 'pulled the query logs, showed the table only changed twice a day' is specific and credible. But we never heard what the outcome actually was beyond 'settled it on the numbers'.",
+      "task": 1,
+      "action": 2,
+      "result": 1,
+      "question": "Disagreeing with manager on caching",
+      "situation": 1
     }
   ],
   "interviewer_thoughts": [
     {
-      "answer": "Flagging anomalies instead of silently dropping them",
-      "thought": "That's the right instinct \u2014 they understand traceability. Let me see if they can actually apply it to a specific decision."
+      "answer": "Meter readings with gaps and duplicate timestamps",
+      "thought": "This is real \u2014 they've actually debugged messy data, not just described it in theory. The eighty percent number is specific enough to be believable."
     },
     {
-      "answer": "Metric is decoration if nobody can say what decision it supports",
-      "thought": "Genuinely good framing for a fresher. But they're reaching for this as a general principle every time I ask something specific. I need a concrete answer, not a philosophy."
+      "answer": "First response to impossible delivery times question",
+      "thought": "They answered a different question entirely. Either they didn't register what I asked, or they don't have a first-principles move for data debugging and pivoted to something safer."
     },
     {
-      "answer": "Refund query double-count and regression test",
-      "thought": "This lands well \u2014 they owned it and fixed the process. But why do they keep coming back to this exact answer no matter what I ask?"
+      "answer": "Second and third deflection on delivery times",
+      "thought": "Three attempts and still no answer to the actual question. I'm genuinely uncertain now whether this is avoidance or a gap. If it's a gap, I need them to just say so \u2014 that's recoverable. This isn't."
     },
     {
-      "answer": "What does the first ninety days look like \u2014 asked twice",
-      "thought": "First time, fair question. Second time, it's a deflection. They're using a prepared question to avoid engaging with the technical thread."
+      "answer": "Zomato delivery-time model, variance vs mean",
+      "thought": "They actually read the engineering blog. That's not performance \u2014 that framing is specific enough that you'd only have it if you understood the piece."
+    },
+    {
+      "answer": "Dashboard success measured by whether the team stops pinging manually",
+      "thought": "That's a sharp way to define impact. Most freshers say 'stakeholder satisfaction'. This one is thinking about what actually changes."
     }
   ],
   "plan": [
-    "Day 1: Take one real dataset with gaps and duplicates. Write down three options for handling each issue and pick one with a written justification.",
-    "Day 2: Practice the STAR format out loud \u2014 record yourself on one project story, then listen back and check whether you named a specific result with a number.",
-    "Day 3: Do five 'decision questions' from data analyst interview lists: for each, say your answer out loud, pick one option, defend it, then consider the alternative.",
-    "Day 4: Revisit your energy dashboard project. Write down three specific decisions you made and why \u2014 not principles, actual choices. Practice saying them in under ninety seconds.",
-    "Day 5: Practice what to say when you're stuck: out loud, say 'I'm not certain, but my first instinct is X because Y' \u2014 rehearse the sentence until it feels natural.",
-    "Day 6: Do a timed mock where someone asks you the same follow-up question three different ways. Practice giving a different, more specific answer each time rather than repeating.",
-    "Day 7: Prepare two genuinely curious reverse-round questions about the team's data stack or how success is measured \u2014 and practice holding them until the interviewer opens the floor."
+    "Day 1: Take one messy public dataset (Kaggle or data.gov.in) and write out loud your exact first five steps for finding what's broken in it \u2014 don't query yet, just narrate.",
+    "Day 2: Practice the 'one concrete first step' rule \u2014 for any technical question you get stuck on, your floor answer is always one observable, checkable action you would take first.",
+    "Day 3: Do three mock STAR answers and record yourself. For each one, check: did I name the result in numbers or a behaviour change? If not, add it.",
+    "Day 4: Reread the Zomato engineering blog piece you mentioned. Write three follow-up questions you'd ask the team who built that model \u2014 these become your reverse-round questions.",
+    "Day 5: Practice linking consecutive answers in a conversation \u2014 take any two things you said in this session and write a one-sentence bridge between them.",
+    "Day 6: Run a timed SQL debugging exercise: take a query with a known error, find it in under ten minutes, and document your reasoning step by step.",
+    "Day 7: Do a full mock session and deliberately answer the literal question asked \u2014 before each answer, repeat back in one sentence what you're being asked, then answer that."
   ],
-  "next_focus": "Practice committing to a specific technical decision out loud \u2014 pick one option, state your reasoning, and defend it \u2014 before your next interview.",
+  "next_focus": "Answer the question that was actually asked \u2014 when you feel the pull to pivot to something more comfortable, name your first concrete step on the hard question instead.",
   "calibration": {
-    "profile": "over_confident",
-    "sentence": "You rated your answers 1.5 points above where they actually landed (4.0/5 against 2.5/5) \u2014 so the work is not only the answers, it is catching yourself in the room when one is thinner than it feels.",
-    "avg_score": 2.5,
+    "profile": "well_calibrated",
+    "sentence": "Your ratings tracked your actual performance closely (4.0/5 against 3.6/5) \u2014 knowing what you know is worth as much in the room as the knowledge itself.",
+    "avg_score": 3.6,
     "per_answer": [
       {
-        "score": 2.0,
+        "score": 3.0,
         "rating": 4,
-        "category": "over_confident"
+        "category": "well_calibrated"
+      },
+      {
+        "score": 4.0,
+        "rating": 4,
+        "category": "well_calibrated"
       },
       {
         "score": 3.0,
         "rating": 4,
         "category": "well_calibrated"
+      },
+      {
+        "score": 4.0,
+        "rating": 4,
+        "category": "well_calibrated"
+      },
+      {
+        "score": 4.0,
+        "rating": 4,
+        "category": "well_calibrated"
       }
     ],
-    "rated_count": 2,
+    "rated_count": 5,
     "avg_confidence": 4.0,
-    "calibration_delta": 1.5
+    "calibration_delta": 0.4
   },
   "delivery": {
-    "spoken_answers": 0,
-    "enough_data": false,
-    "message": "Not enough voice data \u2014 try answering aloud next session.",
     "tts": {
       "vendor_calls": 0,
       "vendor_seconds": 0.0,
@@ -158,26 +178,25 @@
     "rounds_covered": [
       "Warm-up",
       "Domain",
-      "Behavioural"
-    ],
-    "rounds_skipped": [
+      "Behavioural",
       "Case"
-    ]
+    ],
+    "rounds_skipped": []
   },
   "scored": true,
   "substantive_answers": 13,
   "evidence": {},
   "score": {
-    "benchmark": 12,
-    "benchmark_uncapped": 12.2,
-    "raw": 18,
-    "earned_band": "Not Ready",
+    "benchmark": 56,
+    "benchmark_uncapped": 55.8,
+    "raw": 62,
+    "earned_band": "Building",
     "capped": false,
     "gate_copy": "",
     "gates": [],
     "factors": {
       "mode": 0.9,
-      "coverage": 0.75,
+      "coverage": 1.0,
       "evidence": 1.0,
       "feedback": 1.0,
       "difficulty": 1.0
@@ -187,7 +206,7 @@
       {
         "key": "raw",
         "label": "Your answers, scored for your level",
-        "value": "18",
+        "value": "62",
         "note": "The rubric verdict on what you actually said. Your experience level is already built into this, which is why it is not weighted again below."
       },
       {
@@ -210,9 +229,9 @@
       },
       {
         "key": "coverage",
-        "label": "Coverage \u2014 3 of 4 rounds",
-        "value": "\u00d70.75",
-        "note": "Rounds you didn't reach aren't marked against your answers \u2014 they only mean we saw less of you, so the benchmark claims less."
+        "label": "Coverage \u2014 4 of 4 rounds",
+        "value": "\u00d71.00",
+        "note": "You reached every scored round, so nothing is held back here."
       },
       {
         "key": "mode",
@@ -221,42 +240,42 @@
         "note": "Typed answers are scored on the same content bar; the weight reflects the one you chose."
       },
       {
-        "key": "cap",
+        "key": "total",
         "label": "Benchmark",
-        "value": "12",
-        "note": "The maths came to 12.2. 100 is the top of the scale \u2014 you cleared it with room to spare."
+        "value": "56",
+        "note": "Your answers, weighted for the bar you chose."
       }
     ]
   },
   "reattempt_window": {
     "days": 7,
-    "copy": "Take the full week on the plan, then come back. There is real work between here and the next band, and a week of it changes the session."
+    "copy": "Give the 7-day plan a full week before you re-attempt. Going again tomorrow just re-runs the same interview."
   },
   "ecopro": {
-    "session_id": "43405049-78e8-4a5e-be67-581a8ff3c37d",
+    "session_id": "e1bd9792-cb86-4659-af10-576769c06edb",
     "scored": true,
-    "band": "Not Ready",
-    "benchmark": 12,
+    "band": "Building",
+    "benchmark": 56,
     "top_fixes": [
       {
-        "fix": "You could not answer a concrete technical decision question: interpolate, flag, or drop a six-hour gap in meter data.",
-        "try_this_next_time": "When you hear a decision question, pick one option out loud first \u2014 'I'd flag it, and here's why' \u2014 even if you're unsure. A committed answer you can defend is worth ten times more than a principle that doesn't land on the question.",
-        "course": "Data Cleaning and Validation Techniques"
+        "fix": "You repeatedly gave strong answers \u2014 to questions you weren't asked. When pushed three times on the impossible delivery times, you answered with cohort logic, an internship story, and a reverse question instead.",
+        "try_this_next_time": "When you feel stuck on a technical question, say out loud: 'I'd start by pulling the records where delivery time is under two minutes and checking whether the timestamp columns have the same timezone or source system' \u2014 give me one concrete first step, even if you're unsure of the rest.",
+        "course": "SQL for Data Analysis \u2014 Data Quality and Debugging"
       },
       {
-        "fix": "You repeated the same answers verbatim multiple times instead of engaging with the follow-up.",
-        "try_this_next_time": "If a follow-up question feels unfamiliar, say 'Let me think through this differently' and pause for five seconds before answering. That beat buys you time and signals you're engaging with the specific question, not retreating to a script.",
-        "course": "Analytical Thinking and Problem Solving"
+        "fix": "Your answers were strong in isolation but rarely connected to each other \u2014 each one felt like a fresh start rather than building on what came before.",
+        "try_this_next_time": "Before you answer, spend one sentence linking back: 'Same issue as the meter data problem \u2014 I'd flag before dropping.' It takes five seconds and makes you sound like someone who thinks in systems.",
+        "course": "Structured Communication for Analysts"
       },
       {
-        "fix": "The reverse-round question you asked was strong but came at the wrong moment \u2014 you used it to deflect a technical question rather than as a genuine close.",
-        "try_this_next_time": "Hold your candidate questions for the explicit reverse round. If you're stuck on a technical question, acknowledge it directly: 'I'm not certain on this one, but my first move would be...' and attempt it.",
-        "course": "Interview Readiness and Professional Communication"
+        "fix": "You deflected the 'what went well, what didn't' question at the end of the session twice \u2014 first with a cohort answer, then with an anomaly answer.",
+        "try_this_next_time": "When the interviewer opens the floor, ask the question you actually want answered \u2014 'What does good look like in the first ninety days, and how will I know?' is a much stronger close than a third prepared answer.",
+        "course": "Interview Strategy and Reverse Round Preparation"
       }
     ],
     "reattempt_window": {
       "days": 7,
-      "copy": "Take the full week on the plan, then come back. There is real work between here and the next band, and a week of it changes the session."
+      "copy": "Give the 7-day plan a full week before you re-attempt. Going again tomorrow just re-runs the same interview."
     },
     "weights_version": "2026.07-2"
   }

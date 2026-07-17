@@ -1,7 +1,7 @@
 {
   "per_mode": {
     "TEXT": {
-      "session_id": "43405049-78e8-4a5e-be67-581a8ff3c37d",
+      "session_id": "e1bd9792-cb86-4659-af10-576769c06edb",
       "end_attempts": [
         200
       ],
@@ -29,16 +29,12 @@
         "rounds_covered": [
           "Warm-up",
           "Domain",
-          "Behavioural"
-        ],
-        "rounds_skipped": [
+          "Behavioural",
           "Case"
-        ]
+        ],
+        "rounds_skipped": []
       },
       "delivery": {
-        "spoken_answers": 0,
-        "enough_data": false,
-        "message": "Not enough voice data \u2014 try answering aloud next session.",
         "tts": {
           "vendor_calls": 0,
           "vendor_seconds": 0.0,
@@ -58,10 +54,10 @@
         "status": "completed"
       },
       "db_debrief": {
-        "benchmark": 12,
-        "benchmark_uncapped": "12.2",
+        "benchmark": 56,
+        "benchmark_uncapped": "55.8",
         "weights_version": "2026.07-2",
-        "gated_band": "Not Ready",
+        "gated_band": "Building",
         "scored": 1,
         "substantive_answers": 13
       },
@@ -72,7 +68,7 @@
         "status completed": true
       },
       "history_row": {
-        "session_id": "43405049-78e8-4a5e-be67-581a8ff3c37d",
+        "session_id": "e1bd9792-cb86-4659-af10-576769c06edb",
         "role": "Data Analyst",
         "company": "Zomato",
         "level": "Fresher",
@@ -82,46 +78,92 @@
         "round_label": "",
         "focus": [],
         "planned_duration_min": 20,
-        "actual_duration_seconds": 469,
+        "actual_duration_seconds": 101,
         "user_message_count": 13,
         "assistant_message_count": 14,
-        "started_at": "2026-07-17T07:49:03",
-        "ended_at": "2026-07-17T07:56:52",
+        "started_at": "2026-07-17T11:40:21",
+        "ended_at": "2026-07-17T11:42:02",
         "status": "completed",
         "completion_type": "completed",
-        "overall": 18,
-        "one_line": "You have real instincts about data quality and ownership, but the session stalled because you cycled through the same three answers without engaging with the actual questions being asked.",
-        "benchmark": 12,
-        "band": "Not Ready",
+        "overall": 62,
+        "one_line": "Strong analytical instincts and genuine intellectual honesty, but a pattern of answering adjacent questions instead of the one actually asked cost credibility at the technical depth stage.",
+        "benchmark": 56,
+        "band": "Building",
         "scored": true
       }
     },
     "AUDIO": {
-      "session_id": "e6ba3d89-2822-436f-8902-6f7a85a1278a",
+      "session_id": "9f0110cd-52e5-4876-85f2-231b078ff86d",
       "end_attempts": [
-        502,
-        502,
-        502,
-        502,
-        502,
-        502
+        200
       ],
-      "billed_failures_before_readout": 6,
+      "billed_failures_before_readout": 0,
+      "readout_blocks_present": {
+        "overall_band": true,
+        "round_bands": true,
+        "strengths": true,
+        "gaps": true,
+        "perAnswerScores": false,
+        "delivery": true,
+        "professional_presence": true,
+        "profile": true,
+        "benchmark": false,
+        "weights_version": false
+      },
+      "profile": {
+        "role": "Data Analyst",
+        "company": "Zomato",
+        "level": "Fresher",
+        "difficulty": "Realistic",
+        "duration_min": 20,
+        "mode": "AUDIO",
+        "feedback": "interview",
+        "rounds_covered": [
+          "Warm-up",
+          "Domain",
+          "Behavioural",
+          "Case"
+        ],
+        "rounds_skipped": []
+      },
+      "delivery": {
+        "spoken_answers": 0,
+        "enough_data": false,
+        "message": "Not enough voice data \u2014 try answering aloud next session.",
+        "tts": {
+          "vendor_calls": 18,
+          "vendor_seconds": 88.2,
+          "cache_hits": 9,
+          "cached_seconds": 34.9,
+          "unmeasured_clips": 0,
+          "total_seconds": 123.1,
+          "cache_saved_pct": 28
+        }
+      },
+      "benchmark": null,
+      "weights_version": null,
       "db_session": {
         "session_mode": "AUDIO",
         "mode": "interview",
         "camera_at_join": 0,
-        "status": "active"
+        "status": "completed"
       },
-      "db_debrief": null,
+      "db_debrief": {
+        "benchmark": 72,
+        "benchmark_uncapped": "72.0",
+        "weights_version": "2026.07-2",
+        "gated_band": "Interview-Ready",
+        "scored": 1,
+        "substantive_answers": 13
+      },
       "contract": {
         "mode recorded": true,
-        "benchmark non-null": false,
-        "weights_version non-null": false,
-        "status completed": false
+        "benchmark non-null": true,
+        "weights_version non-null": true,
+        "status completed": true
       },
       "history_row": {
-        "session_id": "e6ba3d89-2822-436f-8902-6f7a85a1278a",
+        "session_id": "9f0110cd-52e5-4876-85f2-231b078ff86d",
         "role": "Data Analyst",
         "company": "Zomato",
         "level": "Fresher",
@@ -131,46 +173,92 @@
         "round_label": "",
         "focus": [],
         "planned_duration_min": 20,
-        "actual_duration_seconds": null,
+        "actual_duration_seconds": 169,
         "user_message_count": 13,
         "assistant_message_count": 14,
-        "started_at": "2026-07-17T08:00:50",
-        "ended_at": null,
-        "status": "active",
-        "completion_type": null,
-        "overall": null,
-        "one_line": null,
-        "benchmark": null,
-        "band": null,
-        "scored": false
+        "started_at": "2026-07-17T11:34:26",
+        "ended_at": "2026-07-17T11:37:15",
+        "status": "completed",
+        "completion_type": "completed",
+        "overall": 72,
+        "one_line": "Sharp analytical instincts and honest self-awareness, but you consistently answered the question you wanted instead of the one you were asked \u2014 and that pattern will cost you in a real panel.",
+        "benchmark": 72,
+        "band": "Interview-Ready",
+        "scored": true
       }
     },
     "VIDEO": {
-      "session_id": "18929e0a-031a-444e-9c04-9311281e1308",
+      "session_id": "9a796d9f-c06c-4cf6-89da-b9f496df3a93",
       "end_attempts": [
-        502,
-        502,
-        502,
-        502,
-        502,
-        502
+        200
       ],
-      "billed_failures_before_readout": 6,
+      "billed_failures_before_readout": 0,
+      "readout_blocks_present": {
+        "overall_band": true,
+        "round_bands": true,
+        "strengths": true,
+        "gaps": true,
+        "perAnswerScores": false,
+        "delivery": true,
+        "professional_presence": true,
+        "profile": true,
+        "benchmark": false,
+        "weights_version": false
+      },
+      "profile": {
+        "role": "Data Analyst",
+        "company": "Zomato",
+        "level": "Fresher",
+        "difficulty": "Realistic",
+        "duration_min": 20,
+        "mode": "VIDEO",
+        "feedback": "interview",
+        "rounds_covered": [
+          "Warm-up",
+          "Domain",
+          "Behavioural",
+          "Case"
+        ],
+        "rounds_skipped": []
+      },
+      "delivery": {
+        "spoken_answers": 0,
+        "enough_data": false,
+        "message": "Not enough voice data \u2014 try answering aloud next session.",
+        "tts": {
+          "vendor_calls": 17,
+          "vendor_seconds": 103.6,
+          "cache_hits": 9,
+          "cached_seconds": 38.4,
+          "unmeasured_clips": 0,
+          "total_seconds": 142.0,
+          "cache_saved_pct": 27
+        }
+      },
+      "benchmark": null,
+      "weights_version": null,
       "db_session": {
         "session_mode": "VIDEO",
         "mode": "interview",
         "camera_at_join": 1,
-        "status": "active"
+        "status": "completed"
       },
-      "db_debrief": null,
+      "db_debrief": {
+        "benchmark": 72,
+        "benchmark_uncapped": "72.0",
+        "weights_version": "2026.07-2",
+        "gated_band": "Interview-Ready",
+        "scored": 1,
+        "substantive_answers": 13
+      },
       "contract": {
         "mode recorded": true,
-        "benchmark non-null": false,
-        "weights_version non-null": false,
-        "status completed": false
+        "benchmark non-null": true,
+        "weights_version non-null": true,
+        "status completed": true
       },
       "history_row": {
-        "session_id": "18929e0a-031a-444e-9c04-9311281e1308",
+        "session_id": "9a796d9f-c06c-4cf6-89da-b9f496df3a93",
         "role": "Data Analyst",
         "company": "Zomato",
         "level": "Fresher",
@@ -180,24 +268,120 @@
         "round_label": "",
         "focus": [],
         "planned_duration_min": 20,
-        "actual_duration_seconds": null,
+        "actual_duration_seconds": 165,
         "user_message_count": 13,
         "assistant_message_count": 14,
-        "started_at": "2026-07-17T08:08:14",
-        "ended_at": null,
-        "status": "active",
-        "completion_type": null,
-        "overall": null,
-        "one_line": null,
-        "benchmark": null,
-        "band": null,
-        "scored": false
+        "started_at": "2026-07-17T11:37:25",
+        "ended_at": "2026-07-17T11:40:10",
+        "status": "completed",
+        "completion_type": "completed",
+        "overall": 72,
+        "one_line": "A technically grounded fresher with sharp instincts on data quality and stakeholder framing \u2014 but who needs to close the loop more consistently when pressed for a direct answer.",
+        "benchmark": 72,
+        "band": "Interview-Ready",
+        "scored": true
       }
     }
   },
   "history_raw": {
     "sessions": [
       {
+        "session_id": "e1bd9792-cb86-4659-af10-576769c06edb",
+        "role": "Data Analyst",
+        "company": "Zomato",
+        "level": "Fresher",
+        "difficulty": "Realistic",
+        "mode": "interview",
+        "round": "full",
+        "round_label": "",
+        "focus": [],
+        "planned_duration_min": 20,
+        "actual_duration_seconds": 101,
+        "user_message_count": 13,
+        "assistant_message_count": 14,
+        "started_at": "2026-07-17T11:40:21",
+        "ended_at": "2026-07-17T11:42:02",
+        "status": "completed",
+        "completion_type": "completed",
+        "overall": 62,
+        "one_line": "Strong analytical instincts and genuine intellectual honesty, but a pattern of answering adjacent questions instead of the one actually asked cost credibility at the technical depth stage.",
+        "benchmark": 56,
+        "band": "Building",
+        "scored": true
+      },
+      {
+        "session_id": "9a796d9f-c06c-4cf6-89da-b9f496df3a93",
+        "role": "Data Analyst",
+        "company": "Zomato",
+        "level": "Fresher",
+        "difficulty": "Realistic",
+        "mode": "interview",
+        "round": "full",
+        "round_label": "",
+        "focus": [],
+        "planned_duration_min": 20,
+        "actual_duration_seconds": 165,
+        "user_message_count": 13,
+        "assistant_message_count": 14,
+        "started_at": "2026-07-17T11:37:25",
+        "ended_at": "2026-07-17T11:40:10",
+        "status": "completed",
+        "completion_type": "completed",
+        "overall": 72,
+        "one_line": "A technically grounded fresher with sharp instincts on data quality and stakeholder framing \u2014 but who needs to close the loop more consistently when pressed for a direct answer.",
+        "benchmark": 72,
+        "band": "Interview-Ready",
+        "scored": true
+      },
+      {
+        "session_id": "9f0110cd-52e5-4876-85f2-231b078ff86d",
+        "role": "Data Analyst",
+        "company": "Zomato",
+        "level": "Fresher",
+        "difficulty": "Realistic",
+        "mode": "interview",
+        "round": "full",
+        "round_label": "",
+        "focus": [],
+        "planned_duration_min": 20,
+        "actual_duration_seconds": 169,
+        "user_message_count": 13,
+        "assistant_message_count": 14,
+        "started_at": "2026-07-17T11:34:26",
+        "ended_at": "2026-07-17T11:37:15",
+        "status": "completed",
+        "completion_type": "completed",
+        "overall": 72,
+        "one_line": "Sharp analytical instincts and honest self-awareness, but you consistently answered the question you wanted instead of the one you were asked \u2014 and that pattern will cost you in a real panel.",
+        "benchmark": 72,
+        "band": "Interview-Ready",
+        "scored": true
+      },
+      {
+        "session_id": "3e30e73a-6f4c-4fa8-a077-7bd0eba8e040",
+        "role": "Data Analyst",
+        "company": "Zomato",
+        "level": "Fresher",
+        "difficulty": "Realistic",
+        "mode": "interview",
+        "round": "full",
+        "round_label": "",
+        "focus": [],
+        "planned_duration_min": 20,
+        "actual_duration_seconds": 282,
+        "user_message_count": 13,
+        "assistant_message_count": 14,
+        "started_at": "2026-07-17T11:29:09",
+        "ended_at": "2026-07-17T11:33:51",
+        "status": "completed",
+        "completion_type": "completed",
+        "overall": 72,
+        "one_line": "Sharp instincts on data quality and business framing, but you kept side-stepping the direct question when pressed on weighting and prioritisation trade-offs.",
+        "benchmark": 65,
+        "band": "Interview-Ready",
+        "scored": true
+      },
+      {
         "session_id": "18929e0a-031a-444e-9c04-9311281e1308",
         "role": "Data Analyst",
         "company": "Zomato",
@@ -208,18 +392,18 @@
         "round_label": "",
         "focus": [],
         "planned_duration_min": 20,
-        "actual_duration_seconds": null,
+        "actual_duration_seconds": 8262,
         "user_message_count": 13,
         "assistant_message_count": 14,
         "started_at": "2026-07-17T08:08:14",
-        "ended_at": null,
-        "status": "active",
-        "completion_type": null,
-        "overall": null,
-        "one_line": null,
-        "benchmark": null,
-        "band": null,
-        "scored": false
+        "ended_at": "2026-07-17T10:25:56",
+        "status": "completed",
+        "completion_type": "completed",
+        "overall": 72,
+        "one_line": "Strong data instincts and intellectual honesty, but repeatedly pivoted away from the question being asked \u2014 a pattern that will cost you at senior-facing panels.",
+        "benchmark": 72,
+        "band": "Interview-Ready",
+        "scored": true
       },
       {
         "session_id": "e6ba3d89-2822-436f-8902-6f7a85a1278a",
@@ -232,18 +416,18 @@
         "round_label": "",
         "focus": [],
         "planned_duration_min": 20,
-        "actual_duration_seconds": null,
+        "actual_duration_seconds": 8653,
         "user_message_count": 13,
         "assistant_message_count": 14,
         "started_at": "2026-07-17T08:00:50",
-        "ended_at": null,
-        "status": "active",
-        "completion_type": null,
-        "overall": null,
-        "one_line": null,
-        "benchmark": null,
-        "band": null,
-        "scored": false
+        "ended_at": "2026-07-17T10:25:03",
+        "status": "completed",
+        "completion_type": "completed",
+        "overall": 72,
+        "one_line": "Sharp analytical instincts and honest self-awareness, but answers frequently drifted off the question asked \u2014 a pattern that will cost you in a structured panel.",
+        "benchmark": 72,
+        "band": "Interview-Ready",
+        "scored": true
       },
       {
         "session_id": "43405049-78e8-4a5e-be67-581a8ff3c37d",
@@ -294,8 +478,62 @@
         "scored": true
       }
     ],
-    "total": 4,
+    "total": 8,
     "trend": [
+      {
+        "session_id": "e1bd9792-cb86-4659-af10-576769c06edb",
+        "benchmark": 56,
+        "band": "Building",
+        "started_at": "2026-07-17T11:40:21",
+        "difficulty": "Realistic",
+        "duration_min": 20,
+        "latest": true
+      },
+      {
+        "session_id": "9a796d9f-c06c-4cf6-89da-b9f496df3a93",
+        "benchmark": 72,
+        "band": "Interview-Ready",
+        "started_at": "2026-07-17T11:37:25",
+        "difficulty": "Realistic",
+        "duration_min": 20,
+        "latest": false
+      },
+      {
+        "session_id": "9f0110cd-52e5-4876-85f2-231b078ff86d",
+        "benchmark": 72,
+        "band": "Interview-Ready",
+        "started_at": "2026-07-17T11:34:26",
+        "difficulty": "Realistic",
+        "duration_min": 20,
+        "latest": false
+      },
+      {
+        "session_id": "3e30e73a-6f4c-4fa8-a077-7bd0eba8e040",
+        "benchmark": 65,
+        "band": "Interview-Ready",
+        "started_at": "2026-07-17T11:29:09",
+        "difficulty": "Realistic",
+        "duration_min": 20,
+        "latest": false
+      },
+      {
+        "session_id": "18929e0a-031a-444e-9c04-9311281e1308",
+        "benchmark": 72,
+        "band": "Interview-Ready",
+        "started_at": "2026-07-17T08:08:14",
+        "difficulty": "Realistic",
+        "duration_min": 20,
+        "latest": false
+      },
+      {
+        "session_id": "e6ba3d89-2822-436f-8902-6f7a85a1278a",
+        "benchmark": 72,
+        "band": "Interview-Ready",
+        "started_at": "2026-07-17T08:00:50",
+        "difficulty": "Realistic",
+        "duration_min": 20,
+        "latest": false
+      },
       {
         "session_id": "43405049-78e8-4a5e-be67-581a8ff3c37d",
         "benchmark": 12,
@@ -303,7 +541,7 @@
         "started_at": "2026-07-17T07:49:03",
         "difficulty": "Realistic",
         "duration_min": 20,
-        "latest": true
+        "latest": false
       },
       {
         "session_id": "eefc61fe-2c42-4f6e-800e-85c25d4b3abb",
@@ -315,6 +553,6 @@
         "latest": false
       }
     ],
-    "latest_average": 14.5
+    "latest_average": 66.7
   }
 }

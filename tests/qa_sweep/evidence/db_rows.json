@@ -1,12 +1,19 @@
 {
-  "VIDEO": {
+  "TEXT": {
     "session": {
-      "session_mode": "VIDEO",
+      "session_mode": "TEXT",
       "mode": "interview",
-      "camera_at_join": 1,
-      "status": "active"
+      "camera_at_join": 0,
+      "status": "completed"
     },
-    "debrief": null,
+    "debrief": {
+      "benchmark": 56,
+      "benchmark_uncapped": "55.8",
+      "weights_version": "2026.07-2",
+      "gated_band": "Building",
+      "scored": 1,
+      "substantive_answers": 13
+    },
     "messages_with_delivery_metrics": 0
   }
 }

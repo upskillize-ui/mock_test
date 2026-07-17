@@ -1,0 +1,298 @@
+{
+  "session_id": "9a796d9f-c06c-4cf6-89da-b9f496df3a93",
+  "overall_band": "Interview-Ready",
+  "round_bands": {
+    "case": "Interview-Ready",
+    "domain": "Building",
+    "warmup": "Interview-Ready",
+    "reverse": "Interview-Ready",
+    "behavioural": "Building"
+  },
+  "one_line": "A technically grounded fresher with sharp instincts on data quality and stakeholder framing \u2014 but who needs to close the loop more consistently when pressed for a direct answer.",
+  "sub_scores": {
+    "clarity": 6,
+    "structure": 6,
+    "confidence": 7,
+    "communication": 8,
+    "roleKnowledge": 7,
+    "problemSolving": 7
+  },
+  "strengths": [
+    {
+      "evidence": "I'd start by asking what decision the number is meant to support. If nobody can answer that, the metric is decoration.",
+      "strength": "You think about the purpose of a metric before you trust the number \u2014 that's a senior-analyst instinct in a fresher frame."
+    },
+    {
+      "evidence": "I once shipped a query that double-counted refunds. Finance caught it, not me. I wrote a regression test for it the same day and started reviewing my own joins against a known-total check before shipping.",
+      "strength": "You built a process from your own failure instead of just moving on, which is exactly what a panel wants to see from someone without years of experience."
+    },
+    {
+      "evidence": "I read the engineering blog and the piece on your delivery-time model. The part that stuck with me was that you optimise for variance, not just the mean, because a late order hurts more than an early one helps.",
+      "strength": "You demonstrated real company preparation \u2014 not surface-level, but engaging with the actual analytical philosophy behind the product."
+    },
+    {
+      "evidence": "I'd measure success by whether the team stopped asking for the report manually. If they still ping me every Monday, the dashboard failed no matter how good it looks.",
+      "strength": "Your definition of dashboard success cuts straight to adoption over aesthetics \u2014 that's exactly how product teams think."
+    }
+  ],
+  "gaps": [
+    {
+      "gap": "You deflected the direct answer on the delivery time question \u2014 twice.",
+      "cost": "You were asked three times which number you'd actually put in front of the ops lead \u2014 mean, median, or percentile \u2014 and you never gave one. That specific pivot to the refund story, however good that story was, read as avoidance. A real interviewer notices when you change the subject instead of committing to an answer.",
+      "tryThisNextTime": "When you're asked to pick a number or make a call, state your choice in the first sentence \u2014 'I'd lead with the median because...' \u2014 and then justify it. You can walk it back later if challenged, but land the answer first.",
+      "upskillizeCourse": "Data Analysis Decision-Making and Communicating with Data"
+    },
+    {
+      "gap": "Your STAR answers had strong Action but thin Result \u2014 the numbers weren't there.",
+      "cost": "The refund story and the caching disagreement were both credible, but neither landed with a measurable outcome. 'We settled it on the numbers' is a resolution, not a result. Interviewers at this level are listening for what changed because of what you did.",
+      "tryThisNextTime": "Before any behavioral answer, ask yourself: 'What was measurably different after I did this?' Even a rough number \u2014 'the report load time dropped by about forty percent' \u2014 anchors the story in a way that a verbal resolution never does.",
+      "upskillizeCourse": "Behavioural Interview Preparation and STAR Storytelling"
+    },
+    {
+      "gap": "You sometimes answered the question you wanted rather than the one you were asked.",
+      "cost": "The cohort retention answer and the auto-escalation threshold answer were both genuinely good \u2014 but they were answers to questions that weren't on the table at that moment. It gave the session a slightly scattered quality that undercut how sharp your actual thinking was.",
+      "tryThisNextTime": "Before you respond, repeat back the core of the question in one phrase \u2014 silently or out loud \u2014 and check you're answering that specific thing. 'So they want to know which metric to use, not the broader retention analysis.' One second of that saves a lot of drift.",
+      "upskillizeCourse": "Structured Communication and Analytical Thinking for Analysts"
+    }
+  ],
+  "star_breakdown": [
+    {
+      "note": "The action \u2014 flagging instead of dropping, cutting bad rows by 80% \u2014 was specific and strong. The situation and task were briefly sketched. The result stopped at the pipeline fix and didn't connect to any downstream impact on decisions made from the dashboard.",
+      "task": 1,
+      "action": 2,
+      "result": 1,
+      "question": "Data quality in the energy dashboard",
+      "situation": 2
+    },
+    {
+      "note": "Strong action: regression test same day, joined against a known-total check. But the result was process-level only \u2014 what happened to the data? Was the report corrected? Did finance change anything? The story ends before it resolves.",
+      "task": 1,
+      "action": 2,
+      "result": 1,
+      "question": "Double-counted refunds query",
+      "situation": 2
+    },
+    {
+      "note": "Good instinct \u2014 led with data, not seniority. But 'we settled it on the numbers' is a resolution, not a result. What did they cache? What was the actual gain? One sentence of outcome would have made this a standout answer.",
+      "task": 1,
+      "action": 2,
+      "result": 1,
+      "question": "Caching disagreement with manager",
+      "situation": 1
+    },
+    {
+      "note": "This question was pivoted away from entirely \u2014 the cohort retention answer that followed was analytically solid but addressed a completely different scenario. The behavioral question about a failed deliverable went unanswered.",
+      "task": 0,
+      "action": 0,
+      "result": 0,
+      "question": "Dashboard that didn't land as expected",
+      "situation": 0
+    }
+  ],
+  "interviewer_thoughts": [
+    {
+      "answer": "Metric is decoration / check the denominator",
+      "thought": "That's a genuinely sharp framing for a fresher. They've thought about this beyond the textbook. Let me push to see if the instinct holds under pressure."
+    },
+    {
+      "answer": "Double-counted refunds story",
+      "thought": "Good \u2014 they owned the mistake and built something from it. But they used this story to dodge the delivery time question. I asked for a number three times and never got one. That's a pattern worth noting."
+    },
+    {
+      "answer": "Zomato variance vs mean from engineering blog",
+      "thought": "This is real preparation. They didn't just Google 'Zomato data analyst' \u2014 they read something technical and understood it well enough to apply it. That's a differentiator at fresher level."
+    },
+    {
+      "answer": "Auto-escalation threshold for anomaly queue",
+      "thought": "Actually a strong answer \u2014 pairing detection with escalation logic is mature thinking. But I asked how the session felt for them, not for a follow-up on pipelines. They answered the question they wanted to answer again."
+    },
+    {
+      "answer": "Dashboard success = team stops pinging manually",
+      "thought": "Exactly right. This is how product analysts think. Whoever taught them this or wherever they picked it up, it's the correct mental model and they said it clean."
+    }
+  ],
+  "plan": [
+    "Day 1: Take your three best project stories and add one measurable result sentence to each \u2014 a number, a percentage, a time saved. Write them down.",
+    "Day 2: Practice the delivery time question out loud: commit to a specific metric in your first sentence, then justify it. Record yourself and check that the commitment came first.",
+    "Day 3: Go back to the energy dashboard project and write down what decisions changed because of it. Even one example of 'building X reduced Y by Z' is enough.",
+    "Day 4: Practice one STAR answer end-to-end \u2014 situation in two sentences, task in one, action in three, result in two. Time yourself. Keep it under two minutes.",
+    "Day 5: Pull one SQL query you've written and prepare to walk through it live \u2014 explain the joins, the edge cases you handled, and what you'd do differently now.",
+    "Day 6: Prepare three strong reverse-round questions. Score them yourself: are they about the work, the team, or the problem \u2014 or are they just preamble?",
+    "Day 7: Do one full mock answer to a behavioral question you find hard, focusing only on the result sentence. That one sentence is your biggest unlock right now."
+  ],
+  "next_focus": "Practice committing to a direct answer \u2014 a specific number, choice, or recommendation \u2014 in your opening sentence, before you explain your reasoning.",
+  "calibration": {
+    "profile": "well_calibrated",
+    "sentence": "Your ratings tracked your actual performance closely (4.0/5 against 3.3/5) \u2014 knowing what you know is worth as much in the room as the knowledge itself.",
+    "avg_score": 3.3,
+    "per_answer": [
+      {
+        "score": 3.0,
+        "rating": 4,
+        "category": "well_calibrated"
+      },
+      {
+        "score": 3.0,
+        "rating": 4,
+        "category": "well_calibrated"
+      },
+      {
+        "score": 4.0,
+        "rating": 4,
+        "category": "well_calibrated"
+      },
+      {
+        "score": 3.0,
+        "rating": 4,
+        "category": "well_calibrated"
+      },
+      {
+        "score": 4.0,
+        "rating": 4,
+        "category": "well_calibrated"
+      },
+      {
+        "score": 3.0,
+        "rating": 4,
+        "category": "well_calibrated"
+      }
+    ],
+    "rated_count": 6,
+    "avg_confidence": 4.0,
+    "calibration_delta": 0.7
+  },
+  "delivery": {
+    "spoken_answers": 0,
+    "enough_data": false,
+    "message": "Not enough voice data \u2014 try answering aloud next session.",
+    "tts": {
+      "vendor_calls": 17,
+      "vendor_seconds": 103.6,
+      "cache_hits": 9,
+      "cached_seconds": 38.4,
+      "unmeasured_clips": 0,
+      "total_seconds": 142.0,
+      "cache_saved_pct": 27
+    }
+  },
+  "professional_presence": {
+    "measured": true,
+    "events_total": 0,
+    "by_type": {},
+    "coaching_note": "You stayed present throughout \u2014 no attention drift picked up. That is exactly how a panel wants to be met.",
+    "camera_signals_disabled": false
+  },
+  "early_wrap": null,
+  "profile": {
+    "role": "Data Analyst",
+    "company": "Zomato",
+    "level": "Fresher",
+    "difficulty": "Realistic",
+    "duration_min": 20,
+    "mode": "VIDEO",
+    "feedback": "interview",
+    "rounds_covered": [
+      "Warm-up",
+      "Domain",
+      "Behavioural",
+      "Case"
+    ],
+    "rounds_skipped": []
+  },
+  "scored": true,
+  "substantive_answers": 13,
+  "evidence": {},
+  "score": {
+    "benchmark": 72,
+    "benchmark_uncapped": 72.0,
+    "raw": 72,
+    "earned_band": "Interview-Ready",
+    "capped": false,
+    "gate_copy": "",
+    "gates": [],
+    "factors": {
+      "mode": 1.0,
+      "coverage": 1.0,
+      "evidence": 1.0,
+      "feedback": 1.0,
+      "difficulty": 1.0
+    },
+    "weights_version": "2026.07-2",
+    "math": [
+      {
+        "key": "raw",
+        "label": "Your answers, scored for your level",
+        "value": "72",
+        "note": "The rubric verdict on what you actually said. Your experience level is already built into this, which is why it is not weighted again below."
+      },
+      {
+        "key": "difficulty",
+        "label": "Difficulty \u2014 Realistic",
+        "value": "\u00d71.00",
+        "note": "This is the real bar, so your answers count exactly as they are."
+      },
+      {
+        "key": "evidence",
+        "label": "Evidence \u2014 20 min",
+        "value": "\u00d71.00",
+        "note": "A longer session shows more, so it can support a stronger claim. This is about how much we saw, not how well you did."
+      },
+      {
+        "key": "feedback",
+        "label": "Feedback style \u2014 Interview \u2014 feedback at the end",
+        "value": "\u00d71.00",
+        "note": "No help mid-session, exactly like a real room."
+      },
+      {
+        "key": "coverage",
+        "label": "Coverage \u2014 4 of 4 rounds",
+        "value": "\u00d71.00",
+        "note": "You reached every scored round, so nothing is held back here."
+      },
+      {
+        "key": "mode",
+        "label": "Mode \u2014 Video",
+        "value": "\u00d71.00",
+        "note": "Speaking is the full bar \u2014 no adjustment."
+      },
+      {
+        "key": "total",
+        "label": "Benchmark",
+        "value": "72",
+        "note": "Your answers, weighted for the bar you chose."
+      }
+    ]
+  },
+  "reattempt_window": {
+    "days": 3,
+    "copy": "Work the first three days of the plan, then go again. You're close enough that the gap is reps, not study."
+  },
+  "ecopro": {
+    "session_id": "9a796d9f-c06c-4cf6-89da-b9f496df3a93",
+    "scored": true,
+    "band": "Interview-Ready",
+    "benchmark": 72,
+    "top_fixes": [
+      {
+        "fix": "You deflected the direct answer on the delivery time question \u2014 twice.",
+        "try_this_next_time": "When you're asked to pick a number or make a call, state your choice in the first sentence \u2014 'I'd lead with the median because...' \u2014 and then justify it. You can walk it back later if challenged, but land the answer first.",
+        "course": "Data Analysis Decision-Making and Communicating with Data"
+      },
+      {
+        "fix": "Your STAR answers had strong Action but thin Result \u2014 the numbers weren't there.",
+        "try_this_next_time": "Before any behavioral answer, ask yourself: 'What was measurably different after I did this?' Even a rough number \u2014 'the report load time dropped by about forty percent' \u2014 anchors the story in a way that a verbal resolution never does.",
+        "course": "Behavioural Interview Preparation and STAR Storytelling"
+      },
+      {
+        "fix": "You sometimes answered the question you wanted rather than the one you were asked.",
+        "try_this_next_time": "Before you respond, repeat back the core of the question in one phrase \u2014 silently or out loud \u2014 and check you're answering that specific thing. 'So they want to know which metric to use, not the broader retention analysis.' One second of that saves a lot of drift.",
+        "course": "Structured Communication and Analytical Thinking for Analysts"
+      }
+    ],
+    "reattempt_window": {
+      "days": 3,
+      "copy": "Work the first three days of the plan, then go again. You're close enough that the gap is reps, not study."
+    },
+    "weights_version": "2026.07-2"
+  }
+}
