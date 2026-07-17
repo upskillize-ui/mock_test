@@ -4205,6 +4205,13 @@ function SessionProfileStrip({ profile, early, scored }) {
 // Item 9: its readiness pill is gone. Delivery is report-only; a readiness verdict was
 // never its to make, and printing one here is how the page came to say a band twice.
 function DeliveryBlock({ delivery, profile }) {
+  // QA-08: TEXT readouts have no Delivery Profile — not an empty one, not a "we couldn't
+  // measure it" one. Every branch below reports on a VOICE that a typed session never had,
+  // so the kindest of them still told a student who chose typing to "answer aloud next
+  // session" on the scorecard for the mode they chose. scoring.py already says the readout
+  // "NEVER fabricates a voice Delivery metric for a session that had no voice"; this is
+  // that rule applied to the block itself rather than only to the numbers inside it.
+  if (String(profile?.mode || "").toUpperCase() === "TEXT") return null;
   if (!delivery || Object.keys(delivery).length === 0) {
     return <RdMissing title="Delivery Profile" profile={profile}>Your delivery wasn&rsquo;t measured this session, so there&rsquo;s nothing to report here — and nothing counted against you for it.</RdMissing>;
   }

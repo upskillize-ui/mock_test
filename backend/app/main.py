@@ -308,7 +308,7 @@ def _load_debrief_messages(db: Session, session_id: str) -> tuple[list[dict], se
     return messages, valid_answer_ids
 
 
-def _delivery_profile(db: Session, session_id: str) -> dict:
+def _delivery_profile(db: Session, session_id: str, *, session_mode=None) -> dict:
     """Phase 3 Part D: aggregate the stored per-answer delivery metrics for a
     session into the readout Delivery Profile (or a 'not enough voice data' notice).
     Reads only the additive delivery_metrics column; typed answers have none.
@@ -316,6 +316,13 @@ def _delivery_profile(db: Session, session_id: str) -> dict:
     When the feature is off we skip the query entirely (so the readout never depends
     on migration 004), and any DB error degrades to an empty profile rather than
     breaking the billed debrief."""
+    # QA-08: TEXT has no voice, so there is no delivery to profile and no "not enough
+    # voice data" verdict to reach — the absence is the mode, not a shortfall. This used
+    # to run for every mode and hand a typing student "Not enough voice data — try
+    # answering aloud next session" on the scorecard for the mode they chose. The empty
+    # dict still carries the internal TTS meter, which is what proves TEXT spent nothing.
+    if _mode_is_text(session_mode):
+        return _with_tts_cost({}, session_id)
     if not settings.DELIVERY_METRICS_ENABLED:
         return _with_tts_cost(delivery.aggregate([]), session_id)
     try:
@@ -1766,6 +1773,15 @@ async def session_stt(
 
     session_row = _load_session(db, session_id, user_id)
 
+    # QA-07: the mode gate, and it goes BEFORE consent for a reason. Consent is per-user
+    # and durable, so a student who ever did one AUDIO session carries it into every TEXT
+    # session forever — which meant the only thing standing between a TEXT session and
+    # Sarvam STT was a wall that had already been walked through. Driven and confirmed:
+    # consent -> 200 -> POST https://api.sarvam.ai/speech-to-text from a TEXT session.
+    # mode_wants_mic() has always returned the right answer here; nothing ever called it.
+    if not intake.mode_wants_mic(session_row.get("session_mode")):
+        raise HTTPException(404, "Not found")
+
     # Phase 3 Part B: no stage restriction — the mic works in every answering round.
     if not compliance.consent_gate_ok(settings.VOICE_ENABLED, _has_voice_consent(db, user_id)):
         raise HTTPException(403, "Voice consent is required before using voice input.")
@@ -1850,7 +1866,11 @@ async def session_stt_partial(
     if not (settings.STT_ENABLED and settings.VOICE_ENABLED):
         raise HTTPException(404, "Not found")
 
-    _load_session(db, session_id, user_id)
+    partial_row = _load_session(db, session_id, user_id)
+    # QA-07: same gate as /session/stt, and the bigger surface of the two — partials are
+    # capped at STT_PARTIAL_MAX_PER_SESSION (default 400) against the answer path's 25.
+    if not intake.mode_wants_mic(partial_row.get("session_mode")):
+        raise HTTPException(404, "Not found")
     if not compliance.consent_gate_ok(settings.VOICE_ENABLED, _has_voice_consent(db, user_id)):
         raise HTTPException(403, "Voice consent is required before using voice input.")
 
@@ -2351,7 +2371,8 @@ async def end_session(
 
     # Phase 3 Part D: the Delivery Profile is recomputed from stored per-answer
     # metrics on every /session/end (cheap; independent of the billed debrief).
-    delivery_profile = _delivery_profile(db, body.session_id)
+    delivery_profile = _delivery_profile(db, body.session_id,
+                                         session_mode=session_row.get("session_mode"))
 
     # Interview Room: Professional presence — counts + ONE coaching line. Camera-based
     # lines are omitted entirely for a camera-off join (never measured, never reported,

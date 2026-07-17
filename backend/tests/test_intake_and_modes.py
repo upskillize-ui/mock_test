@@ -6,6 +6,7 @@ absent: that phase is a separate sprint and nothing here computes a presence met
 Runnable with:  python -m pytest tests/test_intake_and_modes.py
 """
 import asyncio
+import json
 import os
 import sys
 
@@ -376,3 +377,53 @@ def test_the_device_forks_are_a_voice_feature():
 
     src = inspect.getsource(m.session_reask)
     assert "_mode_is_text" in src, "/session/reask must gate on mode server-side"
+
+
+# ── QA-07: a TEXT session cannot spend Sarvam STT ────────────────────────────
+
+def test_stt_endpoints_gate_on_mode_before_consent():
+    """The sweep drove this: consent -> 200 -> a real POST to api.sarvam.ai from a TEXT
+    session. Voice consent is per-USER and durable, so one AUDIO session ever means the
+    consent wall is already down for every TEXT session that follows. The mode gate has
+    to come first, and it has to be server-side: the codebase's own rule (see
+    _mode_is_text) is that a promise kept only by the client not asking is not kept.
+    """
+    import inspect
+    from app import main as m
+
+    for fn in (m.session_stt, m.session_stt_partial):
+        src = inspect.getsource(fn)
+        assert "mode_wants_mic" in src, f"{fn.__name__} must gate on mode"
+        # ...before consent, or the durable-consent hole stays open.
+        assert src.index("mode_wants_mic") < src.index("consent_gate_ok"), \
+            f"{fn.__name__}: the mode gate must precede the consent gate"
+
+
+def test_mode_wants_mic_is_the_gate_it_always_was():
+    """This function was correct from the day it shipped and was called by nothing."""
+    assert intake.mode_wants_mic("TEXT") is False
+    assert intake.mode_wants_mic("AUDIO") is True
+    assert intake.mode_wants_mic("VIDEO") is True
+    # A database behind migration 009 behaves as it did before the column: spoken.
+    assert intake.mode_wants_mic(None) is True
+
+
+# ── QA-08: a typed readout never coaches the student to speak ────────────────
+
+def test_text_readouts_carry_no_delivery_profile():
+    """"Not enough voice data — try answering aloud next session" on the scorecard for
+    the mode they chose. The absence of voice in TEXT is the mode, not a shortfall."""
+    from app import main as m
+
+    class _FakeDB:
+        def execute(self, *a, **kw):
+            raise AssertionError("TEXT must not even query for delivery metrics")
+
+    prof = m._delivery_profile(_FakeDB(), "sid-text", session_mode="TEXT")
+    # Nothing voice-shaped survives...
+    assert "enough_data" not in prof
+    assert "spoken_answers" not in prof
+    assert "aloud" not in json.dumps(prof).lower()
+    # ...but the internal TTS meter does: it is what proves TEXT spent nothing at Sarvam.
+    assert "tts" in prof
+    assert prof["tts"]["vendor_calls"] == 0
