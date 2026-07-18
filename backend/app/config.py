@@ -136,6 +136,14 @@ class Settings:
     # Voice Phase 3: ask Saarika for word/segment timestamps (same call, no extra
     # cost) so delivery scoring can flag long mid-answer pauses. Off = pauses null.
     STT_WITH_TIMESTAMPS: bool = _env_bool("STT_WITH_TIMESTAMPS", "true")
+    # DIAGNOSTIC (voice-reliability): when a Saarika 200 comes back with no usable
+    # transcript, dump the raw (redacted, truncated) response body so ops can see
+    # EXACTLY what the vendor returned for a "couldn't hear you on real speech" turn.
+    # OFF by default: redact() only scrubs emails/phones, so a body dump could echo
+    # transcript words — turn this on only for a controlled live capture window, then
+    # off. The always-on `stt_body_shape` line (keys + value lengths, never words) is
+    # enough to tell a genuinely-blank body apart from a parser-shape miss.
+    STT_DEBUG_BODY: bool = _env_bool("STT_DEBUG_BODY")
     # Voice Phase 3: compute-and-discard delivery metrics (wpm/fillers/pauses) for
     # spoken answers. OFF by default; independent of STT so it can be piloted alone.
     DELIVERY_METRICS_ENABLED: bool = _env_bool("DELIVERY_METRICS_ENABLED")

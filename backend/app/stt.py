@@ -20,10 +20,12 @@ Cost control:
     The cap is the behavioural question count + a few retries (set by the caller).
 """
 
+import json
 import logging
 
 import httpx
 
+from . import compliance
 from .config import settings
 
 log = logging.getLogger(__name__)
@@ -157,21 +159,86 @@ async def _request(audio_bytes: bytes, mime: str | None, want_timestamps: bool) 
         return None
 
     try:
-        return r.json()
+        body = r.json()
     except Exception as e:
         log.warning("STT decode failed: %s", type(e).__name__)
         return None
+    _log_response_shape(body)
+    return body
+
+
+def _log_response_shape(body) -> None:
+    """Log the SHAPE of a Saarika 200 body — its keys and each value's type/length,
+    never the transcript TEXT — plus the non-PII diagnostic fields (language_code,
+    request_id). This is the line that tells a genuinely-blank response
+    (`transcript:str[0]`) apart from a parser-shape miss (the text sitting under a
+    key `_extract_transcript` doesn't read). Always on; never raises.
+
+    When settings.STT_DEBUG_BODY is set, ALSO dump a redacted, truncated raw body —
+    an operator-controlled diagnostic only (redact() scrubs emails/phones but not
+    speech), so it stays off by default.
+    """
+    try:
+        if not isinstance(body, dict):
+            log.info("stt_body_shape non_dict type=%s", type(body).__name__)
+            return
+        parts = []
+        for k, v in body.items():
+            if isinstance(v, str):
+                parts.append(f"{k}:str[{len(v)}]")
+            elif isinstance(v, (list, tuple)):
+                parts.append(f"{k}:list[{len(v)}]")
+            elif isinstance(v, dict):
+                parts.append(f"{k}:dict{{{len(v)}}}")
+            elif v is None:
+                parts.append(f"{k}:null")
+            else:
+                parts.append(f"{k}:{type(v).__name__}")
+        log.info(
+            "stt_body_shape keys=%s language_code=%s request_id=%s",
+            ",".join(parts), body.get("language_code"), body.get("request_id"),
+        )
+        if settings.STT_DEBUG_BODY:
+            log.info("stt_body_debug %s", compliance.redact(json.dumps(body))[:600])
+    except Exception:
+        pass
 
 
 def _extract_transcript(body: dict) -> str | None:
-    """Pull the transcript text out of a Saarika response body (defensive on key)."""
-    transcript = body.get("transcript")
-    if transcript is None:
-        transcript = body.get("text")
-    if not isinstance(transcript, str):
+    """Pull the transcript text out of a Saarika response body (defensive on shape).
+
+    Primary keys are `transcript`/`text` (the documented Saarika contract). The
+    remaining fallbacks are hardening against response-shape drift seen in the wild:
+    a diarized/segmented body that carries the text in a list of segments rather
+    than a flat string. Returns None only when there is genuinely no text anywhere.
+    """
+    if not isinstance(body, dict):
         return None
-    transcript = transcript.strip()
-    return transcript or None
+    # 1) Flat string under the documented keys.
+    for key in ("transcript", "text"):
+        v = body.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    # 2) Segmented / diarized shapes: join the per-segment transcript strings.
+    for key in ("diarized_transcript", "segments", "output", "results"):
+        v = body.get(key)
+        if isinstance(v, dict):
+            v = v.get("entries") or v.get("segments") or v.get("transcript")
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        if isinstance(v, list):
+            chunks = []
+            for seg in v:
+                if isinstance(seg, str):
+                    chunks.append(seg)
+                elif isinstance(seg, dict):
+                    t = seg.get("transcript") or seg.get("text")
+                    if isinstance(t, str):
+                        chunks.append(t)
+            joined = " ".join(c.strip() for c in chunks if c and c.strip()).strip()
+            if joined:
+                return joined
+    return None
 
 
 async def transcribe(audio_bytes: bytes, mime: str | None) -> str | None:
@@ -194,11 +261,15 @@ async def transcribe_full(
     does not, so it is typically None). Audio is not retained beyond this call.
     """
     body = await _request(audio_bytes, mime, want_timestamps=want_timestamps)
+    # None means the vendor call itself FAILED (transport/non-200/decode) — the
+    # caller logs status=fail. A dict with transcript=None means the vendor
+    # answered 200 but we got no usable text (silence, noise, or a shape we can't
+    # read) — a distinct outcome the caller logs as status=empty. Collapsing the
+    # two into None (the old behaviour) is what made every 200-but-blank turn look
+    # like a hard failure in the logs.
     if body is None:
         return None
     transcript = _extract_transcript(body)
-    if transcript is None:
-        return None
     ts = body.get("timestamps")
     if not isinstance(ts, dict):
         ts = None

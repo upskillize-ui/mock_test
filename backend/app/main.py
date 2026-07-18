@@ -2016,8 +2016,11 @@ async def session_stt(
     # INSTRUMENTATION (item 3): one diagnostic line per answer attempt, server side. It
     # carries NO transcript text and NO audio — only shapes and timings — so a future
     # "my answer wasn't heard" complaint is diagnosable from logs without ever storing
-    # what was said. status: ok = usable transcript, empty = vendor returned nothing,
-    # fail = the vendor call itself failed.
+    # what was said. status: ok = usable transcript; empty = vendor answered 200 but
+    # gave us no usable text (silence/noise/unreadable body — see the stt_body_shape
+    # line); fail = the vendor call itself failed (transport/non-200/decode). These
+    # are now genuinely distinct: transcribe_full returns a dict (transcript=None) for
+    # the empty case and None only for a real failure.
     _status = "ok" if transcript else ("fail" if result is None else "empty")
     log.info(
         "stt_attempt session=%s status=%s bytes=%d mime=%s dur_s=%.1f "

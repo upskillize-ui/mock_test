@@ -50,6 +50,44 @@ def test_transcribe_none_on_empty_audio():
         s.settings.SARVAM_API_KEY = old
 
 
+# ── Response parsing: empty-vs-fail distinction + shape hardening ────────────
+# The bug: a Saarika 200 with a blank/unreadable transcript returned None, exactly
+# like a real vendor failure, so every "couldn't hear you on real speech" turn logged
+# status=fail and was undiagnosable. transcribe_full must now return a dict with
+# transcript=None for a 200-but-blank body (-> status=empty) and None ONLY for a real
+# failure (-> status=fail).
+
+def test_extract_transcript_flat_and_segmented():
+    assert s._extract_transcript({"transcript": "hello there"}) == "hello there"
+    assert s._extract_transcript({"text": "  spaced  "}) == "spaced"
+    # blank / missing -> None (a genuinely-empty vendor answer)
+    assert s._extract_transcript({"transcript": ""}) is None
+    assert s._extract_transcript({"request_id": "abc", "transcript": None}) is None
+    # segmented / diarized shape carries the text in a list of segments
+    seg = {"transcript": "", "diarized_transcript": {"entries": [
+        {"transcript": "first part"}, {"transcript": "second part"}]}}
+    assert s._extract_transcript(seg) == "first part second part"
+
+
+def test_transcribe_full_empty_vs_fail():
+    orig = s._request
+    try:
+        # 200 with a blank body -> dict{transcript:None}, NOT None (so status=empty, not fail)
+        async def _blank(audio_bytes, mime, want_timestamps):
+            return {"request_id": "r1", "transcript": "", "timestamps": None}
+        s._request = _blank
+        out = asyncio.run(s.transcribe_full(b"audio", "audio/webm"))
+        assert out is not None and out["transcript"] is None
+
+        # a real vendor failure (transport/non-200/decode) -> None
+        async def _fail(audio_bytes, mime, want_timestamps):
+            return None
+        s._request = _fail
+        assert asyncio.run(s.transcribe_full(b"audio", "audio/webm")) is None
+    finally:
+        s._request = orig
+
+
 # ── Per-session cost cap ────────────────────────────────────────────────────
 
 def test_cost_cap_counts_and_trips():
