@@ -10,7 +10,7 @@ import {
   questionSeconds, expiryAction, shouldArmAbandon, SKIP_MARKER,
   QUESTION_WARN_SECONDS, CAMERA_GRACE_MS, SILENT_ABANDON_MS,
   WRAP_CAMERA_OFF, WRAP_NO_ANSWER, WRAP_SESSION_TIME_UP,
-  shouldBackchannel, shouldBargeIn, canArmCapture, BARGE_IN_RMS, BARGE_IN_DUCK_MS,
+  shouldBargeIn, canArmCapture, BARGE_IN_RMS, BARGE_IN_DUCK_MS,
   textIdleAction, TEXT_IDLE_EXPIRY_MS, TEXT_IDLE_NUDGE_LINE, isSubstantiveAnswer,
 } from "./roomPolicy.js";
 import { isEmptyReadout, historyStatus, trendDirection } from "./readoutPolicy.js";
@@ -252,9 +252,6 @@ function clipPlayer() {
   }
   return _clipPlayer;
 }
-// Backchannels play UNDER a live mic, into the same room. Loud enough to be heard, quiet
-// enough not to be transcribed as part of their answer.
-const BACKCHANNEL_VOLUME = 0.32;
 
 // Every mic we open, for anything. echoCancellation is not a nicety here — it is what makes
 // barge-in and backchannels possible at all: the interviewer's voice is coming out of the
@@ -1947,10 +1944,6 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // rotation. Seeded by the answer count, so the same session never loops the same "Hmm."
   const clipsRef = useRef({ acks: [], backchannels: [] });
   const ackSeedRef = useRef(0);
-  // REALISM (backchannels): per-answer state — how many "mm-hmm"s this answer has had, and
-  // when the current pause began. Reset at the start of every recording.
-  const bcCountRef = useRef(0);
-  const bcPauseStartRef = useRef(0);
   // REALISM (barge-in): the mic stays open while the interviewer speaks, purely to hear
   // whether the candidate has started talking over her. `warmStream` is that open mic —
   // handed straight to the recorder on barge-in, so their first word is not lost to a
@@ -2213,16 +2206,16 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   }, [connecting, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── REALISM: the pre-cached clip pack ──
-  // Fetched once, used all session: an acknowledgment the instant an answer is submitted,
-  // and a soft backchannel at a natural pause in a long answer. Entirely optional — if this
-  // fails, the room is exactly what it was, minus the human noises.
+  // Fetched once, used all session: an acknowledgment the instant an answer is submitted
+  // (between turns). Entirely optional — if this fails, the room is exactly what it was,
+  // minus the human noise.
   useEffect(() => {
     let cancelled = false;
     // TEXT has no voice, so it has no human noises either. Without this the room fetched
     // the pack, downloaded every blob, and then played an audible "Hmm." the instant a
     // TYPED answer was submitted — a spoken acknowledgment in the one mode that promises
-    // silence. Skipping the fetch is the whole fix: playAck/playBackchannel already return
-    // early on an empty pack.
+    // silence. Skipping the fetch is the whole fix: playAck already returns early on an
+    // empty pack.
     if (textMode) {
       clipsRef.current = { acks: [], backchannels: [] };
       return;
@@ -2388,15 +2381,6 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     if (!acks.length) return;
     const clip = acks[Math.abs(ackSeedRef.current++) % acks.length];
     playClip(clip.audio_url, 1);
-  };
-
-  /** Mid-answer, at a natural pause in a long one: a soft "mm-hmm". Never twice running,
-   *  never in the opening seconds, never loud enough to be heard as an interruption. */
-  const playBackchannel = () => {
-    const bc = clipsRef.current.backchannels;
-    if (!bc.length) return;
-    const clip = bc[bcCountRef.current % bc.length];
-    playClip(clip.audio_url, BACKCHANNEL_VOLUME);
   };
 
   /**
@@ -2969,31 +2953,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
         } else silenceStartRef.current = 0;
       }
 
-      // ── REALISM: LISTENING BACKCHANNELS ──
-      // A soft "mm-hmm" at a natural pause in a long answer. It runs off the SAME rms we
-      // already compute for the waveform, so it costs nothing, and every condition in
-      // shouldBackchannel is there to stop it becoming an interruption: long answers only,
-      // never in the opening seconds, never at a pause long enough to be them FINISHING,
-      // and never more than twice. A rating capture is not an answer and gets none.
-      if (spokeRef.current && !ratingListeningRef.current) {
-        const now = performance.now();
-        if (rms < SILENCE_RMS) {
-          if (!bcPauseStartRef.current) bcPauseStartRef.current = now;
-          const elapsedMs = recStartRef.current ? Date.now() - recStartRef.current : 0;
-          if (shouldBackchannel({
-            elapsedMs,
-            pauseMs: now - bcPauseStartRef.current,
-            playedCount: bcCountRef.current,
-            endOfAnswerMs: SILENCE_HOLD_MS,
-          })) {
-            bcCountRef.current += 1;
-            bcPauseStartRef.current = 0;      // at most one per pause
-            playBackchannel();
-          }
-        } else {
-          bcPauseStartRef.current = 0;
-        }
-      }
+      // Turn-taking rule (real conversation): while the student is answering, the
+      // interviewer LISTENS in silence. She never interjects mid-answer — no "mm-hmm",
+      // no "okay". The only human noise is a single acknowledgment AFTER the answer is
+      // submitted (playAck, between turns). Mid-answer backchannels used to fire here at
+      // an RMS-detected pause, but ordinary between-sentence dips tripped them and they
+      // landed as interruptions, so they are gone.
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
@@ -3164,9 +3129,6 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       }
     }
     mediaStreamRef.current = stream;
-    // A fresh answer: it has had no backchannels, and it is not mid-pause.
-    bcCountRef.current = 0;
-    bcPauseStartRef.current = 0;
     // Instrumentation (item 3/4): what the browser ACTUALLY granted us, and which of the
     // processing flags it refused. Read from the live track, once, per answer.
     try {
