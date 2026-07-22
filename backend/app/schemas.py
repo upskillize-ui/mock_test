@@ -404,6 +404,11 @@ class DebriefResponse(BaseModel):
     # SCORING_CONTEXT item 3: this is the band AFTER the context gates — the one and only
     # band the UI renders (item 9: it appears exactly once, in the Readiness block).
     overall_band: str
+    # Measurement-health gate: {ok, missed, attempts, healthy, note?}. When healthy is
+    # false the band above is "Unrated" — the pipeline, not the person, failed — and
+    # `note` carries the copy the UI shows under the pill. {} on typed sessions and on
+    # replays from before the gate existed.
+    measurement: dict = {}
     round_bands: dict
     one_line: str
     sub_scores: dict

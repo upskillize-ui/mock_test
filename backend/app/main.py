@@ -1448,11 +1448,19 @@ async def session_turn(
                         type(e).__name__)
         new_stage, new_round = stages.advance_after_feedback(round_index_after, level)
         new_awaiting, new_last = 0, None
-    elif stages.should_await_rating(st, substantive):
-        # DOMAIN/BEHAVIOURAL/CASE substantive answer: hold here until the learner
-        # submits a confidence rating (INT-01); advancement happens in /turn/rating.
+    elif stages.should_await_rating(st, substantive) and stages.sample_rating(body.session_id, st, round_index):
+        # DOMAIN/BEHAVIOURAL/CASE substantive answer, SAMPLED for calibration: hold here
+        # until the learner submits a confidence rating (INT-01); advancement happens in
+        # /turn/rating. Sparse sampling (stages.sample_rating) keeps the ask honest —
+        # every-answer asks taught students to say "3" and move on.
         new_stage, new_round = st, round_index_after
         new_awaiting, new_last = 1, answer_id
+    elif stages.should_await_rating(st, substantive):
+        # Rating-gated and substantive but NOT sampled this time: advance immediately,
+        # exactly as /turn/rating would have after a rating. The answer is still scored;
+        # it just isn't interrupted for the 1-5 ask.
+        new_stage, new_round = stages.advance_after_rating(st, round_index_after, level)
+        new_awaiting, new_last = 0, None
     elif stages.is_rating_gated(st):
         # Rating-gated stage but a non-substantive answer (FIX 1): no rating widget,
         # and the slot was not consumed (round_index_after == round_index), so the
@@ -2023,6 +2031,10 @@ async def session_stt(
     # are now genuinely distinct: transcribe_full returns a dict (transcript=None) for
     # the empty case and None only for a real failure.
     _status = "ok" if transcript else ("fail" if result is None else "empty")
+    # Measurement health: every answer attempt's final outcome feeds the session's
+    # health record, read at readout time — a session the pipeline couldn't hear
+    # must not be banded as if it had been heard (see end_session's gate).
+    stt.note_stt_health(session_id, _status)
     log.info(
         "stt_attempt session=%s status=%s bytes=%d mime=%s dur_s=%.1f "
         "transcript_len=%d confidence=%s stt_ms=%d",
@@ -2515,6 +2527,7 @@ def _debrief_response(
     result: dict | None,
     band_result: dict | None,
     cov: dict,
+    measurement: dict | None = None,
 ) -> DebriefResponse:
     """Assemble the one readout payload. Shared by the fresh-debrief path and the
     idempotent replay path, so a re-fetch can never disagree with the first render."""
@@ -2541,6 +2554,7 @@ def _debrief_response(
         # Item 3: the band the learner sees is the GATED one. Item 9: it is rendered
         # exactly once, in the Readiness block.
         overall_band=overall_band if scored else "",
+        measurement=measurement or {},
         round_bands=round_bands if scored else {},
         one_line=d.get("oneLine", ""),
         sub_scores=d.get("subScores", {}) if scored else {},
@@ -2667,6 +2681,27 @@ async def end_session(
     result, band_result, cov = _score_context(session_row, overall_pct, sub_stages)
     overall_band = band_result["band"]
 
+    # ── MEASUREMENT-HEALTH GATE ──────────────────────────────────────────────
+    # An assessment must not band a session its own pipeline corrupted. When too many
+    # spoken answers never became text (vendor failures, empty transcripts), the
+    # coaching still ships — the feedback on what WAS heard is still useful — but the
+    # BAND is withheld: what a band would be grading is the microphone, not the person.
+    # "Unrated" is stored as the gated band too, so history and replay agree with what
+    # the learner saw. The earned band stays intact inside band_result. In-process
+    # counters (a Space restart forgets), which can only err lenient.
+    mhealth = stt.session_health(body.session_id)
+    if not mhealth["healthy"]:
+        log.info("measurement gate: band withheld session=%s ok=%d missed=%d",
+                 body.session_id, mhealth["ok"], mhealth["missed"])
+        overall_band = "Unrated"
+        mhealth["note"] = (
+            "We couldn't hear enough of your answers clearly to judge you fairly — "
+            f"{mhealth['missed']} of {mhealth['attempts']} spoken answers never made it "
+            "through transcription. This readout is coaching on what we did hear, not a "
+            "verdict on you. Sort the mic (or switch to typed answers) and re-attempt — "
+            "this one is on us."
+        )
+
     # INT-02 + INT-11: calibrate learner confidence ratings against the model's
     # per-answer quality scores, JOINED BY answer_id (not positional zip). A rating
     # exists only for a substantive DOMAIN/BEHAVIOURAL/CASE answer; we look up that
@@ -2700,6 +2735,7 @@ async def end_session(
         delivery_profile=delivery_profile, presence_block=presence_block,
         early_wrap=early_wrap, scored=True, substantive=substantive,
         result=result, band_result=band_result, cov=cov,
+        measurement=mhealth,
     )
 
 

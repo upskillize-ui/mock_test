@@ -333,6 +333,28 @@ def should_await_rating(stage: str, is_substantive: bool) -> bool:
     return is_rating_gated(stage) and is_substantive
 
 
+# ── Sparse confidence calibration ────────────────────────────────────────────
+# Asking "how confident are you, 1-5?" after EVERY scored answer breaks the speaking
+# rhythm and teaches gaming — by the third ask students answer "3" and move on, which
+# destroys the very calibration signal the ask exists to collect. So the rating is
+# SAMPLED: the first DOMAIN answer is always asked (an anchor every session shares),
+# and each later gated answer is asked with probability ~RATING_SAMPLE_P, decided by a
+# hash of (session, stage, slot) — deterministic, so a refresh or a replayed turn can
+# never flip the decision mid-question. Expected asks per full session: ~3.
+# calibration_pairs/calibration_profile already tolerate sparse ratings (they join by
+# answer_id and degrade to insufficient_data), so nothing downstream changes.
+RATING_SAMPLE_P = 0.25
+
+
+def sample_rating(session_id: str, stage: str, round_index: int) -> bool:
+    """Should THIS answer get the confidence-rating ask? Deterministic, sparse."""
+    import hashlib
+    if stage == "DOMAIN" and round_index == 0:
+        return True   # the shared anchor: every session rates its first domain answer
+    h = hashlib.sha1(f"{session_id}|{stage}|{round_index}".encode("utf-8")).digest()
+    return h[0] < int(RATING_SAMPLE_P * 256)
+
+
 def consumes_question_slot(stage: str, is_substantive: bool, timed_out_skip: bool = False) -> bool:
     """FIX 2 — a non-substantive answer in a scored, rating-gated stage does NOT
     consume a planned question slot: the interviewer steps down / re-asks on the

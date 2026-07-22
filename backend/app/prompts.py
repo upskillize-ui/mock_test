@@ -1462,7 +1462,7 @@ Respond with ONLY a valid JSON object (no preamble, no markdown fences, no comme
     {"strength": "<the specific thing they did well — never generic>", "evidence": "<a SHORT direct quote of what THEY said that shows it>"}
   ],
   "gaps": [
-    {"gap": "<the fix that matters>", "cost": "<what it actually cost them in THIS interview — one line>", "tryThisNextTime": "<one concrete thing to do differently next time — an action, not a topic>", "upskillizeCourse": "<Upskillize module or skill area>"}
+    {"gap": "<the fix that matters>", "cost": "<what it actually cost them in THIS interview — one line>", "youSaid": "<their OWN sentence, quoted VERBATIM from the transcript, <=25 words — the moment this gap showed>", "sayInstead": "<the SAME idea rewritten as they should have said it — THEIR content made interview-ready, 1-2 sentences, never a generic ideal answer>", "drill": "<one 10-minute practice rep for exactly this transformation, doable today>", "tryThisNextTime": "<one concrete thing to do differently next time — an action, not a topic>", "upskillizeCourse": "<Upskillize module or skill area>"}
   ],
   "starBreakdown": [
     {"question": "<short>", "situation": <0-2>, "task": <0-2>, "action": <0-2>, "result": <0-2>, "note": "<diagnosis>"}
@@ -1506,6 +1506,10 @@ reverseRound: score the questions the CANDIDATE asked you in the reverse round o
 strengths: 2-4 entries. EVERY entry must carry an "evidence" quote of what they actually said — if you cannot quote them for it, it is not a strength you observed, it is a compliment you invented, and it must be cut. If they gave NO substantive answers, strengths MUST be an empty list: there is nothing to quote, and praising them anyway is the one thing guaranteed to cost them the next interview.
 
 gaps: EXACTLY 2 or 3 — the fixes that MATTER, most important first. Not a catalogue of everything that was imperfect. "tryThisNextTime" must be an action they could take in their next interview tomorrow ("state your assumption out loud before you start the calculation"), never a subject to go away and study ("work on structured thinking").
+Every gap is a WORKED EXAMPLE, not a verdict — nobody has ever gotten better from an adjective:
+- "youSaid" is quoted VERBATIM from their transcript. Never paraphrase, never invent. Same rule as strengths: if you cannot quote the moment the gap showed, pick a gap you CAN quote. If the gap is that they said nothing at all on a topic, set youSaid to "" and anchor "sayInstead" on the question they were asked.
+- "sayInstead" rewrites THEIR sentence — their project, their numbers, their claim — as it should have sounded. It is their content upgraded, never a model answer about someone else's project. Keep their meaning; fix the delivery (structure, specificity, quantified impact, ownership).
+- "drill" is one 10-minute rep they can run today that practices exactly this youSaid→sayInstead transformation (e.g. "record yourself answering the same question twice; second take must contain one number and one decision you owned").
 
 Be specific and kind. Never harsh, never mocking. If the interview was very short or incomplete, reflect that honestly in scores and keep the report concise."""
 

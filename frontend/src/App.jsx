@@ -388,6 +388,9 @@ const BAND_STYLE = {
   "Interview-Ready": { bg: IQ.teal, fg: IQ.cream },
   "Building": { bg: IQ.buildingNavy, fg: IQ.cream },
   "Not Ready": { bg: IQ.orange, fg: IQ.cream },
+  // Measurement-health gate: the pipeline failed, not the person. Navy, not orange —
+  // this is "we couldn't measure", never "you fell short".
+  "Unrated": { bg: IQ.buildingNavy, fg: IQ.cream },
 };
 
 // INT-02: calibration profile pill colour + coaching copy (never punitive).
@@ -4520,6 +4523,14 @@ function ReadinessBlock({ d, profile }) {
         <ContextChip profile={profile} />
       </div>
       <div className="rd-b">
+        {/* Measurement-health gate: when the pipeline (not the person) failed, the band
+            is "Unrated" and this note says so plainly — a verdict withheld is a promise
+            kept, but only if the student can read WHY. */}
+        {d.measurement && d.measurement.healthy === false && d.measurement.note && (
+          <div style={{ marginBottom: 14, padding: "10px 14px", borderRadius: 8, background: "rgba(255,255,255,.07)", border: "1px solid rgba(255,255,255,.18)", fontSize: 13, lineHeight: 1.6, color: "rgba(255,255,255,.85)" }}>
+            {d.measurement.note}
+          </div>
+        )}
         <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
           <div style={{ display: "inline-flex", alignItems: "center", padding: "10px 24px", borderRadius: 10, background: bandStyle.bg, color: bandStyle.fg, fontFamily: IQ.display, fontWeight: 700, letterSpacing: "-0.01em", fontSize: 26 }}>{band}</div>
           {score && (
@@ -4713,6 +4724,27 @@ function DebriefScreen({ config, sessionId, onRestart, onViewHistory }) {
                 <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.5, color: T.text }}>{g.gap}</div>
               </div>
               {g.cost && <div style={{ fontSize: 13, lineHeight: 1.6, color: T.muted, marginTop: 5, paddingLeft: 32 }}>{g.cost}</div>}
+              {/* The worked example: their words -> the same idea said interview-ready ->
+                  one drill. Nobody has ever gotten better from an adjective. Older rows
+                  lack these fields and render exactly as before. */}
+              {g.youSaid && (
+                <div style={{ marginTop: 10, marginLeft: 32, padding: "10px 14px", borderRadius: 8, background: T.bg, border: "1px solid " + T.border }}>
+                  <div style={{ fontFamily: IQ.mono, fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: T.subtle, marginBottom: 4 }}>You said</div>
+                  <div style={{ fontSize: 13, lineHeight: 1.6, color: T.muted, fontStyle: "italic" }}>&ldquo;{g.youSaid}&rdquo;</div>
+                </div>
+              )}
+              {g.sayInstead && (
+                <div style={{ marginTop: 8, marginLeft: 32, padding: "10px 14px", borderRadius: 8, background: "#eef7f4", border: "1px solid " + IQ.teal }}>
+                  <div style={{ fontFamily: IQ.mono, fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "#0a6b58", marginBottom: 4 }}>Say it like this</div>
+                  <div style={{ fontSize: 13, lineHeight: 1.6, color: "#0a4a3e", fontWeight: 600 }}>&ldquo;{g.sayInstead}&rdquo;</div>
+                </div>
+              )}
+              {g.drill && (
+                <div style={{ marginTop: 8, marginLeft: 32, fontSize: 13, lineHeight: 1.6, color: T.text }}>
+                  <span style={{ fontFamily: IQ.mono, fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: T.subtle, marginRight: 8 }}>10-min drill</span>
+                  {g.drill}
+                </div>
+              )}
               {g.tryThisNextTime && (
                 <div style={{ marginTop: 10, marginLeft: 32, padding: "10px 14px", borderRadius: 8, background: IQ.cream, border: "1px solid " + T.gold }}>
                   <div style={{ fontFamily: IQ.mono, fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "#7a5e00", marginBottom: 4 }}>Try this next time</div>

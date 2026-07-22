@@ -80,6 +80,35 @@ def session_seconds(session_id: str) -> dict:
     return row
 
 
+# ── Measurement health (in-process, like the cost meters) ────────────────────
+# The assessment gate's evidence: how many spoken answers actually became text. A
+# restart forgets a session's record, which errs LENIENT — the gate can only fail to
+# withhold a band, never withhold one unfairly. No audio, no transcripts — counts only.
+_session_stt_health: dict[str, dict] = {}
+
+
+def note_stt_health(session_id: str, status: str) -> None:
+    """Count an answer-STT attempt's final outcome ('ok' heard / anything else missed)."""
+    try:
+        row = _session_stt_health.setdefault(session_id, {"ok": 0, "missed": 0})
+        row["ok" if status == "ok" else "missed"] += 1
+    except Exception:
+        pass
+
+
+def session_health(session_id: str) -> dict:
+    """This session's measurement-health record: {ok, missed, attempts, healthy}.
+
+    Unhealthy = at least 3 attempts and >=40% of them never became text. Below 3
+    attempts there is not enough evidence to blame the pipeline, so it stays healthy
+    (typed sessions, with zero attempts, are always healthy)."""
+    row = dict(_session_stt_health.get(session_id, {"ok": 0, "missed": 0}))
+    attempts = row["ok"] + row["missed"]
+    row["attempts"] = attempts
+    row["healthy"] = not (attempts >= 3 and row["missed"] * 5 >= attempts * 2)
+    return row
+
+
 def stt_calls_used(session_id: str) -> int:
     return _session_stt_counts.get(session_id, 0)
 
