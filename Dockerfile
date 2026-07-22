@@ -18,9 +18,12 @@ RUN npm run build
 FROM python:3.11-slim AS runtime
 WORKDIR /app
 
-# System deps (pymysql needs nothing extra; add ssl certs just in case)
+# System deps (pymysql needs nothing extra; ssl certs just in case).
+# ffmpeg: voice-reliability fix — transcodes browser opus recordings to 16 kHz
+# WAV in-memory before Saarika STT (app/stt.py falls back gracefully without it).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
+      ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps

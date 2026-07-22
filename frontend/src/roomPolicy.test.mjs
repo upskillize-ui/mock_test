@@ -16,6 +16,7 @@ import {
   BACKCHANNEL_MIN_ANSWER_MS, BACKCHANNEL_MIN_PAUSE_MS,
   BACKCHANNEL_NEVER_BEFORE_MS, BACKCHANNEL_MAX_PER_ANSWER,
   BARGE_IN_RMS, BARGE_IN_SUSTAIN_MS,
+  expiryEscalation, EXPIRY_GRACE_SECONDS, HEARING_FAILURE_LINES,
 } from "./roomPolicy.js";
 
 // ── The per-question budget ────────────────────────────────────────────────
@@ -215,4 +216,32 @@ test("expiry still never strands the student", () => {
   assert.deepEqual(expiryAction({ draft: "half an answer" }),
     { timeout: "partial", text: "half an answer" });
   assert.deepEqual(expiryAction({ draft: "" }), { timeout: "skip", text: "" });
+});
+
+// ── Soft expiry: the first zero nudges, only the second expires ────────────
+
+test("the first zero of a voice question clock is a nudge with a real extension", () => {
+  const first = expiryEscalation({ nudged: false, capturing: false });
+  assert.equal(first.action, "nudge");
+  assert.ok(first.extendSeconds > 0, "a nudge must buy real time");
+  assert.equal(first.extendSeconds, EXPIRY_GRACE_SECONDS);
+  assert.equal(first.silent, false, "an idle candidate must SEE that she is waiting");
+});
+
+test("mid-capture the nudge is silent — they are already answering", () => {
+  const mid = expiryEscalation({ nudged: false, capturing: true });
+  assert.equal(mid.action, "nudge");
+  assert.equal(mid.silent, true);
+});
+
+test("the second zero expires for real — the backstop still backstops", () => {
+  assert.deepEqual(expiryEscalation({ nudged: true, capturing: false }), { action: "expire" });
+  assert.deepEqual(expiryEscalation({ nudged: true, capturing: true }), { action: "expire" });
+});
+
+test("every hearing failure has a visible line that says what to do next", () => {
+  for (const kind of ["reask", "quiet", "noise"]) {
+    const line = HEARING_FAILURE_LINES[kind];
+    assert.ok(line && line.length > 20, `${kind} needs a real, actionable banner`);
+  }
 });

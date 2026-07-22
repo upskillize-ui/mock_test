@@ -69,6 +69,41 @@ export function textIdleAction(idleMs = 0) {
   return "none";
 }
 
+// ── Soft expiry (the candidate drives, the clock backstops) ──────────────────
+// The per-question clock exists so a stalled question cannot eat the session — but a
+// clock that AUTO-SKIPS on its first zero makes the interviewer feel scripted: she moves
+// on whether or not you were about to speak. So in VOICE the first zero is a NUDGE, not a
+// verdict: the candidate gets told (on screen) that she is still waiting, and the clock
+// gets one grace extension. Only the SECOND zero submits a partial/skip. TEXT already has
+// its own idle ladder (nudge → expire) and is untouched by this.
+export const EXPIRY_GRACE_SECONDS = 60;
+export const VOICE_EXPIRY_NUDGE_LINE =
+  "Still with you — take your time. Speak when you're ready, or type your answer.";
+
+/**
+ * expiryEscalation — the voice question clock just hit zero. Nudge or expire?
+ *
+ * Pure ladder, one rung: first zero for a question → "nudge" (extend by
+ * EXPIRY_GRACE_SECONDS, show the line, keep listening); any later zero → "expire"
+ * (submit partial/skip via expiryAction). `capturing` means a recording or
+ * transcription is in flight — mid-capture the nudge is SILENT (no banner): they are
+ * already answering, cutting in with "take your time" would be noise.
+ */
+export function expiryEscalation({ nudged = false, capturing = false } = {}) {
+  if (nudged) return { action: "expire" };
+  return { action: "nudge", extendSeconds: EXPIRY_GRACE_SECONDS, silent: !!capturing };
+}
+
+// ── On-screen hearing-failure banners (voice mode) ───────────────────────────
+// When STT hears nothing, the ONLY signal used to be Nia's spoken "I didn't quite catch
+// that" — a student whose audio path was broken had no way to see WHY the interview kept
+// re-asking. Every hearing failure now also lands as visible text, and says what to do.
+export const HEARING_FAILURE_LINES = {
+  reask: "I couldn't make out any words from that — please say it again, or type your answer.",
+  quiet: "Your mic is picking you up very faintly — move closer or speak up, then try again.",
+  noise: "There's a lot of background noise — find a quieter spot, or type your answer.",
+};
+
 // What the SERVER stores for a skipped question. Kept here only so the transcript drawer
 // can show the same words the server wrote; the server's copy is the authoritative one
 // (see stages.TIMEOUT_SKIP_TEXT) and the client never sends this text.

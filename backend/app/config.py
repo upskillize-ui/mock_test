@@ -121,9 +121,16 @@ class Settings:
     # SARVAM_API_KEY. No raw audio is ever stored — transcribe-and-discard.
     STT_ENABLED: bool = _env_bool("STT_ENABLED")
     STT_MODEL: str = os.getenv("STT_MODEL", "saarika:v2.5")
-    # "unknown" asks Saarika to auto-detect (Hinglish / en-IN / regional). Ops can
-    # pin "en-IN" for a stricter English bias.
-    STT_LANGUAGE: str = os.getenv("STT_LANGUAGE", "unknown")
+    # Voice-reliability fix: default is now PINNED "en-IN". The "unknown" auto-detect
+    # was a prime suspect in Saarika's 200-OK-with-blank-transcript turns on real
+    # Indian-English speech (see docs/VOICE_RELIABILITY_DIAGNOSTIC.md). Set
+    # STT_LANGUAGE=unknown explicitly to restore auto-detect (Hinglish / regional).
+    STT_LANGUAGE: str = os.getenv("STT_LANGUAGE", "en-IN")
+    # Voice-reliability fix: transcode browser MediaRecorder webm/ogg-opus to
+    # 16 kHz mono WAV (PCM) via ffmpeg before uploading to Saarika. Raw opus
+    # containers were the other blank-transcript suspect. Falls back to the raw
+    # bytes automatically when ffmpeg is missing or the transcode fails.
+    STT_TRANSCODE_WAV: bool = _env_bool("STT_TRANSCODE_WAV", "true")
     # Hard cap on a single uploaded answer, in bytes (spec: 10 MB).
     STT_MAX_UPLOAD_BYTES: int = int(os.getenv("STT_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
     # Extra STT attempts allowed beyond the behavioural question count (retries).

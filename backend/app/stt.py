@@ -20,8 +20,10 @@ Cost control:
     The cap is the behavioural question count + a few retries (set by the caller).
 """
 
+import asyncio
 import json
 import logging
+import shutil
 
 import httpx
 
@@ -102,6 +104,53 @@ def stt_partial_cap_reached(session_id: str, cap: int) -> bool:
     return _session_stt_partial_counts.get(session_id, 0) >= cap
 
 
+# Voice-reliability fix: browser MediaRecorder ships opus in a webm/ogg container,
+# and Saarika intermittently answers 200-OK-with-blank-transcript on those exact
+# uploads (see docs/VOICE_RELIABILITY_DIAGNOSTIC.md — failures at 4.2s AND 15s,
+# byte counts overlapping with successes). WAV/PCM removes the vendor's opus
+# decode from the equation. ffmpeg runs bytes-in/bytes-out over pipes, so the
+# no-audio-on-disk rule holds.
+_FFMPEG = shutil.which("ffmpeg")
+_OPUS_CONTAINER_MIMES = {"audio/webm", "video/webm", "audio/ogg"}
+_TRANSCODE_TIMEOUT_S = 8.0
+
+
+async def _transcode_to_wav(audio_bytes: bytes) -> bytes | None:
+    """Transcode an opus-container recording to 16 kHz mono PCM WAV via ffmpeg
+    pipes. Returns the WAV bytes, or None on ANY failure so the caller falls back
+    to uploading the original bytes. Audio never touches disk and is never logged.
+    """
+    if not _FFMPEG:
+        return None
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _FFMPEG, "-hide_banner", "-loglevel", "error",
+            "-i", "pipe:0",
+            "-ac", "1", "-ar", "16000", "-codec:a", "pcm_s16le", "-f", "wav",
+            "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await asyncio.wait_for(
+            proc.communicate(audio_bytes), timeout=_TRANSCODE_TIMEOUT_S
+        )
+        if proc.returncode == 0 and out and len(out) > 44:   # > bare WAV header
+            return out
+        log.warning("stt_transcode failed rc=%s out_bytes=%d", proc.returncode, len(out or b""))
+    except asyncio.TimeoutError:
+        log.warning("stt_transcode timeout after %.1fs", _TRANSCODE_TIMEOUT_S)
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    except Exception as e:
+        log.warning("stt_transcode error: %s", type(e).__name__)
+    return None
+
+
 async def _request(audio_bytes: bytes, mime: str | None, want_timestamps: bool) -> dict | None:
     """POST audio to Saarika and return the parsed JSON body, or None on ANY
     failure. Never raises, never logs the key/audio/transcript.
@@ -123,6 +172,15 @@ async def _request(audio_bytes: bytes, mime: str | None, want_timestamps: bool) 
     # though it accepts the bare "audio/webm". Strip to the base MIME type; the bytes
     # are unchanged. (Firefox "audio/ogg;codecs=opus" -> "audio/ogg", also accepted.)
     base_mime = (mime or "").split(";")[0].strip().lower() or "application/octet-stream"
+    # Voice-reliability fix: hand Saarika 16 kHz mono WAV instead of the raw opus
+    # container whenever we can. On any transcode failure the original bytes go up
+    # unchanged — this path must never turn a working upload into a dead end.
+    if settings.STT_TRANSCODE_WAV and base_mime in _OPUS_CONTAINER_MIMES:
+        wav = await _transcode_to_wav(audio_bytes)
+        if wav is not None:
+            log.info("stt_transcode ok in_bytes=%d wav_bytes=%d", len(audio_bytes), len(wav))
+            audio_bytes = wav
+            base_mime = "audio/wav"
     ext = {
         "audio/webm": "webm", "video/webm": "webm", "audio/ogg": "ogg",
         "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav",

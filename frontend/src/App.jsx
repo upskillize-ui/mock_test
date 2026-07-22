@@ -12,6 +12,7 @@ import {
   WRAP_CAMERA_OFF, WRAP_NO_ANSWER, WRAP_SESSION_TIME_UP,
   shouldBargeIn, canArmCapture, BARGE_IN_RMS, BARGE_IN_DUCK_MS,
   textIdleAction, TEXT_IDLE_EXPIRY_MS, TEXT_IDLE_NUDGE_LINE, isSubstantiveAnswer,
+  expiryEscalation, EXPIRY_GRACE_SECONDS, VOICE_EXPIRY_NUDGE_LINE, HEARING_FAILURE_LINES,
 } from "./roomPolicy.js";
 import { isEmptyReadout, historyStatus, trendDirection } from "./readoutPolicy.js";
 // Phase D: on-device presence metrics (m1–m8). SHIPS DARK — isPresenceMonitorEnabled()
@@ -2074,6 +2075,9 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   const qDeadlineRef = useRef(0);                // absolute ms deadline
   const qKeyRef = useRef("");                    // the question that deadline belongs to
   const expiredForRef = useRef("");              // the question we have already expired
+  // Soft expiry: a VOICE question clock's FIRST zero is a nudge + grace extension, not a
+  // skip — the candidate drives, the clock backstops. Once per question (see roomPolicy).
+  const expiryNudgedForRef = useRef("");
   // QA-03: TEXT's clock is an idle clock. When did the composer last change, and have we
   // already said "take your time" for this question? (Once per question, like every other
   // nudge in the room.)
@@ -2639,8 +2643,10 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     if (!keepStream) releaseWarmStream();
   };
 
-  const onBargeIn = async () => {
-    stopBargeMonitor({ keepStream: true });   // the open mic BECOMES their recording
+  // Shared by VOICE and TYPED barge-in: stop her mid-reply. Abandons the sequencer,
+  // ducks the player out (a hard cut sounds like a bug), settles the 'ended' event, and
+  // trims the caption to what she actually said aloud.
+  const stopSpeechForBargeIn = async () => {
     speakTokenRef.current = null;             // the sequencer abandons the rest of the reply
 
     const p = player();
@@ -2666,6 +2672,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
         i === m.length - 1 && msg.role === "assistant" ? { ...msg, spoken_prefix: spoken } : msg
       )));
     }
+  };
+
+  const onBargeIn = async () => {
+    stopBargeMonitor({ keepStream: true });   // the open mic BECOMES their recording
+    await stopSpeechForBargeIn();
 
     // Their turn began a second ago. Record on the mic that is ALREADY live rather than
     // spending another getUserMedia on it — that round trip is their opening word.
@@ -2733,6 +2744,19 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     startBargeMonitor();
     return () => stopBargeMonitor({ keepStream: true });
   }, [bargeArmed]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // TYPED barge-in: the first character typed while she is mid-reply is the same signal
+  // as talking over her — the candidate has taken the floor. She stops (duck, not cut);
+  // the mic is NOT opened, because they chose the composer. Voice barge-in above is
+  // untouched; a muted or TEXT-mode student finally gets a way to interrupt too.
+  const prevDraftLenRef = useRef(0);
+  useEffect(() => {
+    const len = (input || "").length;
+    const tookTheFloor = len > 0 && prevDraftLenRef.current === 0;
+    prevDraftLenRef.current = len;
+    if (!tookTheFloor || !audioPlaying || ended) return;
+    stopSpeechForBargeIn();
+  }, [input]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const showToast = (msg) => {
     setSttToast(msg);
@@ -2821,6 +2845,10 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     } else {
       sttFailRef.current = 0;   // environmental issue — don't hold it against the mic
     }
+    // Visible failure: the spoken "didn't catch that" is no longer the only signal. The
+    // student SEES why the interview re-asked, and what to do about it (say it again,
+    // move closer, or type) — a broken audio path stops looking like Nia ignoring them.
+    showToast(HEARING_FAILURE_LINES[kind] || HEARING_FAILURE_LINES.reask);
     busyRef.current = true;
     try {
       const r = await reaskTurn(sessionId, voicePref || "female", kind);
@@ -3497,6 +3525,24 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
   // "waiting for an answer that can no longer be given" state is gone.
   const expireQuestion = () => {
     if (expiredForRef.current === questionKey) return;   // once per question, ever
+    // Soft expiry (VOICE): the first zero is a NUDGE, not a verdict — the clock gets one
+    // grace extension, the candidate sees that Nia is still waiting, and nothing is
+    // submitted. Only the second zero expires for real. Mid-capture the nudge is silent:
+    // they are already answering, and the extension just stops the clock cutting them
+    // off. TEXT keeps its own idle ladder (typing resets that clock) and skips this.
+    if (!textMode) {
+      const esc = expiryEscalation({
+        nudged: expiryNudgedForRef.current === questionKey,
+        capturing: recordingRef.current || transcribingRef.current,
+      });
+      if (esc.action === "nudge") {
+        expiryNudgedForRef.current = questionKey;
+        qDeadlineRef.current = Date.now() + esc.extendSeconds * 1000;
+        setQLeft(esc.extendSeconds);
+        if (!esc.silent) showToast(VOICE_EXPIRY_NUDGE_LINE);
+        return;
+      }
+    }
     expiredForRef.current = questionKey;
     clearGrace();          // the mic must never sit counting into a question that is over
     clearMuteFork();
