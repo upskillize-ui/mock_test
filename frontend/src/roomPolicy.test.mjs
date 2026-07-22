@@ -245,3 +245,18 @@ test("every hearing failure has a visible line that says what to do next", () =>
     assert.ok(line && line.length > 20, `${kind} needs a real, actionable banner`);
   }
 });
+
+// ── Barge-in: the bar a real voice can actually clear ──────────────────────
+
+test("a normal voice peaking ~0.05 CAN now take the floor", () => {
+  // The old fixed bar (0.06) was deaf to exactly this voice — measured on the same mic
+  // whose peaks satisfied the >=0.05 noisy-room path while barge-in never fired.
+  assert.equal(shouldBargeIn({ rms: 0.05, aboveSinceMs: BARGE_IN_SUSTAIN_MS }), true);
+});
+
+test("an adaptive threshold raises the bar in a noisy room, never lowers it", () => {
+  // Noisy room: caller passes a higher bar and 0.05 no longer barges.
+  assert.equal(shouldBargeIn({ rms: 0.05, aboveSinceMs: 5_000, threshold: 0.075 }), false);
+  // A passed threshold BELOW the fixed minimum is clamped up — the floor is the floor.
+  assert.equal(shouldBargeIn({ rms: 0.03, aboveSinceMs: 5_000, threshold: 0.001 }), false);
+});

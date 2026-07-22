@@ -263,20 +263,29 @@ export function shouldBackchannel({
 // 200ms rather than cutting dead, because a hard cut sounds like a bug — and the floor is
 // theirs. She does not then re-say the sentences she was interrupted out of: nobody does
 // that, and a candidate who interrupts has already decided they do not need the rest.
-export const BARGE_IN_RMS = 0.06;        // well above SILENCE_RMS: a voice, not a cough
-export const BARGE_IN_SUSTAIN_MS = 300;  // ...held for long enough to be words
+// The FIXED bar was 0.06 — and it was deaf. Real candidates' speech through an
+// echo-cancelled laptop mic peaks around 0.05 (measured: the "noisy room" coach path,
+// which requires peak >= 0.05, fired on the same voice the barge monitor ignored). So a
+// student talked over the interviewer and she kept going — the single most scripted-
+// feeling thing she can do. The bar is now 0.04 minimum, and the App passes an ADAPTIVE
+// threshold on top: max(BARGE_IN_RMS, 2.5x the ambient floor it measures while she
+// speaks), so a quiet room hears a normal voice and a noisy room does not false-barge.
+export const BARGE_IN_RMS = 0.04;        // minimum bar: clear of room tone, reachable by a real voice
+export const BARGE_IN_SUSTAIN_MS = 350;  // ...held for long enough to be words
 export const BARGE_IN_DUCK_MS = 200;     // fade out, don't cut
 
 /**
  * shouldBargeIn — is that the candidate talking over the interviewer?
  *
- * The threshold is deliberately high and requires SUSTAIN. The mic is open while audio is
- * playing out of the same laptop, so echo cancellation is doing real work underneath this;
- * a low bar would have the interviewer interrupting herself with her own voice.
+ * Requires SUSTAIN above the bar. The mic is open while audio is playing out of the same
+ * laptop, so echo cancellation is doing real work underneath this. `threshold` lets the
+ * caller raise the bar adaptively for a noisy room; it never goes below BARGE_IN_RMS.
  *
  * @param rms          current mic level, 0..1
  * @param aboveSinceMs how long the level has been continuously above the threshold
+ * @param threshold    the bar in force right now (defaults to the fixed minimum)
  */
-export function shouldBargeIn({ rms = 0, aboveSinceMs = 0 } = {}) {
-  return Number(rms) > BARGE_IN_RMS && Number(aboveSinceMs) >= BARGE_IN_SUSTAIN_MS;
+export function shouldBargeIn({ rms = 0, aboveSinceMs = 0, threshold = BARGE_IN_RMS } = {}) {
+  const bar = Math.max(Number(threshold) || 0, BARGE_IN_RMS);
+  return Number(rms) > bar && Number(aboveSinceMs) >= BARGE_IN_SUSTAIN_MS;
 }

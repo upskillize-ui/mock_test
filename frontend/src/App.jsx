@@ -2711,6 +2711,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     } catch { stopBargeMonitor({ keepStream: true }); return; }
 
     const buf = new Uint8Array(an.fftSize);
+    // Adaptive bar: an EMA of the echo-cancelled room tone while she speaks. The bar the
+    // candidate must clear is max(BARGE_IN_RMS, 2.5x that floor) — the old fixed 0.06 was
+    // simply deaf to real speech peaking ~0.05, which is why she talked straight through
+    // people. A quiet room now hears a normal voice; a noisy room raises its own bar.
+    let ambient = 0;
     const tick = () => {
       if (!bargeCtxRef.current || bargedRef.current) return;
       an.getByteTimeDomainData(buf);
@@ -2718,14 +2723,16 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
       const rms = Math.sqrt(sum / buf.length);
       const now = performance.now();
-      if (rms > BARGE_IN_RMS) {
+      const threshold = Math.max(BARGE_IN_RMS, ambient * 2.5);
+      if (rms > threshold) {
         if (!bargeAboveSinceRef.current) bargeAboveSinceRef.current = now;
-        if (shouldBargeIn({ rms, aboveSinceMs: now - bargeAboveSinceRef.current })) {
+        if (shouldBargeIn({ rms, aboveSinceMs: now - bargeAboveSinceRef.current, threshold })) {
           bargedRef.current = true;
           onBargeIn();
           return;
         }
       } else {
+        ambient = ambient ? ambient * 0.95 + rms * 0.05 : rms;
         bargeAboveSinceRef.current = 0;
       }
       bargeRafRef.current = requestAnimationFrame(tick);

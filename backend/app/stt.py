@@ -151,7 +151,14 @@ async def _transcode_to_wav(audio_bytes: bytes) -> bytes | None:
     return None
 
 
-async def _request(audio_bytes: bytes, mime: str | None, want_timestamps: bool) -> dict | None:
+async def _request(
+    audio_bytes: bytes,
+    mime: str | None,
+    want_timestamps: bool,
+    *,
+    use_transcode: bool = True,
+    language_override: str | None = None,
+) -> dict | None:
     """POST audio to Saarika and return the parsed JSON body, or None on ANY
     failure. Never raises, never logs the key/audio/transcript.
 
@@ -175,7 +182,7 @@ async def _request(audio_bytes: bytes, mime: str | None, want_timestamps: bool) 
     # Voice-reliability fix: hand Saarika 16 kHz mono WAV instead of the raw opus
     # container whenever we can. On any transcode failure the original bytes go up
     # unchanged — this path must never turn a working upload into a dead end.
-    if settings.STT_TRANSCODE_WAV and base_mime in _OPUS_CONTAINER_MIMES:
+    if use_transcode and settings.STT_TRANSCODE_WAV and base_mime in _OPUS_CONTAINER_MIMES:
         wav = await _transcode_to_wav(audio_bytes)
         if wav is not None:
             log.info("stt_transcode ok in_bytes=%d wav_bytes=%d", len(audio_bytes), len(wav))
@@ -191,8 +198,9 @@ async def _request(audio_bytes: bytes, mime: str | None, want_timestamps: bool) 
     # auto-detect (Hinglish / en-IN / regional); ops can pin en-IN via config.
     files = {"file": (f"answer.{ext}", audio_bytes, base_mime)}
     data = {"model": settings.STT_MODEL}
-    if settings.STT_LANGUAGE:
-        data["language_code"] = settings.STT_LANGUAGE
+    language = settings.STT_LANGUAGE if language_override is None else language_override
+    if language:
+        data["language_code"] = language
     if want_timestamps:
         data["with_timestamps"] = "true"
     headers = {"api-subscription-key": settings.SARVAM_API_KEY}
@@ -325,9 +333,30 @@ async def transcribe_full(
     # read) — a distinct outcome the caller logs as status=empty. Collapsing the
     # two into None (the old behaviour) is what made every 200-but-blank turn look
     # like a hard failure in the logs.
+    transcript = _extract_transcript(body) if body is not None else None
+    # Voice-reliability retry ladder: attempt 1 is the primary path (WAV transcode +
+    # pinned language). If it produced NO words on real captured audio, spend one more
+    # vendor call the OTHER way — the raw browser container with language auto-detect —
+    # before telling the student we didn't hear them. This covers, at runtime, every
+    # remaining failure hypothesis: ffmpeg missing, Saarika disliking our WAV, or the
+    # language pin rejecting a Hinglish/regional answer. Only fires on a failed first
+    # attempt, so the cost of a healthy pipeline is unchanged.
+    if not transcript:
+        log.info("stt_retry raw+autodetect (first attempt %s)",
+                 "failed" if body is None else "empty")
+        body2 = await _request(
+            audio_bytes, mime, want_timestamps=want_timestamps,
+            use_transcode=False, language_override="unknown",
+        )
+        if body2 is not None:
+            t2 = _extract_transcript(body2)
+            if t2:
+                log.info("stt_retry recovered transcript_len=%d", len(t2))
+                body, transcript = body2, t2
+            elif body is None:
+                body = body2   # at least a 200 body -> report empty, not fail
     if body is None:
         return None
-    transcript = _extract_transcript(body)
     ts = body.get("timestamps")
     if not isinstance(ts, dict):
         ts = None
