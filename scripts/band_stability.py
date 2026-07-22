@@ -125,14 +125,27 @@ GOLDENS = [
 
 
 async def _one_run(cfg: dict, messages: list[dict]) -> tuple[str, int]:
+    """One debrief generation -> (band, raw pct). ("PARSE-FAIL", -1) when the model's
+    output couldn't be parsed — counted as instability, never a crash: a rubric that
+    sometimes emits unparseable output is exactly the kind of drift this measures."""
+    import httpx
     system = build_system_prompt(cfg, "")
     msgs = messages + [{"role": "user", "content": debrief_instruction(cfg)}]
-    raw = await call_claude(
-        system=system, messages=msgs,
-        model=settings.MODEL_DEBRIEF, max_tokens=8000,
-    )
-    m = re.search(r"\{.*\}", raw, re.DOTALL)  # same outermost-object salvage as main.py
-    d = json.loads(m.group(0)) if m else {}
+    try:
+        raw = await call_claude(
+            system=system, messages=msgs,
+            model=settings.MODEL_DEBRIEF, max_tokens=8000,
+            # A full readout takes longer than the 60s default read window —
+            # main.py's own debrief path runs a 240s clock for the same reason.
+            timeout=httpx.Timeout(connect=5.0, read=240.0, write=10.0, pool=5.0),
+        )
+        m = re.search(r"\{.*\}", raw, re.DOTALL)  # same outermost-object salvage as main.py
+        d = json.loads(m.group(0)) if m else None
+    except Exception as e:
+        print(f"    run error: {type(e).__name__}: {e}")
+        d = None
+    if not isinstance(d, dict):
+        return "PARSE-FAIL", -1
     pct = int(d.get("overall", 0))
     return stages.band_for(pct), pct
 

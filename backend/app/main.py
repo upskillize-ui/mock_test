@@ -4,7 +4,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone as dt_timezone
 from pathlib import Path
 from fastapi import FastAPI, Depends, HTTPException, Query, Header, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -634,6 +634,26 @@ async def _greeting_segments(
     return build_segments(sentences, [first_url])
 
 
+# ── The candidate's local clock ──────────────────────────────────────────────
+# {session_id: {tz, local_time}} — captured from the browser at /session/start so the
+# interviewer's "good evening" matches the person's actual evening, wherever they are.
+# In-process and informational only; never enters scoring, never stored.
+_session_local_clock: dict[str, dict] = {}
+
+
+def _utc_aware(dt):
+    """Attach UTC to a naive DB timestamp so clients can render it in THEIR zone.
+
+    Every vyom_ timestamp is written by the DB clock (NOW()/column default), which runs
+    UTC on the managed MySQL this deploys against — but it is serialized NAIVE, and a
+    browser fed a naive ISO string guesses, showing a Singapore student the wrong
+    wall-clock. Making the UTC explicit (+00:00 suffix) lets every client's
+    toLocaleString land on the student's local time with zero further work."""
+    if isinstance(dt, datetime) and dt.tzinfo is None:
+        return dt.replace(tzinfo=dt_timezone.utc)
+    return dt
+
+
 def _session_to_cfg(row: dict) -> dict:
     return {
         "name": row.get("name") or "",
@@ -957,6 +977,13 @@ async def start_session(
     body.intro = intake.intro_blob(cfg)
 
     session_id = str(uuid.uuid4())
+    # The candidate's local clock (Singapore student != server clock). In-process, like
+    # the STT meters: the greeting fires seconds after start, so a restart in between
+    # simply means the interviewer doesn't mention the time of day — never a wrong one.
+    if body.timezone or body.local_time:
+        _session_local_clock[session_id] = {
+            "tz": body.timezone[:64], "local_time": body.local_time[:80],
+        }
     db.execute(
         text("""
             INSERT INTO vyom_sessions
@@ -1123,7 +1150,9 @@ async def session_greeting(
         raw_kickoff = await stream_claude(
             system=build_system_prompt(kickoff_cfg, alumni_intel),
             messages=[{"role": "user", "content": build_kickoff(
-                kickoff_cfg, recent_openings=recent_openings)}],
+                kickoff_cfg, recent_openings=recent_openings,
+                local_time=_session_local_clock.get(body.session_id, {}).get("local_time", ""),
+            )}],
             model=settings.MODEL_INTERVIEW,
             max_tokens=500,
             on_delta=_on_delta,
@@ -1944,6 +1973,7 @@ async def session_stt(
     session_id: str = Form(...),
     audio: UploadFile = File(...),
     duration_seconds: float = Form(0.0),
+    kind: str = Form("answer"),
     db: Session = Depends(get_db),
     user_id: str = Depends(current_user),
 ):
@@ -2001,6 +2031,7 @@ async def session_stt(
     result = await stt.transcribe_full(
         audio_bytes, audio.content_type, want_timestamps=settings.STT_WITH_TIMESTAMPS,
         duration_seconds=duration_seconds,
+        session_id=session_id,   # retries/chunks count against the same cost cap
     )
     _stt_ms = int((time.perf_counter() - _t0) * 1000)
 
@@ -2031,10 +2062,14 @@ async def session_stt(
     # are now genuinely distinct: transcribe_full returns a dict (transcript=None) for
     # the empty case and None only for a real failure.
     _status = "ok" if transcript else ("fail" if result is None else "empty")
-    # Measurement health: every answer attempt's final outcome feeds the session's
+    # Measurement health: every ANSWER attempt's final outcome feeds the session's
     # health record, read at readout time — a session the pipeline couldn't hear
-    # must not be banded as if it had been heard (see end_session's gate).
-    stt.note_stt_health(session_id, _status)
+    # must not be banded as if it had been heard (see end_session's gate). Spoken
+    # CONFIDENCE RATINGS come through this same endpoint (kind="rating") and are
+    # excluded: a one-word "three" that the vendor blanks on says nothing about
+    # whether the ANSWERS were heard, and counting it would gate bands unfairly.
+    if kind != "rating":
+        stt.note_stt_health(session_id, _status)
     log.info(
         "stt_attempt session=%s status=%s bytes=%d mime=%s dur_s=%.1f "
         "transcript_len=%d confidence=%s stt_ms=%d",
@@ -2534,6 +2569,20 @@ def _debrief_response(
     profile = _session_profile(session_row, cov)
     reattempt = scoring.reattempt_window(overall_band) if scored else {}
 
+    # An "Unrated" band must NEVER render unexplained. The live path passes the health
+    # record in; the replay path (refresh, history) reads the stored gated band after
+    # the in-process counters are gone — so synthesize the explanation from the band
+    # itself. The one pill that exists to be explained keeps its explanation forever.
+    if scored and overall_band == "Unrated" and not (measurement or {}).get("note"):
+        measurement = dict(measurement or {})
+        measurement.setdefault("healthy", False)
+        measurement.setdefault("note", (
+            "We couldn't hear enough of your spoken answers clearly to judge you fairly, "
+            "so no band was issued for this attempt. The coaching below covers what we "
+            "did hear. Sort the mic (or switch to typed answers) and re-attempt — this "
+            "one is on us, not you."
+        ))
+
     score = None
     if scored and result:
         score = ScoreContext(
@@ -2774,8 +2823,8 @@ def _row_to_history_item(row: dict) -> HistoryListItem:
         actual_duration_seconds=row.get("actual_duration_seconds"),
         user_message_count=row.get("user_message_count") or 0,
         assistant_message_count=row.get("assistant_message_count") or 0,
-        started_at=row["started_at"],
-        ended_at=row.get("ended_at"),
+        started_at=_utc_aware(row["started_at"]),
+        ended_at=_utc_aware(row.get("ended_at")),
         status=row["status"],
         completion_type=row.get("completion_type"),
         overall=row.get("overall"),
@@ -2844,7 +2893,7 @@ def user_history(
             "session_id": i.session_id,
             "benchmark": i.benchmark,
             "band": i.band,
-            "started_at": i.started_at.isoformat() if i.started_at else None,
+            "started_at": _utc_aware(i.started_at).isoformat() if i.started_at else None,
             "difficulty": i.difficulty,
             "duration_min": i.planned_duration_min,
             # The newest attempt is flagged so a glance lands on "where am I now",

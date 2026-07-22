@@ -549,6 +549,12 @@ _REATTEMPT = {
                     "just re-runs the same interview."),
     "Not Ready": (7, "Take the full week on the plan, then come back. There is real work between "
                      "here and the next band, and a week of it changes the session."),
+    # Measurement-health gate: the PIPELINE failed this session, not the person. The
+    # re-attempt copy must not read like a verdict ("real work between here and the next
+    # band") — there is no band, and the wait is however long a mic fix takes.
+    "Unrated": (0, "This attempt didn't count against you — the audio pipeline, not you, let the "
+                   "session down. Fix the mic (or switch to typed answers) and go again whenever "
+                   "you're ready."),
 }
 
 
@@ -581,11 +587,17 @@ def ecopro_export(*, band, benchmark, gaps, reattempt, session_id=None, scored=T
             })
         elif isinstance(g, str):
             top.append({"fix": g, "try_this_next_time": "", "course": ""})
+    # Measurement-gated sessions carry no band downstream: NudgeAI reads the four ladder
+    # bands, and "Unrated" is not a readiness signal — it is the absence of one. The flag
+    # says WHY the band is missing, so an agent can nudge "fix your mic" rather than
+    # scheduling study time off a verdict that was never issued.
+    gated_by_measurement = band == "Unrated"
     return {
         "session_id": session_id,
         "scored": bool(scored),
-        "band": band if scored else None,
+        "band": None if gated_by_measurement else (band if scored else None),
         "benchmark": benchmark if scored else None,
+        "measurement_gated": gated_by_measurement,
         "top_fixes": top,
         "reattempt_window": reattempt or {},
         "weights_version": WEIGHTS_VERSION,

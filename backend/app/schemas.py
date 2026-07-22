@@ -81,6 +81,15 @@ class StartSessionRequest(BaseModel):
     # accessibility path — camera attention signals are disabled for the whole session
     # and the readout omits camera-based presence lines. Never a penalty.
     camera_at_join: bool = False
+    # The candidate's LOCAL clock, so a student joining from Singapore is greeted with
+    # THEIR "good evening", not the server's. `timezone` is the browser's IANA name
+    # (Intl.DateTimeFormat().resolvedOptions().timeZone); `local_time` is a preformatted
+    # human string ("Thursday, 7:42 pm") rendered on the device — the one clock that is
+    # always right for the person in the room. Both optional: older clients omit them and
+    # the interviewer simply never references the time of day. Informational only — never
+    # used in scoring.
+    timezone: str = Field("", max_length=64)
+    local_time: str = Field("", max_length=80)
 
 
 class StartSessionResponse(BaseModel):

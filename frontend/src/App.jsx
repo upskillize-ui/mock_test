@@ -153,9 +153,12 @@ const fetchStats = () => api("/user/stats");
 // Multipart: we must NOT set Content-Type ourselves (the browser adds the boundary),
 // and we send only the auth header. On any non-OK we throw so the caller falls back
 // to typing. The endpoint transcribes-and-discards; raw audio is never stored.
-async function sttTranscribe(sessionId, blob, filename = "answer.webm", durationSeconds = 0) {
+async function sttTranscribe(sessionId, blob, filename = "answer.webm", durationSeconds = 0, kind = "answer") {
   const fd = new FormData();
   fd.append("session_id", sessionId);
+  // "answer" | "rating" — the server's measurement-health gate must not count a
+  // one-word spoken rating ("three") as a failed ANSWER attempt.
+  fd.append("kind", kind);
   fd.append("audio", blob, filename);
   // Voice Phase 3: recording duration drives wpm; the audio itself is still discarded.
   fd.append("duration_seconds", String(Math.max(0, Math.round(durationSeconds * 10) / 10)));
@@ -959,7 +962,11 @@ function Tip({ children, style = {} }) {
   return <div className="iq-tip" style={{ background: "#fff", borderRadius: 10, padding: "14px 18px", color: T.text, fontSize: 12, lineHeight: 1.6, boxShadow: "0 8px 30px rgba(26,39,68,.18)", border: "1px solid " + T.border, ...style }}>{children}</div>;
 }
 
-const fmtDate = (s) => { if (!s) return "—"; try { return new Date(s).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return s; } };
+// Local-clock rule: the server now sends timezone-AWARE timestamps (+00:00), and the
+// locale is left to the browser — so a student in Singapore reads Singapore time in
+// their own date format, and a student in Pune reads IST. Hardcoding "en-IN" here was
+// half of how every non-IST student saw the wrong wall-clock on their history.
+const fmtDate = (s) => { if (!s) return "—"; try { return new Date(s).toLocaleString(undefined, { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return s; } };
 const fmtDuration = (sec) => { if (sec == null) return "—"; const m = Math.floor(sec / 60), s = sec % 60; return `${m}m ${String(s).padStart(2, "0")}s`; };
 const scoreColor = (s) => (s == null) ? T.subtle : s >= 70 ? T.green : s >= 50 ? T.gold : T.red;
 const completionLabel = (status, ct) => {
@@ -2742,6 +2749,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
         ambient = ambient ? ambient * 0.95 + rms * 0.05 : rms;
         bargeAboveSinceRef.current = 0;
       }
+      // Steady noise sitting AT/ABOVE the bar must still raise the floor, or a fan at
+      // rms 0.045 false-barges Nia every time she opens her mouth (the else branch alone
+      // can only learn from noise already below the bar). Slow rise: a genuine 350ms
+      // voice burst barges long before this EMA moves, but minutes of constant hum
+      // walk the bar up toward the cap.
+      if (rms > BARGE_IN_RMS) ambient = ambient ? ambient * 0.995 + rms * 0.005 : rms * 0.5;
       bargeRafRef.current = requestAnimationFrame(tick);
     };
     bargeRafRef.current = requestAnimationFrame(tick);
@@ -2980,7 +2993,12 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       let sum = 0;
       for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
       const rms = Math.sqrt(sum / buf.length);
-      if (performance.now() < calibrateUntil && !spokeRef.current) {
+      // Calibrate on ROOM TONE only: frames that could plausibly be speech (>= 0.03)
+      // never feed the floor. Without this bound, a student who starts talking the
+      // instant the mic opens — guaranteed after a barge-in hand-off — poisons the
+      // floor with their own voice, pinning armAt above real speech and deadening the
+      // auto-stop for the whole answer.
+      if (performance.now() < calibrateUntil && !spokeRef.current && rms < 0.03) {
         noiseEma = noiseEma ? noiseEma * 0.85 + rms * 0.15 : rms;
       }
       const armAt = Math.min(Math.max(SILENCE_RMS * 1.6, noiseEma * 2.0), 0.055);
@@ -3076,9 +3094,13 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     clearRatingSilence();
     ratingSilenceRef.current = setTimeout(() => {
       // 8s and they haven't said anything usable -> stop listening and offer the pills.
+      // The flag STAYS SET while a recorder is live: finishRecording (fired async from
+      // MediaRecorder.onstop) must still see isRating=true, or 8s of rating silence gets
+      // processed as a failed ANSWER attempt — billed, health-counted, and answered by
+      // Nia with "your mic is picking you up very faintly" while the pills are on screen.
       if (!ratingListeningRef.current) return;
+      if (recordingRef.current) { stopRecording(); return; }   // finishRecording consumes the flag
       ratingListeningRef.current = false;
-      if (recordingRef.current) stopRecording();
       setRatingPills(true);
     }, RATING_SILENCE_MS);
   };
@@ -3263,10 +3285,14 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
         sttStartTs: 0, sttEndTs: 0, llmStartTs: 0, llmEndTs: 0, playbackTs: 0, emitted: false,
       };
     }
+    // A rating capture in which the meter never heard speech has nothing to transcribe:
+    // don't spend a vendor call uploading 8 seconds of silence — go straight to the pills.
+    if (isRating && !spokeRef.current) { failRatingToPills(); return; }
     setTranscribing(true); transcribingRef.current = true;
     try {
       if (turnLogRef.current) turnLogRef.current.sttStartTs = Date.now();
-      const res = await sttTranscribe(sessionId, blob, `answer.${ext}`, durationSeconds);
+      const res = await sttTranscribe(sessionId, blob, `answer.${ext}`, durationSeconds,
+        isRating ? "rating" : "answer");
       const transcript = res && res.transcript ? res.transcript : null;
       if (turnLogRef.current) {
         turnLogRef.current.sttEndTs = Date.now();
@@ -5312,6 +5338,10 @@ export default function App() {
         ...payload,
         interviewer_name: iv.name,      // the persona ADOPTS the face's name
         camera_at_join: !!camera,       // a camera-off join is never penalised
+        // The candidate's LOCAL clock: a student joining from Singapore gets THEIR
+        // "good evening", not the server's. Browser-reported; informational only.
+        timezone: (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { return ""; } })(),
+        local_time: (() => { try { return new Date().toLocaleString(undefined, { weekday: "long", hour: "numeric", minute: "2-digit" }); } catch { return ""; } })(),
       });
 
       // FAST START: /session/start is now just the session row, so we are HERE in well

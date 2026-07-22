@@ -727,7 +727,8 @@ reference a previous session in any way. You are a different interviewer who has
 met them. You simply must not repeat these words."""
 
 
-def build_kickoff(cfg: dict, seed=None, recent_openings: list[str] | None = None) -> str:
+def build_kickoff(cfg: dict, seed=None, recent_openings: list[str] | None = None,
+                  local_time: str = "") -> str:
     """The session-start instruction: invent an identity, then open in it.
 
     Returns a user-turn instruction asking for JSON {identity, opening} so we can
@@ -739,6 +740,19 @@ def build_kickoff(cfg: dict, seed=None, recent_openings: list[str] | None = None
     rng = random.Random(seed)
     senior = is_senior_character(cfg)
     recent_block = avoid_block(recent_openings, "openings")
+    # The candidate's LOCAL clock (browser-reported, e.g. "Thursday, 7:42 pm"). A student
+    # joining from Singapore must get THEIR evening, not the server's morning — a wrong
+    # "good morning" is a small tell that breaks the whole room. Absent -> the persona
+    # simply never references the time of day.
+    local_time_block = (
+        f"\nTHE CANDIDATE'S LOCAL TIME IS {local_time}. If you touch the time of day at all "
+        "(\"good evening\", \"late for you\"), use THIS clock — never your own, never an "
+        "assumed one. Do not recite their timezone or location back to them, and do not "
+        "remark on the hour unless it is natural to."
+        if (local_time or "").strip() else
+        "\nYou do NOT know the candidate's local time. Do not guess a time-of-day greeting "
+        "(\"good morning\") — greet without one."
+    )
     # Whether BEAT 2 has anything real to be friendly with. For most students it does not.
     personal_facts_rule_text = personal_facts_rule(cfg.get("intro") or "")
     # Interview Room: the CLIENT's roster (pickInterviewer) is the source of truth for
@@ -793,6 +807,7 @@ The dials above outrank the examples.
 
 YOUR NAME THIS SESSION IS {interviewer_name}. Use it (naturally, once) if you introduce
 yourself at all. Do not rename yourself.
+{local_time_block}
 
 Invent FRESH phrasing every single session. Two sessions that open with the same or
 nearly the same words — or that are the same person wearing different words — are a

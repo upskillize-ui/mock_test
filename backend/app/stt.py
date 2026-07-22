@@ -346,6 +346,11 @@ def _extract_transcript(body: dict) -> str | None:
 _SARVAM_MAX_CLIP_S = 30.0
 _CHUNK_S = 25.0
 _WAV_BYTES_PER_S = 16000 * 2   # 16 kHz, mono, s16
+# Hard ceiling on clips per answer (8 x 25s = 200s, comfortably past the client's 180s
+# recording cap). Without it, a crafted 10 MB upload with a lying duration_seconds could
+# fan one counted call out into ~100 billed vendor calls — the cost cap exists precisely
+# to make that impossible. Dropped clips are LOGGED, never silently discarded.
+_MAX_CHUNKS = 8
 
 
 def _wav_pcm(wav: bytes) -> bytes | None:
@@ -377,8 +382,16 @@ def _slice_wav_pcm(pcm: bytes, chunk_s: float = _CHUNK_S) -> list[bytes]:
     return clips
 
 
-async def _transcribe_chunked(audio_bytes: bytes, mime: str | None) -> dict | None:
-    """Transcribe an answer longer than Sarvam's 30s clip limit, in ≤25s slices."""
+async def _transcribe_chunked(
+    audio_bytes: bytes, mime: str | None, session_id: str | None = None
+) -> dict | None:
+    """Transcribe an answer longer than Sarvam's 30s clip limit, in ≤25s slices.
+
+    Every vendor call beyond the first is counted against the session's cost cap via
+    note_stt_call — the caller counted ONE call for this upload, and the cap's whole
+    promise ("a single session can't run up cost") dies if chunking multiplies calls
+    invisibly.
+    """
     wav = await _transcode_to_wav(audio_bytes)
     pcm = _wav_pcm(wav) if wav else None
     if not pcm:
@@ -388,10 +401,16 @@ async def _transcribe_chunked(audio_bytes: bytes, mime: str | None) -> dict | No
         if body is None:
             return None
         return {"transcript": _extract_transcript(body), "timestamps": None, "confidence": None}
+    clips = _slice_wav_pcm(pcm)
+    if len(clips) > _MAX_CHUNKS:
+        log.warning("stt_chunked capped: %d clips sliced, %d dropped (answer tail not transcribed)",
+                    len(clips), len(clips) - _MAX_CHUNKS)
+        clips = clips[:_MAX_CHUNKS]
     parts: list[str] = []
     any_body = False
-    clips = _slice_wav_pcm(pcm)
-    for clip in clips:
+    for i, clip in enumerate(clips):
+        if i > 0 and session_id:
+            note_stt_call(session_id)   # cost-cap honesty: each clip is a real vendor call
         body = await _request(clip, "audio/wav", want_timestamps=False, use_transcode=False)
         if body is None:
             continue
@@ -419,6 +438,7 @@ async def transcribe_full(
     mime: str | None,
     want_timestamps: bool = True,
     duration_seconds: float = 0.0,
+    session_id: str | None = None,
 ) -> dict | None:
     """Phase 3 Part C: transcript PLUS the raw signals delivery scoring needs.
 
@@ -431,7 +451,7 @@ async def transcribe_full(
     # A capture longer than Sarvam's 30s clip limit is transcribed in slices — sending
     # it whole is a guaranteed 400 ("Audio duration exceeds the maximum limit").
     if (duration_seconds or 0.0) > _SARVAM_MAX_CLIP_S - 2.0:
-        return await _transcribe_chunked(audio_bytes, mime)
+        return await _transcribe_chunked(audio_bytes, mime, session_id=session_id)
 
     body = await _request(audio_bytes, mime, want_timestamps=want_timestamps,
                           use_transcode=False)
@@ -452,6 +472,8 @@ async def transcribe_full(
     if not transcript:
         log.info("stt_retry wav+autodetect (first attempt %s)",
                  "failed" if body is None else "empty")
+        if session_id:
+            note_stt_call(session_id)   # the retry is a second real vendor call
         body2 = await _request(
             audio_bytes, mime, want_timestamps=want_timestamps,
             use_transcode=True, language_override="unknown",
