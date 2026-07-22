@@ -2723,7 +2723,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
       const rms = Math.sqrt(sum / buf.length);
       const now = performance.now();
-      const threshold = Math.max(BARGE_IN_RMS, ambient * 2.5);
+      // Capped: a fan or distant voices raise the ambient floor, and an uncapped 2.5x
+      // multiplier would push the bar right back out of a real voice's reach — the exact
+      // deafness the fixed 0.06 bar had. Above the cap, sustain (350ms of continuous
+      // voice) is what separates the candidate from the room.
+      const threshold = Math.min(Math.max(BARGE_IN_RMS, ambient * 2.5), 0.065);
       if (rms > threshold) {
         if (!bargeAboveSinceRef.current) bargeAboveSinceRef.current = now;
         if (shouldBargeIn({ rms, aboveSinceMs: now - bargeAboveSinceRef.current, threshold })) {
@@ -2958,6 +2962,14 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     } catch { teardownMeter(); return; }
     const buf = new Uint8Array(an.fftSize);
     let frame = 0;
+    // Adaptive noise floor: the first ~0.7s of a capture (before any speech) calibrates
+    // the ROOM — fan hum, a cooler, people talking in the distance. Both VAD thresholds
+    // ride on that floor instead of the fixed SILENCE_RMS, so steady background noise no
+    // longer reads as "the student is still talking" (which kept recordings running to
+    // 37s+ and straight into Sarvam's 30s clip limit). Both are capped, so a loud
+    // calibration can never make real speech un-detectable or an answer un-finishable.
+    let noiseEma = 0;
+    const calibrateUntil = performance.now() + 700;
     const tick = () => {
       const a = analyserRef.current;
       if (!a || !recordingRef.current) return;
@@ -2965,6 +2977,11 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       let sum = 0;
       for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
       const rms = Math.sqrt(sum / buf.length);
+      if (performance.now() < calibrateUntil && !spokeRef.current) {
+        noiseEma = noiseEma ? noiseEma * 0.85 + rms * 0.15 : rms;
+      }
+      const armAt = Math.min(Math.max(SILENCE_RMS * 1.6, noiseEma * 2.0), 0.055);
+      const stopBelow = Math.min(Math.max(SILENCE_RMS, noiseEma * 1.3), 0.04);
       // Instrumentation (item 3/4/8): the loudest frame and the running mean over the whole
       // answer. finishRecording reads these to tell a too-quiet mic apart from a too-noisy
       // room — a distinction the transcript alone cannot make.
@@ -2972,7 +2989,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       rmsSumRef.current += rms; rmsFramesRef.current += 1;
       // Throttle React updates to ~20fps; the rAF itself stays at display rate.
       if (frame++ % 3 === 0) setLevels(prev => { const next = prev.slice(1); next.push(rms); return next; });
-      if (rms > SILENCE_RMS * 1.6 && !spokeRef.current) {
+      if (rms > armAt && !spokeRef.current) {
         spokeRef.current = true;
         // Item 7: something was heard this question, so the failsafe timer chip can recede.
         if (!heardSpeechThisQRef.current) { heardSpeechThisQRef.current = true; setHeardSpeechThisQ(true); }
@@ -2982,7 +2999,7 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
       // before an answer, and a half-second cough, must never be read as "finished".
       const spokeEnoughMs = recStartRef.current ? Date.now() - recStartRef.current : 0;
       if (micOnRef.current && spokeRef.current && spokeEnoughMs >= MIN_SPEECH_MS) {
-        if (rms < SILENCE_RMS) {
+        if (rms < stopBelow) {
           if (!silenceStartRef.current) silenceStartRef.current = performance.now();
           else if (performance.now() - silenceStartRef.current >= SILENCE_HOLD_MS) { stopRecording(); return; }
         } else silenceStartRef.current = 0;

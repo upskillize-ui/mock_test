@@ -127,8 +127,8 @@ async def _transcode_to_wav(audio_bytes: bytes) -> bytes | None:
         proc = await asyncio.create_subprocess_exec(
             _FFMPEG, "-hide_banner", "-loglevel", "error",
             "-i", "pipe:0",
-            "-ac", "1", "-ar", "16000", "-codec:a", "pcm_s16le", "-f", "wav",
-            "pipe:1",
+            "-ac", "1", "-ar", "16000", "-codec:a", "pcm_s16le", "-bitexact",
+            "-f", "wav", "pipe:1",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
@@ -307,6 +307,76 @@ def _extract_transcript(body: dict) -> str | None:
     return None
 
 
+# ── Long answers: Sarvam's real-time API hard-rejects clips over 30 seconds ──
+# ("Audio duration exceeds the maximum limit of 30 seconds", observed live on a 37.6s
+# answer). Interview answers routinely run 30-90s, so a long capture is sliced into
+# independent ≤25s WAV clips — pure byte math on the 16 kHz mono PCM we already produce,
+# no disk, no extra tools — transcribed clip by clip, and joined. Word timestamps are
+# dropped for chunked answers (their offsets would be wrong); delivery metrics already
+# tolerate their absence.
+_SARVAM_MAX_CLIP_S = 30.0
+_CHUNK_S = 25.0
+_WAV_BYTES_PER_S = 16000 * 2   # 16 kHz, mono, s16
+
+
+def _wav_pcm(wav: bytes) -> bytes | None:
+    """The raw PCM payload of a WAV buffer — found by locating the 'data' chunk, not by
+    assuming a 44-byte header (ffmpeg pipes write placeholder sizes and may add LIST
+    chunks). Returns None if there is no data chunk."""
+    i = wav.find(b"data", 12)
+    if i < 0 or i + 8 >= len(wav):
+        return None
+    return wav[i + 8:]
+
+
+def _slice_wav_pcm(pcm: bytes, chunk_s: float = _CHUNK_S) -> list[bytes]:
+    """Split raw 16 kHz mono s16 PCM into standalone WAV clips of ≤ chunk_s seconds."""
+    import struct
+    step = int(chunk_s * _WAV_BYTES_PER_S)
+    step -= step % 2   # sample alignment
+    clips = []
+    for off in range(0, len(pcm), step):
+        seg = pcm[off:off + step]
+        if len(seg) < _WAV_BYTES_PER_S // 4:   # a <0.25s tail carries no words
+            continue
+        hdr = struct.pack(
+            "<4sI4s4sIHHIIHH4sI",
+            b"RIFF", 36 + len(seg), b"WAVE", b"fmt ", 16, 1, 1,
+            16000, _WAV_BYTES_PER_S, 2, 16, b"data", len(seg),
+        )
+        clips.append(hdr + seg)
+    return clips
+
+
+async def _transcribe_chunked(audio_bytes: bytes, mime: str | None) -> dict | None:
+    """Transcribe an answer longer than Sarvam's 30s clip limit, in ≤25s slices."""
+    wav = await _transcode_to_wav(audio_bytes)
+    pcm = _wav_pcm(wav) if wav else None
+    if not pcm:
+        # No ffmpeg / transcode failed: one raw attempt is still better than giving up
+        # (it will be rejected over 30s, but this path must never be a dead end).
+        body = await _request(audio_bytes, mime, want_timestamps=False, use_transcode=False)
+        if body is None:
+            return None
+        return {"transcript": _extract_transcript(body), "timestamps": None, "confidence": None}
+    parts: list[str] = []
+    any_body = False
+    clips = _slice_wav_pcm(pcm)
+    for clip in clips:
+        body = await _request(clip, "audio/wav", want_timestamps=False, use_transcode=False)
+        if body is None:
+            continue
+        any_body = True
+        t = _extract_transcript(body)
+        if t:
+            parts.append(t)
+    if not any_body:
+        return None
+    joined = " ".join(parts).strip() or None
+    log.info("stt_chunked clips=%d transcript_len=%d", len(clips), len(joined or ""))
+    return {"transcript": joined, "timestamps": None, "confidence": None}
+
+
 async def transcribe(audio_bytes: bytes, mime: str | None) -> str | None:
     """Transcript text only, or None on any failure (backward-compatible)."""
     body = await _request(audio_bytes, mime, want_timestamps=False)
@@ -316,7 +386,10 @@ async def transcribe(audio_bytes: bytes, mime: str | None) -> str | None:
 
 
 async def transcribe_full(
-    audio_bytes: bytes, mime: str | None, want_timestamps: bool = True
+    audio_bytes: bytes,
+    mime: str | None,
+    want_timestamps: bool = True,
+    duration_seconds: float = 0.0,
 ) -> dict | None:
     """Phase 3 Part C: transcript PLUS the raw signals delivery scoring needs.
 
@@ -326,7 +399,13 @@ async def transcribe_full(
     is the vendor articulation score if the model returns one (Saarika currently
     does not, so it is typically None). Audio is not retained beyond this call.
     """
-    body = await _request(audio_bytes, mime, want_timestamps=want_timestamps)
+    # A capture longer than Sarvam's 30s clip limit is transcribed in slices — sending
+    # it whole is a guaranteed 400 ("Audio duration exceeds the maximum limit").
+    if (duration_seconds or 0.0) > _SARVAM_MAX_CLIP_S - 2.0:
+        return await _transcribe_chunked(audio_bytes, mime)
+
+    body = await _request(audio_bytes, mime, want_timestamps=want_timestamps,
+                          use_transcode=False)
     # None means the vendor call itself FAILED (transport/non-200/decode) — the
     # caller logs status=fail. A dict with transcript=None means the vendor
     # answered 200 but we got no usable text (silence, noise, or a shape we can't
@@ -334,19 +413,19 @@ async def transcribe_full(
     # two into None (the old behaviour) is what made every 200-but-blank turn look
     # like a hard failure in the logs.
     transcript = _extract_transcript(body) if body is not None else None
-    # Voice-reliability retry ladder: attempt 1 is the primary path (WAV transcode +
-    # pinned language). If it produced NO words on real captured audio, spend one more
-    # vendor call the OTHER way — the raw browser container with language auto-detect —
-    # before telling the student we didn't hear them. This covers, at runtime, every
-    # remaining failure hypothesis: ffmpeg missing, Saarika disliking our WAV, or the
-    # language pin rejecting a Hinglish/regional answer. Only fires on a failed first
-    # attempt, so the cost of a healthy pipeline is unchanged.
+    # Voice-reliability retry ladder. Attempt 1 is the RAW browser container with the
+    # pinned language — live evidence (22 Jul) showed the raw upload succeeding while the
+    # WAV path drew 402s, and it is also the cheaper call (no ffmpeg run, half the upload
+    # bytes). If it produced NO words on real captured audio, spend one more vendor call
+    # the OTHER way — 16 kHz WAV with language auto-detect — which covers the original
+    # opus-decode blanks and a language pin rejecting a Hinglish/regional answer. Only
+    # fires on a failed first attempt, so a healthy pipeline pays nothing extra.
     if not transcript:
-        log.info("stt_retry raw+autodetect (first attempt %s)",
+        log.info("stt_retry wav+autodetect (first attempt %s)",
                  "failed" if body is None else "empty")
         body2 = await _request(
             audio_bytes, mime, want_timestamps=want_timestamps,
-            use_transcode=False, language_override="unknown",
+            use_transcode=True, language_override="unknown",
         )
         if body2 is not None:
             t2 = _extract_transcript(body2)

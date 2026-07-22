@@ -1991,7 +1991,8 @@ async def session_stt(
     stt.note_stt_call(session_id)
     _t0 = time.perf_counter()
     result = await stt.transcribe_full(
-        audio_bytes, audio.content_type, want_timestamps=settings.STT_WITH_TIMESTAMPS
+        audio_bytes, audio.content_type, want_timestamps=settings.STT_WITH_TIMESTAMPS,
+        duration_seconds=duration_seconds,
     )
     _stt_ms = int((time.perf_counter() - _t0) * 1000)
 
