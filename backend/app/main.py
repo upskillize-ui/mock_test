@@ -805,6 +805,7 @@ def _report_costs_to_lms(db: Session, session_id: str, data: dict) -> None:
     base = os.getenv("LMS_BASE_URL", "").rstrip("/")
     secret = os.getenv("INTERNAL_CREDIT_SECRET", "")
     if not base or not secret:
+        log.warning("lms usage report OFF: LMS_BASE_URL / INTERNAL_CREDIT_SECRET not set")
         return
     try:
         row = db.execute(
@@ -813,6 +814,8 @@ def _report_costs_to_lms(db: Session, session_id: str, data: dict) -> None:
         ).mappings().first()
         user_id = row and row.get("user_id")
         if not user_id:
+            log.warning("lms usage report skipped: session %s has NO user_id "
+                        "(interview not linked to an LMS student)", session_id)
             return
 
         def post(model: str, in_units: int, out_units: int = 0) -> None:
@@ -841,6 +844,7 @@ def _report_costs_to_lms(db: Session, session_id: str, data: dict) -> None:
         # Sarvam — unit is SECONDS (LMS model_rate rows sarvam-stt / sarvam-tts)
         post("sarvam-stt", round(float(data.get("stt", {}).get("seconds") or 0)))
         post("sarvam-tts", round(float(data.get("tts", {}).get("vendor_seconds") or 0)))
+        log.info("lms usage report: session %s attributed to LMS user %s", session_id, user_id)
     except Exception as e:
         log.warning("lms usage report skipped: %s", type(e).__name__)
 
