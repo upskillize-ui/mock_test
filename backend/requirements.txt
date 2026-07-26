@@ -12,3 +12,7 @@ python-multipart==0.0.20
 # Local Whisper STT fallback (voice reliability tier 3): runs on the Space's own CPU
 # when Sarvam fails — no vendor account, no credits, no 30s clip limit.
 faster-whisper==1.1.1
+# faster-whisper's model downloader imports `requests` without declaring it, and the
+# newer huggingface-hub no longer drags it in — absent, the image build fails at the
+# model-bake step (ModuleNotFoundError: requests, observed 26 Jul build).
+requests==2.32.3
