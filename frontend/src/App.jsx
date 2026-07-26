@@ -3838,7 +3838,24 @@ function InterviewScreen({ config, sessionId, greeting, greetingSegments, initia
     : null;
 
   const handleEndClick = async () => {
+    endedRef.current = true;              // an in-flight capture's onstop must know it's over
     setEnded(true);
+    // The student pressed End: the interview is OVER and the room falls silent NOW.
+    // The shared <audio> element is module-global (it survives this screen by design,
+    // for the iOS unlock), so without an explicit stop her queued sentences kept
+    // narrating the next question over the "Analyzing your interview…" screen — the
+    // machine equivalent of talking over someone who has stood up to leave.
+    speakTokenRef.current = null;         // the sequencer abandons every unplayed sentence
+    const p = player();
+    if (p) { try { p.pause(); } catch { /* noop */ } }
+    playAbortRef.current?.();             // a paused clip fires no 'ended' — settle it
+    setSpeaking(false);
+    setSpokenLine("");
+    clearGrace();
+    clearMuteFork();
+    clearAbandon();
+    if (recordingRef.current) stopRecording();
+    stopBargeMonitor({ keepStream: false });
     if (uc > 0) { await flushPresence(); onEnd(); }
     else { await flushPresence(); await abandonSession(sessionId); onRestart(); }
   };

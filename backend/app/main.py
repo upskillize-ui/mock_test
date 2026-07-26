@@ -781,12 +781,68 @@ def _write_cost_ledger(db: Session, session_id: str) -> None:
             {"c": json.dumps(data), "id": session_id},
         )
         db.commit()
+        _report_costs_to_lms(db, session_id, data)
     except Exception as e:
         db.rollback()
         log.warning("cost_ledger not stored (apply migration 011?): %s", type(e).__name__)
     finally:
         ledger.forget(session_id)
         _ATTENTION_NOTED.discard(session_id)
+
+
+def _report_costs_to_lms(db: Session, session_id: str, data: dict) -> None:
+    """Attribute this interview's real cost to the student on the LMS Student
+    Cost Sheet. One POST per cost component (LLM per model + Sarvam STT + TTS)
+    to /api/ai-credits/consume-internal, which logs agent_usage and handles
+    credits. Best-effort telemetry — never raises into a session close.
+
+    Needs env LMS_BASE_URL + INTERNAL_CREDIT_SECRET (same secret as the LMS).
+    Uses stdlib urllib so no new dependency enters requirements.txt.
+    """
+    import os
+    import urllib.request
+
+    base = os.getenv("LMS_BASE_URL", "").rstrip("/")
+    secret = os.getenv("INTERNAL_CREDIT_SECRET", "")
+    if not base or not secret:
+        return
+    try:
+        row = db.execute(
+            text("SELECT user_id FROM vyom_sessions WHERE id=:id"),
+            {"id": session_id},
+        ).mappings().first()
+        user_id = row and row.get("user_id")
+        if not user_id:
+            return
+
+        def post(model: str, in_units: int, out_units: int = 0) -> None:
+            if in_units <= 0 and out_units <= 0:
+                return
+            body = json.dumps({
+                "userId": user_id, "agent": "InterviewIQ", "model": model,
+                "input_tokens": int(in_units), "output_tokens": int(out_units),
+            }).encode()
+            req = urllib.request.Request(
+                f"{base}/api/ai-credits/consume-internal", data=body,
+                headers={"Content-Type": "application/json",
+                         "X-Internal-Secret": secret}, method="POST")
+            try:
+                urllib.request.urlopen(req, timeout=5).read()
+            except Exception as e:
+                log.warning("lms usage report (%s) skipped: %s", model, type(e).__name__)
+
+        # LLM — per model; cache tokens folded into effective input units at
+        # their billing multipliers so LMS cost ≈ ledger USD.
+        for model, r in (data.get("llm", {}).get("by_model") or {}).items():
+            eff_in = (int(r.get("input_tokens") or 0)
+                      + round(0.10 * int(r.get("cache_read_tokens") or 0))
+                      + round(1.25 * int(r.get("cache_creation_tokens") or 0)))
+            post(model, eff_in, int(r.get("output_tokens") or 0))
+        # Sarvam — unit is SECONDS (LMS model_rate rows sarvam-stt / sarvam-tts)
+        post("sarvam-stt", round(float(data.get("stt", {}).get("seconds") or 0)))
+        post("sarvam-tts", round(float(data.get("tts", {}).get("vendor_seconds") or 0)))
+    except Exception as e:
+        log.warning("lms usage report skipped: %s", type(e).__name__)
 
 
 # Set at boot by the schema check: the migration files this database still needs, or []

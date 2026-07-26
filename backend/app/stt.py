@@ -418,11 +418,77 @@ async def _transcribe_chunked(
         t = _extract_transcript(body)
         if t:
             parts.append(t)
-    if not any_body:
-        return None
     joined = " ".join(parts).strip() or None
+    # TIER 3: every clip came back wordless (vendor down / out of quota) — local
+    # Whisper gets the WHOLE answer, since it has no 30s clip limit. The PCM is
+    # already decoded, so the fallback costs no second transcode.
+    if not joined:
+        est_s = len(pcm) / _WAV_BYTES_PER_S
+        joined = await _whisper_fallback(audio_bytes, est_s, wav=wav)
+    if not any_body and not joined:
+        return None
     log.info("stt_chunked clips=%d transcript_len=%d", len(clips), len(joined or ""))
     return {"transcript": joined, "timestamps": None, "confidence": None}
+
+
+# ── TIER 3: local Whisper fallback ───────────────────────────────────────────
+# When every Sarvam attempt yields no words, transcribe on the Space's own CPU with
+# faster-whisper (int8). No vendor, no credits, no 30s limit — the student's answer
+# becomes text even when the vendor is down or the account is out of quota. Lazy-loaded
+# once, serialized by a lock (one CPU transcription at a time; concurrent loads would
+# thrash a small Space), fed the SAME 16 kHz PCM the transcode already produces, and
+# time-boxed so a stuck decode can never hang a request. Audio still never touches disk.
+_whisper_model = None
+_whisper_lock: asyncio.Lock | None = None
+_WHISPER_TIMEOUT_S = 90.0
+
+
+def _whisper_run(pcm: bytes) -> str | None:
+    """Blocking transcription of raw 16 kHz mono s16 PCM. Runs in a worker thread."""
+    global _whisper_model
+    from faster_whisper import WhisperModel  # imported lazily: absent -> fallback off
+    import numpy as np
+    if _whisper_model is None:
+        _whisper_model = WhisperModel(settings.WHISPER_MODEL, device="cpu", compute_type="int8")
+    audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    segments, _info = _whisper_model.transcribe(
+        audio, language="en", beam_size=1, vad_filter=True,
+    )
+    text = " ".join(s.text.strip() for s in segments).strip()
+    return text or None
+
+
+async def _whisper_fallback(
+    audio_bytes: bytes, duration_seconds: float, wav: bytes | None = None
+) -> str | None:
+    """Local-Whisper rescue, or None. Never raises; never logs transcript text."""
+    global _whisper_lock
+    if not settings.STT_WHISPER_FALLBACK:
+        return None
+    if (duration_seconds or 0.0) > settings.STT_WHISPER_MAX_S:
+        log.info("stt_whisper skipped: dur_s=%.1f over cap %.0f",
+                 duration_seconds, settings.STT_WHISPER_MAX_S)
+        return None
+    if wav is None:
+        wav = await _transcode_to_wav(audio_bytes)
+    pcm = _wav_pcm(wav) if wav else None
+    if not pcm:
+        return None
+    if _whisper_lock is None:
+        _whisper_lock = asyncio.Lock()
+    try:
+        async with _whisper_lock:
+            text = await asyncio.wait_for(
+                asyncio.to_thread(_whisper_run, pcm), timeout=_WHISPER_TIMEOUT_S
+            )
+        if text:
+            log.info("stt_whisper recovered transcript_len=%d", len(text))
+        return text
+    except asyncio.TimeoutError:
+        log.warning("stt_whisper timeout after %.0fs", _WHISPER_TIMEOUT_S)
+    except Exception as e:
+        log.warning("stt_whisper failed: %s", type(e).__name__)
+    return None
 
 
 async def transcribe(audio_bytes: bytes, mime: str | None) -> str | None:
@@ -485,6 +551,14 @@ async def transcribe_full(
                 body, transcript = body2, t2
             elif body is None:
                 body = body2   # at least a 200 body -> report empty, not fail
+    # TIER 3: both vendor attempts produced no words — local Whisper is the answer of
+    # last resort before the student hears "didn't catch that".
+    if not transcript:
+        w = await _whisper_fallback(audio_bytes, duration_seconds)
+        if w:
+            transcript = w
+            if not isinstance(body, dict):
+                body = {}
     if body is None:
         return None
     ts = body.get("timestamps")

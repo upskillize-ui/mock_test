@@ -30,6 +30,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Whisper fallback: bake the model into the image so the FIRST rescued answer doesn't
+# pay a download. HF_HOME keeps the cache somewhere the runtime user can read.
+ENV HF_HOME=/app/.cache
+RUN python -c "from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', compute_type='int8')"
+
 # App code
 COPY backend/app ./app
 

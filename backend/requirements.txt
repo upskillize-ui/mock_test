@@ -9,3 +9,6 @@ cryptography==43.0.1
 python-jose[cryptography]==3.3.0
 pdfplumber==0.11.4
 python-multipart==0.0.20
+# Local Whisper STT fallback (voice reliability tier 3): runs on the Space's own CPU
+# when Sarvam fails — no vendor account, no credits, no 30s clip limit.
+faster-whisper==1.1.1

@@ -131,6 +131,14 @@ class Settings:
     # containers were the other blank-transcript suspect. Falls back to the raw
     # bytes automatically when ffmpeg is missing or the transcode fails.
     STT_TRANSCODE_WAV: bool = _env_bool("STT_TRANSCODE_WAV", "true")
+    # Voice reliability TIER 3: when every Sarvam attempt produces no words, run
+    # local Whisper (faster-whisper, CPU int8) on the Space itself. No vendor
+    # account, no credits, no clip limit — the answer of last resort that turns
+    # "didn't catch that" into text even when the vendor is down or out of quota.
+    # Answers longer than STT_WHISPER_MAX_S skip it (CPU time is real).
+    STT_WHISPER_FALLBACK: bool = _env_bool("STT_WHISPER_FALLBACK", "true")
+    WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "base")
+    STT_WHISPER_MAX_S: float = float(os.getenv("STT_WHISPER_MAX_S", "90"))
     # Hard cap on a single uploaded answer, in bytes (spec: 10 MB).
     STT_MAX_UPLOAD_BYTES: int = int(os.getenv("STT_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
     # Extra STT attempts allowed beyond the behavioural question count (retries).
